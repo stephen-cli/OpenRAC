@@ -42,6 +42,7 @@ It is a [Tauri 2](https://tauri.app/) app: a Rust side (`core/` and
 | Understand how the parts fit, add a command or a page          | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Change the look, add a game's colours                          | [docs/STYLE.md](docs/STYLE.md)               |
 | Know where the native port stands                              | [docs/port](../docs/port/README.md)          |
+| Build, package and publish a new launcher release              | [docs/RELEASING.md](docs/RELEASING.md)       |
 
 OpenRAC's own rules apply here too ([AGENTS.md](../AGENTS.md),
 [CONTRIBUTING.md](../CONTRIBUTING.md), [SOURCING.md](../docs/policy/SOURCING.md)):
@@ -102,6 +103,13 @@ edits into the game's own level data, in `assets/packed/<game>`) and **Play**
 with them (the port's `--mods`). The disc image is never changed. With
 developer tools on, the page also shows the folders and the three commands
 behind the buttons ([editor/README.md](../editor/README.md#pack-your-edits)).
+
+Below them, **Models and textures**: export a level's models (glTF, with
+their skeletons) and textures (PNG) to a folder that opens when it is ready,
+import the edited folder back as an overrides pack, and manage the packs:
+on or off, their order, remove, add a .zip or a folder (or drop one on the
+page). Play with your mods puts the packed levels and the packs that are on
+together first ([editor/MODDING.md](../editor/MODDING.md)).
 
 What a contributor needs and a player does not is behind **Developer tools**
 (Settings → Launcher): decompilation progress, disc serials, the Tasks tab,

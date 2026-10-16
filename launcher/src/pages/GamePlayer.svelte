@@ -10,17 +10,26 @@
   import Menu, { type MenuItem } from "$components/Menu.svelte";
   import SaveManagerBlock from "$components/SaveManagerBlock.svelte";
   import { api, type ActionView } from "$lib/api";
-  import { app, currentVersion, guard, openVersion, run, uninstallGame } from "$lib/app.svelte";
-  import { isBuilt, playerAct, playerState, regionWords } from "$lib/player.svelte";
-  import { regionLabel } from "$lib/labels";
+  import { app, currentVersion, guard, run, uninstallGame } from "$lib/app.svelte";
+  import { isBuilt, playerAct, playerState, playerVersion } from "$lib/player.svelte";
   import { themeStyle } from "$lib/themes";
 
-  const v = $derived(currentVersion());
-  const game = $derived(app.library?.games.find((g) => g.id === v?.game) ?? null);
+  // One game, whatever the region: the page plays the version your disc is (playerVersion),
+  // always. The developer panel alone follows the version chosen in it, for each disc's
+  // decompilation and actions.
+  const developer = $derived(app.config?.developer ?? false);
+  const opened = $derived(currentVersion());
+  const game = $derived(app.library?.games.find((g) => g.id === opened?.game) ?? null);
+  const v = $derived(game ? playerVersion(game) : opened);
+  const studied = $derived(game && opened?.game === game.id ? opened : v);
   const scope = $derived({ kind: "version" as const, key: v?.key ?? "" });
   const action = (id: string): ActionView | null => v?.actions.find((a) => a.id === id && a.thisPlatform) ?? null;
 
   const build = $derived(action("port-build"));
+  const levels = $derived(action("port-levels"));
+  const levelsCheck = $derived(action("port-levels-check"));
+  /** The levels were read from the disc and, where the version has the check, the game read them all. */
+  const levelsReady = $derived(levelsCheck ? levelsCheck.done : !!levels?.done);
   const playGodot = $derived(action("editor-preview"));
   const extract = $derived(action("editor-extract"));
 
@@ -31,7 +40,6 @@
     rac4: { bg: "/img/deadlocked-bg.webp", gif: "/img/rac4-gameplay.gif" },
   };
   const media = $derived(v ? GAME_MEDIA[v.game] : null);
-  const developer = $derived(app.config?.developer ?? false);
 
   const next = $derived(v && game ? playerState(game, v) : null);
   const setUp = $derived(game?.install?.extracted ?? null);
@@ -94,20 +102,6 @@
         {v.title}
         {#if game.year}<small>{game.year}</small>{/if}
       </div>
-      {#if game.versions.length > 1}
-        <div class="versions" role="tablist" aria-label="Your disc's region">
-          {#each game.versions as other (other.key)}
-            <button
-              role="tab"
-              aria-selected={other.key === v.key}
-              class:on={other.key === v.key}
-              onclick={() => {
-                openVersion(other.key);
-              }}>{developer ? `${regionLabel(other.name)} · ${other.serial}` : regionWords(other)}</button
-            >
-          {/each}
-        </div>
-      {/if}
 
       <div class="go">
         <div class="go-row">
@@ -129,12 +123,13 @@
           <li class:done={!!setUp}>Disc set up</li>
           {#if next.kind !== "unavailable" && (next.kind !== "set-up" || next.primary)}
             <li class:done={built}>Game built</li>
+            {#if levels}<li class:done={levelsReady}>Levels ready</li>{/if}
           {/if}
         </ol>
       {/if}
     </section>
 
-    {#if developer}<DeveloperPanel {game} version={v} />{/if}
+    {#if developer && studied}<DeveloperPanel {game} version={studied} />{/if}
     <SaveManagerBlock version={v} />
   </div>
 {/if}
@@ -289,32 +284,6 @@
     font-size: 13px;
     letter-spacing: 0.04em;
     color: var(--tx2);
-  }
-
-  /* The disc's region: one control with two halves, the chosen one filled. */
-  .versions {
-    display: inline-flex;
-    padding: 3px;
-    border-radius: 999px;
-    background: rgb(0 0 0 / 0.5);
-    border: 1px solid rgb(255 255 255 / 0.18);
-  }
-
-  .versions button {
-    border: 0;
-    background: none;
-    font-size: 13px;
-    color: var(--tx2);
-    padding: 6px 16px;
-  }
-
-  .versions button:hover {
-    color: #fff;
-  }
-
-  .versions button.on {
-    background: var(--bd);
-    color: #fff;
   }
 
   .go {

@@ -39,14 +39,41 @@ const char* layer_name(Layer layer) {
 
 namespace {
 
-int image_index(const fs::path& path, LevelData& level) {
-    const std::string key = path.lexically_normal().generic_string();
+// A level file's path, or the mod's file in its place: the same path under LevelData::overrides
+// when the level has a mod folder and the file is there. `overridden` counts the files taken.
+fs::path override_of(const fs::path& path, const LevelData& level, int* overridden) {
+    if (level.overrides.empty()) {
+        return path;
+    }
+    const fs::path normal = path.lexically_normal();
+    for (const fs::path& root : {level.dir.lexically_normal(), level.overrides.lexically_normal()}) {
+        const fs::path rel = normal.lexically_relative(root);
+        if (rel.empty() || *rel.begin() == "..") {
+            continue;
+        }
+        std::error_code ignored;
+        if (fs::is_regular_file(level.overrides / rel, ignored)) {
+            if (overridden != nullptr) {
+                ++*overridden;
+            }
+            return (level.overrides / rel).lexically_normal();
+        }
+        // A mod's model names the level's textures it does not replace by the same relative path.
+        return (level.dir / rel).lexically_normal();
+    }
+    return path;
+}
+
+int image_index(const fs::path& requested, LevelData& level) {
+    int overridden = 0;
+    const std::string key = override_of(requested, level, &overridden).lexically_normal().generic_string();
     auto it = std::find(level.image_paths.begin(), level.image_paths.end(), key);
     if (it != level.image_paths.end()) {
         const auto index = static_cast<int>(it - level.image_paths.begin());
         return level.images[static_cast<std::size_t>(index)].width > 0 ? index : -1;
     }
     level.image_paths.push_back(key);
+    level.overridden_images += overridden;
     int w = 0;
     int h = 0;
     int channels = 0;
@@ -68,6 +95,7 @@ int material_index(const cgltf_material* source, const fs::path& base, LevelData
     Material m;
     if (source != nullptr) {
         m.cutout = source->alpha_mode == cgltf_alpha_mode_mask;
+        m.metal = source->name != nullptr && std::strncmp(source->name, "metal_", 6) == 0;
         m.blend = source->alpha_mode == cgltf_alpha_mode_blend;
         if (source->has_pbr_metallic_roughness) {
             const auto& pbr = source->pbr_metallic_roughness;
@@ -78,9 +106,22 @@ int material_index(const cgltf_material* source, const fs::path& base, LevelData
             }
         }
     }
+    // A moby texture with texels below full alpha is drawn by the GS as the cutout materials are
+    // (TEST 0x5360b: texels at 0x80 written with depth, the others blended, colour only), whatever
+    // the export's alpha mode says: Kalebo III's glass sheets (class 800, alpha 0x32..0x53) came
+    // out as solid teal walls when drawn opaque.
+    if (!m.cutout && !m.metal && m.image >= 0 && base.filename() == "mobys") {
+        const auto& pixels = level.images[static_cast<std::size_t>(m.image)].pixels;
+        for (std::size_t i = 3; i < pixels.size(); i += 4) {
+            if (pixels[i] < 250) {
+                m.cutout = true;
+                break;
+            }
+        }
+    }
     for (std::size_t i = 0; i < level.materials.size(); ++i) {
         const Material& o = level.materials[i];
-        if (o.image == m.image && o.cutout == m.cutout && o.blend == m.blend
+        if (o.image == m.image && o.cutout == m.cutout && o.blend == m.blend && o.metal == m.metal
             && o.colour == m.colour) {
             return static_cast<int>(i);
         }
@@ -273,6 +314,9 @@ std::optional<std::uint32_t> load_model(
             }
             out.index_count = static_cast<std::uint32_t>(level.indices.size()) - out.first_index;
             out.material = material_index(prim.material, base, level);
+            if (node.name != nullptr && std::strncmp(node.name, "Sky_", 4) == 0) {
+                out.shell = std::atoi(node.name + 4);
+            }
             model.primitives.push_back(out);
         }
     }
@@ -352,6 +396,12 @@ std::vector<renderer::Rgba8Image> load_sky_textures(const fs::path& dir) {
 bool load_level(const fs::path& dir, LevelData& out, std::string& error, const fs::path& edited) {
     out = LevelData{};
     out.dir = dir;
+    if (!edited.empty()) {
+        std::error_code ignored;
+        if (fs::is_directory(edited.parent_path(), ignored)) {
+            out.overrides = fs::absolute(edited.parent_path(), ignored);
+        }
+    }
     json::Value manifest;
     if (!json::parse_file((dir / "manifest.json").string(), manifest, error)) {
         return false;
@@ -369,7 +419,7 @@ bool load_level(const fs::path& dir, LevelData& out, std::string& error, const f
         if (!file.is_string()) {
             return std::nullopt;
         }
-        return load_model(dir / file.string(), out, error);
+        return load_model(override_of(dir / file.string(), out, &out.overridden_models), out, error);
     };
 
     for (const json::Value& set : manifest["lights"].items()) {
@@ -525,6 +575,10 @@ bool load_level(const fs::path& dir, LevelData& out, std::string& error, const f
     }
     if (out.bounds_min[0] > out.bounds_max[0]) {
         out.bounds_min = out.bounds_max = Vec3{};
+    }
+    if (out.overridden_models > 0 || out.overridden_images > 0) {
+        log::info("level {}: {} meshes and {} textures from {}", out.level, out.overridden_models,
+                  out.overridden_images, out.overrides.string());
     }
     return true;
 }

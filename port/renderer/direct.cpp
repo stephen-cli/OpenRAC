@@ -324,8 +324,23 @@ void GifInterpreter::write_register(std::uint8_t address, std::uint64_t value) {
     Context& c2 = m_context[1];
     switch (address) {
         case 0x7F:  // NOP; the port's marker for a quad of the 2D layer drawn natively
-            if ((value >> 48) == kUiQuadMarker && (value & 0xFFFFFFFFu) < m_ui_quads.size()) {
-                native_quad(m_ui_quads[value & 0xFFFFFFFFu]);
+            if ((value >> 48) == kUiQuadMarker && (value & 0xFFFFFFu) < m_ui_quads.size()) {
+                native_quad(m_ui_quads[value & 0xFFFFFFu]);
+            } else if ((value >> 48) == kMobyMarker && offscreen_target() != 0) {
+                DirectDraw d;
+                d.state.target = offscreen_target();
+                d.first = static_cast<std::uint32_t>(m_vertices.size());
+                d.mobys = value;
+                d.centre_x = 2048.0f - static_cast<float>(context().xyoffset.ofx) / 16.0f;
+                d.centre_y = 2048.0f - static_cast<float>(context().xyoffset.ofy) / 16.0f;
+                d.clear_depth = true;
+                for (auto it = m_draws.rbegin(); it != m_draws.rend(); ++it) {
+                    if (it->state.target == d.state.target && (it->count != 0 || it->mobys != 0)) {
+                        d.clear_depth = it->mobys == 0;
+                        break;
+                    }
+                }
+                m_draws.push_back(d);
             }
             return;
         case gs::kPrim:
@@ -540,8 +555,8 @@ void GifInterpreter::image_data(std::span<const std::uint8_t> data) {
             );
         }
         std::erase_if(m_frame_copies, [&](const FrameCopy& f) { return f.dbp == m_upload.dbp; });
-        if (m_upload.dpsm == gs::kPsmct32 && m_upload.dbp >= kDrawBufferBlock
-            && m_upload.dbp < kDrawBufferBlock + kDrawBufferWidth * (kDrawBufferLines / 32) * 32) {
+        if (m_upload.dpsm == gs::kPsmct32 && m_upload.dbp >= g_draw_buffer_block
+            && m_upload.dbp < g_draw_buffer_block + kDrawBufferWidth * (g_draw_buffer_lines / 32) * 32) {
             draw_frame_upload(m_upload);
         }
         m_textures.upload(std::move(m_upload));
@@ -552,13 +567,13 @@ void GifInterpreter::image_data(std::span<const std::uint8_t> data) {
 }
 
 bool frame_pixel(std::uint32_t base, std::uint32_t width, int x, int y, int& frame_x, int& frame_y) {
-    if (base < kDrawBufferBlock || (base - kDrawBufferBlock) % 32 != 0 || width == 0) {
+    if (base < g_draw_buffer_block || (base - g_draw_buffer_block) % 32 != 0 || width == 0) {
         return false;
     }
-    const int page = static_cast<int>((base - kDrawBufferBlock) / 32) + (y / 32) * static_cast<int>(width) + x / 64;
+    const int page = static_cast<int>((base - g_draw_buffer_block) / 32) + (y / 32) * static_cast<int>(width) + x / 64;
     frame_x = (page % static_cast<int>(kDrawBufferWidth)) * 64 + x % 64;
     frame_y = (page / static_cast<int>(kDrawBufferWidth)) * 32 + y % 32;
-    return frame_y < kDrawBufferLines;
+    return frame_y < g_draw_buffer_lines;
 }
 
 void GifInterpreter::draw_frame_upload(const ImageUpload& upload) {
@@ -631,11 +646,12 @@ void GifInterpreter::draw_frame_upload(const ImageUpload& upload) {
                 const int i = k & 1;
                 const int j = k >> 1;
                 v.x = xs[i] / static_cast<float>(m_config.screen_width) * 2.0f - 1.0f;
-                v.y = 1.0f - ys[j] / static_cast<float>(m_config.screen_height) * 2.0f;
+                // The draw buffer fills the picture whatever its height (416 lines in a 60 Hz mode).
+                v.y = 1.0f - ys[j] / static_cast<float>(g_draw_buffer_lines) * 2.0f;
                 v.z = -1.0f;
                 if (snapshot) {
                     v.s = xs[i] / static_cast<float>(m_config.screen_width);
-                    v.t = 1.0f - ys[j] / static_cast<float>(kDrawBufferLines);
+                    v.t = 1.0f - ys[j] / static_cast<float>(g_draw_buffer_lines);
                 } else {
                     v.s = us[i] / tw;
                     v.t = vs[j] / th;
@@ -709,11 +725,11 @@ void GifInterpreter::kick(bool draw) {
     if (g_dump_draws && m_prim.kind != gs::PrimKind::Sprite) {
         const gs::Alpha& al = context().alpha;
         log::info(
-            "prim {} ({},{}) uv ({},{}) stq ({},{},{}) fst {} rgba {:02x}{:02x}{:02x}{:02x} tme {} psm {:#x} cbp {:#x} tbw {} tbp {:#x} tw {} th {} abe {} alpha {}{}{}{} fbp {:#x} fbmsk {:#x} test {}",
+            "prim {} ({},{}) uv ({},{}) stq ({},{},{}) fst {} rgba {:02x}{:02x}{:02x}{:02x} tme {} psm {:#x} cbp {:#x} tbw {} tbp {:#x} tw {} th {} abe {} alpha {}{}{}{} fix {:#x} fbp {:#x} fbmsk {:#x} test {}",
             static_cast<int>(m_prim.kind), m_current.x / 16.0, m_current.y / 16.0, m_current.u / 16.0, m_current.v / 16.0, m_current.s, m_current.t, m_current.q, attributes().fst, m_current.rgba[0],
             m_current.rgba[1], m_current.rgba[2], m_current.rgba[3], attributes().tme,
             context().tex0.psm, context().tex0.cbp, context().tex0.tbw, context().tex0.tbp0, context().tex0.width(), context().tex0.height(), attributes().abe,
-            al.a, al.b, al.c, al.d, context().frame.fbp, context().frame.fbmsk, test_text(context().test)
+            al.a, al.b, al.c, al.d, al.fix, context().frame.fbp, context().frame.fbmsk, test_text(context().test)
         );
     }
     switch (m_prim.kind) {
@@ -784,7 +800,7 @@ void GifInterpreter::kick(bool draw) {
 bool GifInterpreter::is_offscreen(const gs::Frame& f) const {
     const std::uint32_t block = f.fbp * 32;
     return static_cast<int>(f.fbw) * 64 < m_config.screen_width
-        || (block != m_config.frame_blocks[0] && block != m_config.frame_blocks[1]);
+        || (block != m_config.display_block && block != g_draw_buffer_block);
 }
 
 std::uint32_t GifInterpreter::offscreen_target() const {
@@ -848,10 +864,13 @@ DirectVertex GifInterpreter::convert(const GsVertex& v) const {
     float px = 0.0f;
     float py = 0.0f;
     screen_position(v, px, py);
-    // The chip samples a pixel at its integer coordinates, GL at the pixel's centre: half a pixel
-    // on, so a rectangle ending at 511.5 covers pixel 511 here as it does on the console.
-    px += 0.5f;
-    py += 0.5f;
+    // The chip samples a pixel at its integer coordinates, GL at the pixel's centre: the shader
+    // moves every vertex a quarter of a pixel of the target on (pixel_offset), so that at the
+    // console's size a rectangle from 0 to 511.5 covers pixels 0 to 511 as it does on the console,
+    // and no pixel's centre lies on an edge. Half a pixel of the game's picture instead put the 2D
+    // layer up to 2.5 pixels off the world at 2560 across (a line of the world showed at the top
+    // and left of the vendor's monitors); half a pixel of the target put the first row of an
+    // off-screen panel on its clear's edge, and it was never cleared.
     const bool offscreen = offscreen_target() != 0;
     const float target_w = offscreen ? static_cast<float>(kOffscreenPixels) : static_cast<float>(m_config.screen_width);
     const float target_h = offscreen ? static_cast<float>(kOffscreenPixels) : static_cast<float>(m_config.screen_height);
@@ -949,9 +968,11 @@ void GifInterpreter::ensure_draw() {
         s.fbmsk = c.frame.fbmsk;
         // A texture nothing has been put at yet (the game draws before its upload arrives): the
         // chip would show whatever its memory held, so the draw writes nothing, rather than the
-        // placeholder's magenta (OPENRAC_SHOW_MISSING shows it, for finding missing textures).
+        // placeholder's magenta (OPENRAC_SHOW_MISSING shows it, for finding missing textures). A
+        // draw of an off-screen target or of the frame has no texture of the pool (its handle is
+        // the placeholder's 0) and is drawn.
         static const bool show_missing = std::getenv("OPENRAC_SHOW_MISSING") != nullptr;
-        if (s.textured && s.texture == m_textures.placeholder() && !show_missing) {
+        if (s.textured && s.source == 0 && !s.frame_source && s.texture == m_textures.placeholder() && !show_missing) {
             s.fbmsk = 0xFFFFFFFFu;
             s.depth_write = false;
         }
@@ -979,7 +1000,7 @@ void GifInterpreter::ensure_draw() {
         m_state = s;
         m_state_dirty = false;
     }
-    if (m_draws.empty() || !(m_draws.back().state == m_state)) {
+    if (m_draws.empty() || !(m_draws.back().state == m_state) || m_draws.back().mobys != 0) {
         m_draws.push_back({m_state, static_cast<std::uint32_t>(m_vertices.size()), 0});
     }
 }
@@ -1013,9 +1034,9 @@ void GifInterpreter::emit_sprite(const GsVertex& a, const GsVertex& b) {
         const gs::Alpha& al = context().alpha;
         const gs::Scissor& sc = context().scissor;
         log::info(
-            "sprite ({},{})-({},{}) rgba {:02x}{:02x}{:02x}{:02x} tme {} psm {:#x} cbp {:#x} tbw {} tbp {:#x} abe {} alpha {}{}{}{} fix {:#x} scissor {}-{}x{}-{} fbp {:#x} fbmsk {:#x} test {}",
-            a.x / 16.0, a.y / 16.0, b.x / 16.0, b.y / 16.0, b.rgba[0], b.rgba[1], b.rgba[2], b.rgba[3],
-            attributes().tme, context().tex0.psm, context().tex0.cbp, context().tex0.tbw, context().tex0.tbp0, attributes().abe, al.a, al.b, al.c, al.d, al.fix,
+            "sprite ({},{})-({},{}) uv ({},{})-({},{}) rgba {:02x}{:02x}{:02x}{:02x} tme {} psm {:#x} cbp {:#x} tbw {} tbp {:#x} mag {} min {} abe {} alpha {}{}{}{} fix {:#x} scissor {}-{}x{}-{} fbp {:#x} fbmsk {:#x} test {}",
+            a.x / 16.0, a.y / 16.0, b.x / 16.0, b.y / 16.0, a.u / 16.0, a.v / 16.0, b.u / 16.0, b.v / 16.0, b.rgba[0], b.rgba[1], b.rgba[2], b.rgba[3],
+            attributes().tme, context().tex0.psm, context().tex0.cbp, context().tex0.tbw, context().tex0.tbp0, context().tex1.mmag, context().tex1.mmin, attributes().abe, al.a, al.b, al.c, al.d, al.fix,
             sc.x0, sc.x1, sc.y0, sc.y1, context().frame.fbp, context().frame.fbmsk, test_text(context().test)
         );
     }
@@ -1044,8 +1065,12 @@ void GifInterpreter::emit_sprite(const GsVertex& a, const GsVertex& b) {
     // The copy of the finished draw buffer into the display buffer, in strips: stretched in the menus,
     // 1:1 between borders in play. The picture already is that frame (both buffers map onto it by
     // their sizes), so drawing the copy would only shrink it into the middle of itself.
-    if (attributes().tme && context().tex0.tbp0 == m_config.frame_blocks[1]
-        && context().frame.fbp * 32 == m_config.frame_blocks[0]
+    // The same for a copy of the draw buffer onto itself in strips, which the game makes in its
+    // 448-line (60 Hz) mode: the picture already holds it, and the pool has no texture for it,
+    // so drawn it laid stripes of stale texels over the world.
+    const std::uint32_t target = context().frame.fbp * 32;
+    if (attributes().tme && context().tex0.tbp0 == g_draw_buffer_block
+        && (target == m_config.display_block || target == g_draw_buffer_block)
         && std::llabs(static_cast<std::int64_t>(b.y) - static_cast<std::int64_t>(a.y)) / 16 >= kFrameFillLines) {
         return;
     }
@@ -1235,6 +1260,7 @@ bool DirectRenderer::init(RenderState& state, std::string& error) {
     m_uniforms.alpha_keep_failing = m_shader.uniform("alpha_keep_failing");
     m_uniforms.distance_field = m_shader.uniform("distance_field");
     m_uniforms.tex_T1 = m_shader.uniform("tex_T1");
+    m_uniforms.pixel_offset = m_shader.uniform("pixel_offset");
 
     glGenVertexArrays(1, &m_vao);
     glGenBuffers(1, &m_vbo);
@@ -1305,6 +1331,7 @@ void DirectRenderer::render(const FrameInput& input, RenderState& state) {
         return;
     }
     m_interpreter->set_ui_quads(input.ui_quads);
+    m_frame = &input;
     submit(packets);
     flush(state);
 }
@@ -1343,9 +1370,13 @@ void DirectRenderer::apply(const DirectState& s, RenderState& render_state) {
         const Offscreen& o = offscreen(s.target);
         glBindFramebuffer(GL_FRAMEBUFFER, o.framebuffer);
         glViewport(0, 0, kOffscreenPixels * kOffscreenScale, kOffscreenPixels * kOffscreenScale);
+        const float side = static_cast<float>(kOffscreenPixels * kOffscreenScale);
+        glUniform2f(m_uniforms.pixel_offset, 0.5f / side, -0.5f / side);
     } else {
         glBindFramebuffer(GL_FRAMEBUFFER, render_state.target.framebuffer);
         glViewport(0, 0, render_state.target.width, render_state.target.height);
+        glUniform2f(m_uniforms.pixel_offset, 0.5f / static_cast<float>(std::max(render_state.target.width, 1)),
+                    -0.5f / static_cast<float>(std::max(render_state.target.height, 1)));
     }
     glUniform1i(m_uniforms.textured, s.textured ? 1 : 0);
     if (s.textured) {
@@ -1479,6 +1510,23 @@ void DirectRenderer::apply(const DirectState& s, RenderState& render_state) {
 
 void DirectRenderer::draw(const DirectDraw& d, RenderState& render_state) {
     const DirectState& s = d.state;
+    if (d.mobys != 0) {
+        // Mobys the game drew into this target: the frontend draws them, with the target bound;
+        // then this renderer's own state again.
+        if (m_frame != nullptr && m_frame->target_mobys && s.target != 0) {
+            const Offscreen& o = offscreen(s.target);
+            glBindFramebuffer(GL_FRAMEBUFFER, o.framebuffer);
+            m_frame->target_mobys(d.mobys, o.framebuffer, kOffscreenPixels * kOffscreenScale, d.centre_x, d.centre_y,
+                                  d.clear_depth);
+            glDisable(GL_CULL_FACE);
+            glDisable(GL_SCISSOR_TEST);
+            m_shader.use();
+            glBindVertexArray(m_vao);
+            glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+            glActiveTexture(GL_TEXTURE0);
+        }
+        return;
+    }
     apply(s, render_state);
 
     // FRAME.FBMSK: a channel whose bits are all masked is not written.
@@ -1579,7 +1627,7 @@ void DirectRenderer::flush(RenderState& state, bool background) {
         for (const DirectDraw& d : m_interpreter->draws()) {
             const DirectState& s = d.state;
             if (s.target != 0 || d.count == 0) {
-                if (d.count != 0) {
+                if (d.count != 0 || d.mobys != 0) {
                     runs.push_back({&d, d.first, d.count, true});  // an off-screen panel's own square
                 }
                 continue;
@@ -1625,12 +1673,14 @@ void DirectRenderer::flush(RenderState& state, bool background) {
     if (k < 1.0f) {
         for (const Run& r : runs) {
             m_whole_target = r.whole;
-            draw(DirectDraw{r.draw->state, r.first, r.count}, state);
+            draw(DirectDraw{r.draw->state, r.first, r.count, r.draw->mobys, r.draw->centre_x, r.draw->centre_y,
+                            r.draw->clear_depth},
+                 state);
         }
         m_whole_target = true;
     } else {
         for (const DirectDraw& d : m_interpreter->draws()) {
-            if (d.count != 0) {
+            if (d.count != 0 || d.mobys != 0) {
                 draw(d, state);
             }
         }

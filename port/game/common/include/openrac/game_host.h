@@ -80,6 +80,14 @@ extern void (*openrac_game_on_frame)(unsigned frame);
  * the launcher's Discord presence. */
 extern int (*openrac_game_bolts)(void);
 
+/* Whether an in-game cutscene is playing, when a game installs it (rac1/pal: boot.c, the game mode
+ * 2): the window lets Start skip it (settings skip_cutscenes). */
+extern int (*openrac_game_in_cutscene)(void);
+
+/* Called while Start is held with skip_cutscenes on, when a game installs it: skips what the game
+ * lets the port skip besides its own cutscenes (rac1/pal: the flight between planets, boot.c). */
+extern void (*openrac_game_skip)(void);
+
 /* The game sends a DMA chain (sceDmaSend): channel is the game address of
  * the channel's registers (0x10009000 is VIF1, the display list; 0x1000A000
  * is the GIF), tag the address of the chain's first tag. The renderer reads
@@ -136,8 +144,10 @@ void openrac_game_moby_chain(gaddr moby, gaddr marks);
 
 /* The game's moby renderer was asked to draw `count` mobys from `first` (0x100 bytes each; count
  * -1: the whole list, the world's draw). A list drawn on its own (the page menu's frame objects)
- * may be drawn with a camera of its own: the window draws those mobys as that camera saw them. */
-void openrac_game_mobys_drawn(gaddr first, int count);
+ * may be drawn with a camera of its own: the window draws those mobys as that camera saw them.
+ * Nonzero: the caller puts a moby marker in the 2D list where the game's packets would have gone
+ * (the renderer's kMobyMarker), so that mobys drawn into a texture are drawn there in order. */
+int openrac_game_mobys_drawn(gaddr first, int count);
 
 /* A textured quad the game draws in the world (rac1: func_001F7EF8, the draw callbacks' quad
  * routine): its corners in world space (x, y, z, w), the strip 0 1 2, 1 2 3; RGBA bytes and
@@ -156,6 +166,11 @@ typedef struct openrac_game_quad {
 } openrac_game_quad;
 
 void openrac_game_effect_quad(const openrac_game_quad* quad);
+
+/* A sky shell the game drew this frame (rac1: SkyDrawShell) and the matrix it was drawn with: 16
+ * floats, the game's rows (x, y, z axes, then the translation, in the sky's own units), each row
+ * one column of the window's column-major matrix. */
+void openrac_game_sky_shell(int shell, const float* matrix);
 
 /* A textured quad of the 2D layer (rac1: DrawTexturedQuad, the HUD's sprite routines): four corners
  * in strip order (0-1-2, 1-2-3) in the chip's 12.4 screen coordinates as the game computes them,

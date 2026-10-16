@@ -101,7 +101,7 @@ void write_level(const fs::path& dir) {
     write_square(dir / "terrain.glb.gltf", 20.0f, 0.0f, "textures/terrain_0000.png");
     write_square(dir / "ties" / "tie_5.gltf", 2.0f, 0.0f, "../textures/tie_0001.png");
     write_text(dir / "manifest.json", R"({
-  "format": 1, "game": "rac1", "version": "pal", "level": 3,
+  "format": 3, "game": "rac1", "version": "pal", "level": 3,
   "terrain": "terrain.glb.gltf",
   "sky": {"background": [10, 20, 30], "mesh": null},
   "classes": {
@@ -112,7 +112,7 @@ void write_level(const fs::path& dir) {
   "placements": "placements.json"
 })");
     write_text(dir / "placements.json", R"({
-  "format": 1,
+  "format": 3,
   "ties": [{"index": 0, "class": 5, "matrix": [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,1,1], "draw_distance": 100}],
   "shrubs": [],
   "mobys": [{"index": 0, "class": 7, "matrix": [2,0,0,0, 0,2,0,0, 0,0,2,0, 6,6,0,1], "colour": [128, 128, 128]},
@@ -224,6 +224,42 @@ int draw(viewer::LevelData& level) {
     return openrac::test::result();
 }
 
+// A mod's folder for the level (the --mods folder's level_03, editor/overrides.py): an upscaled
+// terrain texture and a bigger tie mesh are read in place of the level's own, and the mod's mesh
+// names a texture of the level it does not carry (the tie's), which comes from the level.
+void overrides(const fs::path& dir) {
+    const fs::path mods = dir.parent_path() / (dir.filename().string() + "_mods") / "level_03";
+    fs::remove_all(mods.parent_path());
+    fs::create_directories(mods / "textures");
+    std::vector<std::uint8_t> green(8 * 8 * 4);
+    for (std::size_t i = 0; i < green.size(); i += 4) {
+        green[i + 1] = 200;
+        green[i + 3] = 255;
+    }
+    stbi_write_png((mods / "textures" / "terrain_0000.png").string().c_str(), 8, 8, 4, green.data(), 8 * 4);
+    write_square(mods / "ties" / "tie_5.gltf", 6.0f, 0.0f, "../textures/tie_0001.png");
+
+    viewer::LevelData level;
+    std::string error;
+    CHECK(viewer::load_level(dir, level, error, mods / "placements.json"));
+    CHECK(level.overridden_models == 1);
+    CHECK(level.overridden_images == 1);
+    CHECK(level.missing_images == 0);
+    CHECK(level.images.size() == 2);
+    // The tie's mesh is the mod's: 6 units across.
+    const auto& tie = level.instances[static_cast<std::size_t>(viewer::Layer::Ties)][0];
+    CHECK(std::fabs(level.models[tie.model].max[0] - 3.0f) < 1e-6f);
+    // The terrain's texture is the mod's 8 x 8 green one; the tie's the level's blue one.
+    CHECK(level.images[0].width == 8 && ((level.images[0].texel(0, 0) >> 8) & 0xFF) == 200);
+    CHECK(level.images[1].width == 2 && ((level.images[1].texel(1, 1) >> 16) & 0xFF) == 220);
+
+    // Without the mod's folder, the level's own.
+    viewer::LevelData plain;
+    CHECK(viewer::load_level(dir, plain, error));
+    CHECK(plain.overridden_models == 0 && plain.overridden_images == 0 && plain.images[0].width == 2);
+    fs::remove_all(mods.parent_path());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -233,6 +269,7 @@ int main(int argc, char** argv) {
     write_level(dir);
     viewer::LevelData level;
     loader(dir, level);
+    overrides(dir);
     if (openrac::test::failures() != 0) {
         return openrac::test::result();
     }

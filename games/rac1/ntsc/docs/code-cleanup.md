@@ -16,6 +16,9 @@ to make that code easier to read. To decompile new code, see
    must still say the unit matches.
 5. Run `make elf` and `make overlays`. Both must end with `PASS`. If one
    fails, find the change that broke it and undo it.
+   `python3 scripts/check-cleanup.py` lists the rules below that your change
+   breaks. CI runs it on every pull request; older code on `main` does not
+   count.
 6. Commit each area on its own and say what became easier to read.
 
 ## What you can change
@@ -37,11 +40,22 @@ make it clearer, add a comment that explains why it looks odd.
 
 **Never:**
 
-- add inline assembly (other than the name label);
+- add inline assembly (other than the name label); for `ei`, `di`, `sync`,
+  `mfc0` or `syscall` use the macros in `include/kernel.h`;
 - use `#ifdef` tricks;
 - change which compiler a unit uses;
 - edit files in `asm/`;
 - fix bugs from the original game.
+
+## Fakematches
+
+A fakematch is code that only steers the compiler: `x++; x--;`, `x = x;`, a
+`do { } while (0)` outside a macro, an `if (0)` branch, a dead store. It is
+allowed until someone finds the real form, but it needs a comment that starts
+with `Fakematch:` and says what it changes, ending at most three lines above
+it. `check-cleanup.py` finds the first four shapes without that comment (not
+dead stores or `x += 1; x -= 1;`, so mark those yourself). If
+removing the trick does not change the code, it is not a fakematch: delete it.
 
 ## Names
 
@@ -51,7 +65,12 @@ make it clearer, add a comment that explains why it looks odd.
 - **Functions:** `lower_snake_case`, verb first (`draw_hud`), with a
   subsystem prefix when it helps (`hud_`, `save_card_`). Recovered CamelCase
   names become clear snake_case. Sony SDK names stay as they are. Keep
-  `FUN_<addr>` only in the asm label.
+  `FUN_<addr>` only in the asm label, and use the same name the function's
+  own file uses in every file that calls it.
+- **Files:** a boot file is named after the function it holds; a level code
+  file after the moby class or function it holds
+  ([overlays.md](overlays.md#sources-and-the-proof)). Keep `fun_<addr>.c`
+  until the name is proven.
 - **Renaming:** use the tool, one function at a time, so callers in level
   code are updated too:
   `python3 scripts/rename-function-proposals.py --address 0x... --apply`
@@ -100,6 +119,8 @@ edit fails at once.
 - **One name, one type.** Each variable has one definition and one `extern`
   in a header. A file that needs another placement keeps one alias,
   `<name>_gp` (sda), `<name>_lui` (`NOT_SDA`) or `<name>_macro` (`MACRO_ADDR`).
+  In an SN unit, functions above the first `sda` declaration keep `lui` when
+  they read a `<name>_lui` alias declared before it.
   File suffixes (`_28efc8`, `_t`) and level prefixes on main-ELF data go.
   `scripts/data-decls.py` lists the labels that still disagree; fix the type
   when you move that data to C, and lower the count in `test_public_tools.py`.
@@ -117,6 +138,10 @@ edit fails at once.
   `config/overlays/us/data.tsv`. `data-refs.py --emit ADDR --into FILE`
   (`--level N` for level data) writes both. Shared data and raw bytes stay in
   assembly, with their type in a header.
+- **Never guess a size.** When `--emit` stops (no declaration, `T x[]` with no
+  size, a type it cannot write), the data stays in assembly. Code or bytes
+  written as a C array of numbers are not data in C; `check-cleanup.py` flags
+  byte arrays of more than 16 values.
 - A variable defined in C is removed from `config/us/symbol_addrs.txt`.
 
 ## Moving files

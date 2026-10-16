@@ -4,7 +4,9 @@
 #include "assets/geometry/moby_animation.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <optional>
 
 namespace openrac::assets::rac1 {
 
@@ -491,7 +493,8 @@ std::vector<JointMatrix> evaluate(const MobyAnimClass& anim, const AnimState& s)
 }
 
 std::vector<JointMatrix> evaluate_keys(
-    const MobyAnimClass& anim, const MobyFrame* fa, const MobyFrame* fb, f32 t_value, bool plain
+    const MobyAnimClass& anim, const MobyFrame* fa, const MobyFrame* fb, f32 t_value, bool plain,
+    std::span<const JointModifier> mods, std::span<const PoseLayer> layers
 ) {
     const std::size_t jc = anim.joint_count;
     if (jc == 0) {
@@ -609,6 +612,118 @@ std::vector<JointMatrix> evaluate_keys(
             const V4 qb = quat_bits(fb->quat_at(j));
             rec[j][0] = plain ? lanes_lerp(qa, qb, u, t, 4, qa) : nlerp_flip(qa, qb, u, t);
         }
+    }
+
+    // The pose layers, in list order, over the joints each covers: its own local values (key A, and
+    // key B when its t is not 0: the quaternions lerped or nlerped, the inherited scale where a key
+    // carries one, the translation from its records or the rest), blended in by its weight.
+    for (const PoseLayer& l : layers) {
+        if (l.a == nullptr || !(l.weight > 0.0f)) {
+            continue;
+        }
+        const u32 lt = ps2::bits(l.t);
+        const MobyFrame* lb = lt != 0 ? l.b : nullptr;
+        if (lt != 0 && lb == nullptr) {
+            continue;
+        }
+        const u32 lu = ps2::sub(kOne, lt);
+        const u32 w = ps2::bits(l.weight);
+        const u32 uw = ps2::sub(kOne, w);
+        for (const u8 jj : l.joints) {
+            const std::size_t j = jj;
+            if (j >= n) {
+                continue;
+            }
+            const auto find_scale = [&](const MobyFrame& f) -> std::optional<V4> {
+                for (const MobyScaleRecord& sr : f.scales) {
+                    if (sr.joint == j && sr.inherited()) {
+                        return with_w(scale_value(sr), 0);
+                    }
+                }
+                return std::nullopt;
+            };
+            const auto find_trans = [&](const MobyFrame& f) -> V4 {
+                for (const MobyTransRecord& tr : f.trans) {
+                    if (static_cast<s8>(tr.joint) >= 0 && tr.joint == j) {
+                        return with_w(trans_value(tr), 0);
+                    }
+                }
+                return with_w(anim.rest[j], 0);
+            };
+            V4 q = quat_bits(l.a->quat_at(j));
+            std::optional<V4> sc = find_scale(*l.a);
+            V4 tr = find_trans(*l.a);
+            if (lb != nullptr) {
+                const V4 qb = quat_bits(lb->quat_at(j));
+                q = l.plain ? lanes_lerp(q, qb, lu, lt, 4, q) : nlerp_flip(q, qb, lu, lt);
+                const std::optional<V4> sb = find_scale(*lb);
+                if (sc && sb) {
+                    sc = lanes_lerp(*sc, *sb, lu, lt, 3, V4{0, 0, 0, 0});
+                } else if (!sc) {
+                    sc = sb;
+                }
+                tr = lanes_lerp(tr, find_trans(*lb), lu, lt, 3, V4{0, 0, 0, 0});
+            }
+            rec[j][0] = nlerp_flip(rec[j][0], q, uw, w);
+            if (sc) {
+                const V4 cur = rec[j][1][3] != 0 ? rec[j][1] : V4{kOne, kOne, kOne, kOne};
+                rec[j][1] = lanes_lerp(cur, V4{(*sc)[0], (*sc)[1], (*sc)[2], kOne}, uw, w, 3, V4{0, 0, 0, kOne});
+            }
+            rec[j][2] = lanes_lerp(rec[j][2], tr, uw, w, 3, rec[j][2]);
+        }
+    }
+
+    // The joint-modifier list, head first, on the local records (MobyProc applies it after the
+    // keys, before the matrices). Native float arithmetic, as ReRAC's apply_modifiers: mode 0
+    // composes, any other mode blends toward the node by its weight. A scale applies only where
+    // the joint has one (its presence word is kept).
+    for (const JointModifier& m : mods) {
+        const std::size_t j = m.joint;
+        if (j >= n) {
+            continue;
+        }
+        const auto f = [](u32 bits) { f32 x; std::memcpy(&x, &bits, 4); return x; };
+        const auto b = [](f32 x) { u32 bits; std::memcpy(&bits, &x, 4); return bits; };
+        const std::array<f32, 4> q{f(rec[j][0][0]), f(rec[j][0][1]), f(rec[j][0][2]), f(rec[j][0][3])};
+        std::array<f32, 4> nq{};
+        std::array<f32, 3> ns{}, nt{};
+        if (m.mode == 0) {
+            const auto& r = m.quat;
+            nq = {q[3] * r[0] + r[3] * q[0] + (q[1] * r[2] - q[2] * r[1]),
+                  q[3] * r[1] + r[3] * q[1] + (q[2] * r[0] - q[0] * r[2]),
+                  q[3] * r[2] + r[3] * q[2] + (q[0] * r[1] - q[1] * r[0]),
+                  q[3] * r[3] - (q[0] * r[0] + q[1] * r[1] + q[2] * r[2])};
+            for (std::size_t k = 0; k < 3; ++k) {
+                ns[k] = f(rec[j][1][k]) * m.scale[k];
+                nt[k] = f(rec[j][2][k]) + m.trans[k];
+            }
+        } else {
+            const f32 w = m.weight;
+            const f32 u = 1.0f - w;
+            std::array<f32, 4> va{}, vb{};
+            f32 d = 0.0f;
+            for (std::size_t k = 0; k < 4; ++k) {
+                va[k] = q[k] * u;
+                vb[k] = m.quat[k] * w;
+                d += va[k] * vb[k];
+            }
+            f32 len = 0.0f;
+            for (std::size_t k = 0; k < 4; ++k) {
+                nq[k] = d < 0.0f ? va[k] - vb[k] : va[k] + vb[k];
+                len += nq[k] * nq[k];
+            }
+            len = std::sqrt(len);
+            for (std::size_t k = 0; k < 4 && len > 0.0f; ++k) {
+                nq[k] /= len;
+            }
+            for (std::size_t k = 0; k < 3; ++k) {
+                ns[k] = f(rec[j][1][k]) * u + m.scale[k] * w;
+                nt[k] = f(rec[j][2][k]) * u + m.trans[k] * w;
+            }
+        }
+        rec[j][0] = V4{b(nq[0]), b(nq[1]), b(nq[2]), b(nq[3])};
+        rec[j][1] = V4{b(ns[0]), b(ns[1]), b(ns[2]), rec[j][1][3]};
+        rec[j][2] = V4{b(nt[0]), b(nt[1]), b(nt[2]), rec[j][2][3]};
     }
 
     // Local matrices and the parent chain, joints in index order.

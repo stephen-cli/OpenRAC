@@ -20,7 +20,7 @@ on:
       - "launcher/**"
       - "port/**"
       - "editor/**"
-      - "games/rac1/pal/**"
+      - "games/rac1/**"
       - "tools/bundle_standalone.py"
       - "tools/build_port.py"
       - "tools/extractor.py"
@@ -30,7 +30,7 @@ on:
       - "launcher/**"
       - "port/**"
       - "editor/**"
-      - "games/rac1/pal/**"
+      - "games/rac1/**"
       - "tools/bundle_standalone.py"
       - "tools/build_port.py"
       - "tools/extractor.py"
@@ -73,6 +73,11 @@ jobs:
             os: ubuntu-22.04
             python: x86_64-unknown-linux-gnu
             python_sha256: ffa8f85f1b56e88b687f08d743d817015524b86a9365fd921243132b80f1a36d
+          # Linux ARM64 (aarch64), built on Ubuntu 24.04 ARM runner.
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            python: aarch64-unknown-linux-gnu
+            python_sha256: 2e1ba0e7f22e01c534caebf7f09e7820322bc0d055271d3434af671e8400f96f
           # Apple silicon: the runner's own. An Intel Mac's launcher finds no game it can run in
           # its copy and works on a checkout, as before.
           - name: macos
@@ -86,7 +91,7 @@ jobs:
           python-version: "3.12"
 
       - name: Compilers and what SDL3 is built against (Linux)
-        if: matrix.name == 'linux'
+        if: matrix.name == 'linux' || matrix.name == 'linux-arm64'
         run: |
           sudo apt-get update
           # LLVM 19 from apt.llvm.org: Clang, and libc++ to build into the game.
@@ -152,12 +157,18 @@ jobs:
           "$py" build/standalone/editor/extract.py --help > /dev/null
           game=build/standalone/port/build/release/openrac-rac1-pal; [ -f "$game" ] || game="$game.exe"
           "$game" --help || true
-          # On Linux: what the game asks of the system (only libc and libm, glibc 2.35 at most, Ubuntu 22.04's own).
+          # On Linux: what the game asks of the system (only libc and libm, glibc 2.35 at most on x86_64 Ubuntu 22.04).
           if [ "${{ matrix.name }}" = linux ]; then
             readelf -d "$game" | grep NEEDED
             need=$(objdump -T "$game" | grep -oE 'GLIBC_2\.[0-9]+' | sort -t. -k2 -n | tail -1)
             echo "needs $need"
             case "$need" in GLIBC_2.3[6-9]|GLIBC_2.[4-9]*) echo "the game needs a newer glibc than 2.35"; exit 1;; esac
+            if readelf -d "$game" | grep -q 'libstdc++'; then echo "the game needs the system's libstdc++"; exit 1; fi
+          fi
+          if [ "${{ matrix.name }}" = linux-arm64 ]; then
+            readelf -d "$game" | grep NEEDED
+            need=$(objdump -T "$game" | grep -oE 'GLIBC_2\.[0-9]+' | sort -t. -k2 -n | tail -1)
+            echo "needs $need"
             if readelf -d "$game" | grep -q 'libstdc++'; then echo "the game needs the system's libstdc++"; exit 1; fi
           fi
           tar -czf openrac-standalone.tar.gz -C build/standalone .
@@ -184,6 +195,8 @@ jobs:
             files: |
               launcher/target/release/bundle/nsis/*.exe
               launcher/target/release/bundle/msi/*.msi
+              launcher/target/release/bundle/nsis/*.zip
+              launcher/target/release/bundle/nsis/*.sig
           # The oldest Ubuntu the runners offer: what is built there starts
           # on newer systems too, not the other way round.
           - name: linux
@@ -193,12 +206,25 @@ jobs:
               launcher/target/release/bundle/deb/*.deb
               launcher/target/release/bundle/rpm/*.rpm
               launcher/target/release/bundle/appimage/*.AppImage
+              launcher/target/release/bundle/appimage/*.tar.gz
+              launcher/target/release/bundle/appimage/*.sig
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            args: "--bundles deb,rpm,appimage"
+            files: |
+              launcher/target/release/bundle/deb/*.deb
+              launcher/target/release/bundle/rpm/*.rpm
+              launcher/target/release/bundle/appimage/*.AppImage
+              launcher/target/release/bundle/appimage/*.tar.gz
+              launcher/target/release/bundle/appimage/*.sig
           # One program for Apple silicon and Intel.
           - name: macos
             os: macos-latest
             args: "--target universal-apple-darwin --bundles app,dmg"
             files: |
               launcher/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              launcher/target/universal-apple-darwin/release/bundle/macos/*.tar.gz
+              launcher/target/universal-apple-darwin/release/bundle/macos/*.sig
     defaults:
       run:
         working-directory: launcher
@@ -222,10 +248,11 @@ jobs:
           restore-keys: launcher-${{ matrix.name }}-
 
       - name: Tauri's system libraries
-        if: matrix.name == 'linux'
+        if: matrix.name == 'linux' || matrix.name == 'linux-arm64'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev patchelf rpm file
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2 || true
 
       - uses: actions/download-artifact@v4
         with:
@@ -245,7 +272,24 @@ jobs:
         shell: bash
         run: rm -rf target/release/bundle target/universal-apple-darwin/release/bundle
 
+      - name: Prepare signing key
+        if: env.RAW_KEY != ''
+        shell: bash
+        env:
+          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const tempDir = process.env.RUNNER_TEMP || "/tmp";
+            const keyPath = path.resolve(tempDir, "updater.key");
+            fs.writeFileSync(keyPath, process.env.RAW_KEY.trim());
+            fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_SIGNING_PRIVATE_KEY=${keyPath}\n`);
+          '
+
       - name: Build the installers
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           yarn install --immutable
           yarn tauri build ${{ matrix.args }}
@@ -254,7 +298,7 @@ jobs:
         with:
           name: openrac-launcher-${{ matrix.name }}
           path: ${{ matrix.files }}
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # The launcher built on Fedora itself (the release players run), as an .rpm made against
   # Fedora's own WebKitGTK and GTK.
@@ -304,9 +348,26 @@ jobs:
       - name: No installers from an earlier build
         run: rm -rf target/release/bundle
 
+      - name: Prepare signing key
+        if: env.RAW_KEY != ''
+        shell: bash
+        env:
+          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const tempDir = process.env.RUNNER_TEMP || "/tmp";
+            const keyPath = path.resolve(tempDir, "updater.key");
+            fs.writeFileSync(keyPath, process.env.RAW_KEY.trim());
+            fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_SIGNING_PRIVATE_KEY=${keyPath}\n`);
+          '
+
       # Its file is named as the one built on Ubuntu is: "fc44" tells them apart on a release,
       # which takes one file of a name.
       - name: Build the installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           yarn install --immutable
           yarn tauri build --bundles rpm
@@ -327,11 +388,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: openrac-launcher-*
           path: installers
           merge-multiple: true
+      - name: Generate updater manifest
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 tools/updater_manifest.py installers --tag "$TAG" --repo "$GH_REPO" --output installers/latest.json
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -342,5 +410,5 @@ jobs:
           mapfile -d '' files < <(find installers -type f -print0 | sort -z)
           printf '%s\n' "${files[@]}"
           gh release create "$TAG" --draft --title "OpenRAC Launcher ${TAG#launcher-v}" \
-            --notes "Installers built by the launcher workflow from $GITHUB_SHA. They are not signed." \
+            --notes "Installers built by the launcher workflow from $GITHUB_SHA." \
             "${files[@]}"

@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <string>
@@ -66,6 +67,9 @@ struct GameState {
     renderer::Vec3 camera_position{};
     renderer::Vec3 forward{1, 0, 0}, left{0, 1, 0}, up{0, 0, 1};
     float tan_half_fov_x = 0.63f, tan_half_fov_y = 0.48f;
+    /** The focal lengths in the view context, in the chip's pixels (+0xC0 and +0xD4, a 32nd of
+     *  them): 256 / 0.63 and 208 / 0.488 for the frame. 0 when unreadable. */
+    float focal_x = 0.0f, focal_y = 0.0f;
     std::vector<LiveMoby> mobys;
     /** The fog UpdateFog left in the view context (+0x218): FOGCOL (display bytes, 0..1), the
      *  depths it starts and ends at (raw units, game units x 1024) and the GS fog value F at those
@@ -88,6 +92,9 @@ struct GameState {
  * @return The state; empty moby list when the table pointers are not inside memory.
  */
 GameState read_game_state(std::span<const std::uint8_t> ram, const GameAddresses& a);
+
+/** The moby at address m as the renderers place it; none when its position or scale is unusable. */
+std::optional<LiveMoby> read_live_moby(std::span<const std::uint8_t> ram, std::uint32_t m);
 
 /** The display list of the frame being shown (the buffer VU1_swapChain retired last). */
 std::uint32_t shown_chain(std::span<const std::uint8_t> ram, const GameAddresses& a);

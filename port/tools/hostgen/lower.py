@@ -603,6 +603,8 @@ class Unit:
         for vid in order:
             d = self.decls.get(vid)
             if d is not None and d.get("kind") == "VarDecl" and vid not in fn.memory:
+                if d.get("storageClass") == "extern":
+                    continue
                 if d.get("storageClass") == "static":
                     fn.statics[vid] = f"{d.get('name')}_at_"
                 elif self._vla_length(d) is not None:
@@ -697,9 +699,10 @@ class Unit:
             n = stack.pop()
             k = n.get("kind")
             if k == "VarDecl":
-                local_ids.add(n["id"])
-                if n.get("storageClass") != "extern" and self.cls(self.ty(n)) in ("rec", "arr"):
-                    out.add(n["id"])
+                if n.get("storageClass") != "extern":
+                    local_ids.add(n["id"])
+                    if self.cls(self.ty(n)) in ("rec", "arr"):
+                        out.add(n["id"])
             elif k == "UnaryOperator" and n.get("opcode") == "&":
                 target = _strip_parens(_inner(n)[0])
                 while target.get("kind") in ("MemberExpr", "ArraySubscriptExpr") and not (
@@ -709,7 +712,7 @@ class Unit:
                         target = _strip_parens(_inner(target)[0])
                 if target.get("kind") == "DeclRefExpr":
                     ref = target["referencedDecl"]
-                    if ref.get("kind") in ("VarDecl", "ParmVarDecl"):
+                    if ref.get("kind") in ("VarDecl", "ParmVarDecl") and ref.get("storageClass") != "extern":
                         out.add(ref["id"])
             stack.extend(_inner(n))
         for p in params:
@@ -1337,15 +1340,15 @@ class Unit:
             addr = f"OPENRAC_DATA({addr})"
         else:
             level = self._shared_level()
-            low = (getattr(self.program, "relocate", None) or LEVEL_RELOCATE)[0]
+            low, high = getattr(self.program, "relocate", None) or LEVEL_RELOCATE
             copies = self._copies_in_one_program()
-            if copies is not None and low <= address < LEVEL_RELOCATE[1]:
+            if copies is not None and low <= address < high:
                 # Copies of this function in one program, each on its own globals: the one the
                 # running copy uses (guest.h).
                 home, canon, size = copies
                 self.fn.uses_self = True
                 addr = f"openrac_data_in_copy({home}, {hexaddr(canon)}, {size}u, openrac_self_, {addr})"
-            elif level is not None and low <= address < LEVEL_RELOCATE[1]:
+            elif level is not None and low <= address < high:
                 addr = f"OPENRAC_LDATA({level}, {addr})"
         return LV(self.gref(t, addr), addr)
 
@@ -1472,6 +1475,20 @@ class Unit:
             target = _strip_parens(_inner(c)[0])
             if target.get("kind") == "DeclRefExpr" and target["referencedDecl"].get("kind") == "FunctionDecl":
                 sym = self._callee_symbol(target)
+                # Calls to a folded function and to the variants split off it (split_places.tsv)
+                # are counted together, in the order they come: retail's k-th call to any of the
+                # function's places is the k-th of them all (openrac_folded_call). Counted per name,
+                # a function calling three variants before the function itself took its call for the
+                # first variant's: the frame draw ran draw callback list 3 in place of list 1, and
+                # no list-1 callback (the nanotech crates' sphere among them) was ever drawn.
+                parent = getattr(self.program, "split_parent", {}).get(sym, sym)
+                family_k = None
+                if self.fn is not None and parent in getattr(self.program, "splits", {}):
+                    family = getattr(self.fn, "family_calls", None)
+                    if family is None:
+                        family = self.fn.family_calls = {}
+                    family_k = family.get(parent, 0)
+                    family[parent] = family_k + 1
                 places = self._folded_places(sym)
                 copy = self._small_folded()
                 callee_places = self.program.code_places(sym) if copy is not None and not places else []
@@ -1522,6 +1539,8 @@ class Unit:
                         calls = self.fn.folded_calls = {}
                     k = calls.get(sym, 0)
                     calls[sym] = k + 1
+                    if family_k is not None:
+                        k = family_k
                     own_size = getattr(self.program, "sizes", {}).get(self.fn.name) or 0
                     fp = (f"openrac_folded_call((const uint32_t[]){{{literal}}}, {len(places)}, "
                           f"{self._own_address()}, {own_size}u, {k})")

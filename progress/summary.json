@@ -4,13 +4,13 @@
     "region": "PAL (Europe)",
     "serial": "SCES_509.16",
     "progress": {
-      "matched_code": 3013116,
+      "matched_code": 3427760,
       "total_code": 3712808,
-      "matched_functions": 4360,
+      "matched_functions": 4725,
       "total_functions": 5109,
-      "fuzzy_percent": 82.14,
-      "date": "2026-10-13",
-      "percent": 81.15
+      "fuzzy_percent": 93.0,
+      "date": "2026-10-16",
+      "percent": 92.32
     },
     "note": "The boot executable and all 19 level programs. Handwritten assembly and linker remnants count as finished; staged near misses (nonmatching/) give the fuzzy figure."
   },
@@ -19,13 +19,13 @@
     "region": "NTSC-U (North America)",
     "serial": "SCUS_971.99",
     "progress": {
-      "matched_code": 3069248,
-      "total_code": 3546268,
-      "matched_functions": 3933,
-      "total_functions": 4233,
-      "fuzzy_percent": 87.88,
-      "date": "2026-10-13",
-      "percent": 86.55
+      "matched_code": 3274996,
+      "total_code": 3548100,
+      "matched_functions": 4078,
+      "total_functions": 4246,
+      "fuzzy_percent": 93.5,
+      "date": "2026-10-16",
+      "percent": 92.3
     },
     "note": "Lombyte commits no report: its CI publishes one on the project's progress branch, which `openrac.py progress --fetch` copies to progress/sources/. Byte-weighted over the boot executable and the 19 level programs."
   },
@@ -34,13 +34,13 @@
     "region": "NTSC-U (North America)",
     "serial": "SCUS_972.68",
     "progress": {
-      "matched_code": 240404,
-      "total_code": 5538056,
-      "matched_functions": 2350,
-      "total_functions": 9101,
-      "fuzzy_percent": 4.34,
-      "date": "2026-10-12",
-      "percent": 4.34
+      "matched_code": 318088,
+      "total_code": 5533600,
+      "matched_functions": 2941,
+      "total_functions": 9100,
+      "fuzzy_percent": 5.75,
+      "date": "2026-10-15",
+      "percent": 5.75
     },
     "note": "Every distinct function of the boot executable and the 27 level programs counted once (a function many levels share is one function); matched when its C links into a program that equals retail."
   },
@@ -54,7 +54,7 @@
       "matched_functions": 1292,
       "total_functions": 31316,
       "fuzzy_percent": 1.28,
-      "date": "2026-10-01",
+      "date": "2026-10-03",
       "percent": 1.28
     },
     "note": "The committed report is from 2026-10-01. At bfd8278, tools/pr_check.py --target all counts frontbin 1,800 of 1,867 entries final (1,419 functions in C), boot_elf 2,265 of 2,809 (1,580 in C) and i5bootn 191 of 199 (35 in C); the level programs are counted but not compiled yet."
@@ -69,7 +69,7 @@
       "matched_functions": 243,
       "total_functions": 15056,
       "fuzzy_percent": 0.51,
-      "date": "2026-10-05",
+      "date": "2026-10-04",
       "percent": 0.51
     },
     "note": "Functions are compared one by one with most 16-bit immediates masked (symbols, struct offsets and small constants are not checked), and nothing is linked yet, so this is a looser proof than the other games'. Overlay code identical to resident code is counted once."

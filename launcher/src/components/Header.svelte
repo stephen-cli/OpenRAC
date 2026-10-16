@@ -21,10 +21,19 @@
 </script>
 
 <header class="site-header">
-  <button class="brand" onclick={() => (app.page = "library")} aria-label="OpenRAC: your games">
+  <button
+    class="brand"
+    onclick={() => (app.page = "library")}
+    aria-label="OpenRAC: your games"
+    title={app.info?.version ? `OpenRAC Launcher ${app.info.version}` : undefined}
+  >
     <img src="/wrench.webp" alt="" width="40" height="40" />
     <span>Open<b>RAC</b></span>
-    <small>Launcher</small>
+    <!-- The launcher's version beside its name, on every page (also in the tooltip, for a narrow
+         window that hides the tag). -->
+    <small
+      >Launcher{#if app.info?.version}<span class="ver">{app.info.version}</span>{/if}</small
+    >
   </button>
 
   <nav>
@@ -53,6 +62,16 @@
   {/if}
 
   <div class="end">
+    {#if app.update}
+      {@const update = app.update}
+      <button
+        class="update"
+        onclick={() => (app.showUpdateModal = true)}
+        title={`Version ${update.tag} is available!\nClick to inspect or update.`}
+      >
+        ▲ Update {update.version}
+      </button>
+    {/if}
     {#if !inTauri}<span class="preview">Browser preview</span>{/if}
     <button class="site" onclick={() => void api.openUrl(SITE_URL)}>openrac.dev</button>
     <button class="discord" onclick={() => void api.openUrl(DISCORD_URL)}>Discord</button>
@@ -125,6 +144,14 @@
     border-radius: 999px;
     padding: 2px 8px;
     margin-left: 4px;
+  }
+
+  .brand .ver {
+    margin-left: 6px;
+    padding-left: 6px;
+    border-left: 1px solid rgb(0 0 0 / 0.3);
+    letter-spacing: 0.06em;
+    text-transform: none;
   }
 
   nav {
@@ -223,6 +250,25 @@
   .discord:hover {
     background: var(--bar-ink);
     color: #fff;
+  }
+
+  .update {
+    font-size: 13px;
+    font-weight: 700;
+    background: #00d26a;
+    color: #052611;
+    border: 1px solid rgb(0 0 0 / 0.15);
+    border-radius: 999px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition:
+      transform 0.15s ease,
+      background 0.15s ease;
+  }
+
+  .update:hover {
+    background: #00ea76;
+    transform: scale(1.03);
   }
 
   /* A narrow window keeps the tabs: the site link and the tag give way first. */

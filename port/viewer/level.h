@@ -32,7 +32,9 @@ namespace openrac::viewer {
 using renderer::Mat4;
 using renderer::Vec3;
 
-inline constexpr int kManifestFormat = 1;
+// The extracted levels' format (editor/port.py FORMAT); --check-levels writes verified-<format>.json,
+// which the launcher waits for, so older exports are read from the disc again before Play.
+inline constexpr int kManifestFormat = 3;
 
 struct Vertex {
     float position[3];
@@ -50,6 +52,7 @@ struct Vertex {
 
 struct Material {
     int image = -1;       // index into LevelData::images; -1 draws white
+    bool metal = false;   // a metal packet's chrome or glass map (metal_*): drawn in the shine pass
     bool cutout = false;  // glTF alphaMode MASK: alpha test at 0.5
     bool blend = false;   // glTF alphaMode BLEND
     std::array<float, 4> colour{1.0f, 1.0f, 1.0f, 1.0f};
@@ -59,6 +62,7 @@ struct Primitive {
     std::uint32_t first_index = 0;
     std::uint32_t index_count = 0;
     int material = 0;
+    int shell = -1;  // a sky's: the game's shell number (its node Sky_N), for the shell's matrix
 };
 
 struct Model {
@@ -82,6 +86,9 @@ struct Instance {
     // 0..1; w = 1 to light it) and its ambient colour (RGB bytes / 128).
     std::array<float, 4> moby_light{0.0f, 0.0f, 0.0f, 0.0f};
     std::array<float, 4> moby_ambient{0.5f, 0.5f, 0.5f, 1.0f};
+    // How a live moby is blended, as MobyProc picks it (the explosions' flashes and fireballs,
+    // a pickup fading in): 0 drawn as it is, 1 blended at its alpha (tint's w), 2 added.
+    int blend = 0;
 };
 
 // What the viewer draws, in the game's order.
@@ -100,6 +107,12 @@ const char* layer_name(Layer layer);
 
 struct LevelData {
     std::filesystem::path dir;
+    // A mod's folder for this level (the --mods folder's level_NN, editor/overrides.py): a mesh or
+    // texture there is read in place of the level's own of the same path (an upscaled texture, a
+    // replacement moby model). Empty without mods.
+    std::filesystem::path overrides;
+    int overridden_models = 0;
+    int overridden_images = 0;
     int level = -1;
     std::vector<Vertex> vertices;
     std::vector<std::uint32_t> indices;
@@ -125,7 +138,10 @@ struct LevelData {
 // Load a level directory. Returns false with a reason if the manifest or a
 // mesh cannot be read; a missing texture only counts in missing_images.
 // `edited`, when it names a file, is a placements file from a mod (the editor's
-// pack): the lists it has ("ties", "shrubs") stand for the level's own.
+// pack): the lists it has ("ties", "shrubs") stand for the level's own. The
+// folder it is in is the mod's folder for the level (LevelData::overrides): its
+// meshes and textures are read in place of the level's own of the same path,
+// whether or not the placements file itself is there.
 bool load_level(
     const std::filesystem::path& dir, LevelData& out, std::string& error,
     const std::filesystem::path& edited = {}

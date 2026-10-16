@@ -9,8 +9,8 @@ The standard is one lowercase `<type>: <summary>` prefix per subject
 (`decomp`, `overlay`, `docs`, `chore`, `fix`, `config`), with no repeated scope token.
 
 The hook also rewrites the message file before validation: every
-`co-authored-by:` and `claude-session:` trailer line (case-insensitive) is
-dropped, so agent trailers and links to private AI sessions never enter the
+`claude-session:` line and every `co-authored-by:` line (case-insensitive)
+except a person's GitHub noreply credit is dropped, so agent trailers and links to private AI sessions never enter the
 history.  A message that still contains a link to an AI chat or agent session
 anywhere else is rejected.  Messages without such lines are left untouched,
 byte for byte.
@@ -35,11 +35,13 @@ NON_IMPERATIVE_RE = re.compile(
 
 # Prefer the shared validator from a tooling checkout; fall back to the local rule.
 NAMING = Path(os.environ.get("RNC_COMMIT_NAMING", ""))
-problems: list[str] = []
 
 # Trailer form only (line starts with the token + ":"): prose that merely
 # mentions the term, e.g. in a commit about this hook, must survive.
-TRAILER_RE = re.compile(r"^\s*(?:co[-_]?authored[-_]?by|claude[-_]?session)\s*:",
+# A person credited by their GitHub noreply address is kept (see
+# docs/commit-messages.md); every other co-author line is an agent trailer.
+TRAILER_RE = re.compile(r"^\s*(?:claude[-_]?session\s*:|co[-_]?authored[-_]?by\s*:"
+                        r"(?!\s*[\w-]+ <\d+\+[\w-]+@users\.noreply\.github\.com>\s*$))",
                         re.IGNORECASE | re.MULTILINE)
 # Links to private AI chat/agent sessions must never be published.
 SESSION_LINK_RE = re.compile(r"(?:claude\.ai|chatgpt\.com|chat\.openai\.com)/\S*(?:session|chat|share|c/)",
@@ -118,23 +120,29 @@ if NAMING.is_file():
     spec.loader.exec_module(module)
     validate = module.validate_subject
 
-MSG = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-if MSG is not None and strip_trailers(MSG):
-    print("commit-msg: dropped co-authored-by line(s) from the message", file=sys.stderr)
-text = MSG.read_text(errors="replace") if MSG else ""
-subject = ""
-for line in text.splitlines():
-    if line.strip() and not line.lstrip().startswith("#"):
-        subject = line
-        break
-problems = validate(subject)
-if SESSION_LINK_RE.search(text):
-    problems.append("message links to a private AI session; remove the link")
-if MSG is not None:
-    problems += agent_identities()
-if problems:
-    for problem in problems:
-        print(f"commit-msg: {problem}", file=sys.stderr)
-    print(f"commit-msg: got '{subject.strip()}'", file=sys.stderr)
-    print("commit-msg: see docs/commit-messages.md", file=sys.stderr)
-    sys.exit(1)
+
+def main() -> None:
+    MSG = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    if MSG is not None and strip_trailers(MSG):
+        print("commit-msg: dropped co-authored-by line(s) from the message", file=sys.stderr)
+    text = MSG.read_text(errors="replace") if MSG else ""
+    subject = ""
+    for line in text.splitlines():
+        if line.strip() and not line.lstrip().startswith("#"):
+            subject = line
+            break
+    problems = validate(subject)
+    if SESSION_LINK_RE.search(text):
+        problems.append("message links to a private AI session; remove the link")
+    if MSG is not None:
+        problems += agent_identities()
+    if problems:
+        for problem in problems:
+            print(f"commit-msg: {problem}", file=sys.stderr)
+        print(f"commit-msg: got '{subject.strip()}'", file=sys.stderr)
+        print("commit-msg: see docs/commit-messages.md", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

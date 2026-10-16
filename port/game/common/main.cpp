@@ -58,6 +58,7 @@
 #include "openrac/sound_engine.h"
 #include "platform/audio.h"
 #include "platform/pump.h"
+#include "renderer/direct.h"
 #include "renderer/texture.h"
 #include "viewer/level.h"
 #include "viewer/moby_pose.h"
@@ -76,6 +77,8 @@ int openrac_game_no_card = 0;
 int openrac_game_start_level = -1;
 void (*openrac_game_on_frame)(unsigned frame) = nullptr;
 int (*openrac_game_bolts)(void) = nullptr;
+int (*openrac_game_in_cutscene)(void) = nullptr;
+void (*openrac_game_skip)(void) = nullptr;
 }
 
 namespace {
@@ -104,12 +107,10 @@ gaddr g_chain = 0;  // the display list sent this frame
 bool g_vsync_since_kick = true;  // a vertical blank was waited for since the last frame was sent
 bool g_window = false;
 std::chrono::steady_clock::time_point g_next_frame;
-// The game's ticks a second: the description's (hostgen.json's frame_rate) until the game sets a
-// video mode, then that mode's field rate (openrac_game_set_video_mode).
-int g_tick_rate = 0;
-
+// The game's ticks a second: 60 for every version. The PAL game runs in its own 60 Hz mode
+// (options_menu.cpp keeps it there), so its time base is a sixtieth of a second too.
 int tick_rate() {
-    return g_tick_rate > 0 ? g_tick_rate : openrac_game.frame_rate > 0 ? openrac_game.frame_rate : 60;
+    return 60;
 }
 
 std::string program_name() {
@@ -452,20 +453,27 @@ void openrac_game_set_display(const openrac_game_display* d) {
         last = *d;
         log::info("display: {}x{} at page {} (width {}), format {:#x}, at {},{}", d->width, d->height,
                   d->frame_base, d->frame_width, d->psm, d->x, d->y);
+        // The draw buffer follows the display buffer: a 512-line display (PAL) puts it at block
+        // 0x1000, 448 lines tall, the 448-line one of a 60 Hz mode at 0xE00, 416 lines tall. Missed,
+        // the game's copy of the draw buffer into the display was drawn from an empty texture over
+        // the picture (the PAL game in its 60 Hz mode showed its menus over black), and the frame
+        // the pause menu reads back came out 32 lines short (a black band at the bottom).
+        if (d->frame_width > 0 && d->height > 0) {
+            renderer::set_draw_buffer_block(static_cast<std::uint32_t>(d->frame_base) * 32
+                                                + static_cast<std::uint32_t>(d->height * d->frame_width),
+                                            d->height >= 512 ? 448 : 416);
+        }
     }
 }
 
 // The video mode the game asks the console for (sceGsResetGraph, SetGsCrt): 2 is NTSC, 60 fields a
 // second, 3 is PAL, 50. The game's tick is one field: a PAL game that changes to its 60 Hz mode
 // counts its time in sixtieths from then on (rac1/pal: func_002157C0 sets the time base when a
-// level starts), so the port's tick follows the mode the game set, whatever the display shows.
+// level starts). The port keeps the PAL game in that mode and ticks every game 60 times a second.
 void openrac_game_set_video_mode(int interlace, int mode, int field_mode) {
-    const int rate = mode == 3 ? 50 : mode == 2 ? 60 : 0;
+    // Logged only: the port paces every game at 60 Hz whatever the mode (tick_rate()).
     log::info("video mode {:#x} (interlace {}, field mode {}){}", mode, interlace, field_mode,
-              rate != 0 ? std::format(": the game ticks {} times a second", rate) : std::string());
-    if (rate != 0) {
-        g_tick_rate = rate;
-    }
+              mode == 3 ? " (PAL 50 Hz: the port keeps 60)" : "");
 }
 
 void openrac_game_load_image(const openrac_game_image* image) {
@@ -646,16 +654,18 @@ int openrac_game_play_movie(uint32_t lsn, uint32_t bytes, int channel, int start
 #endif
 }
 
-void openrac_game_mobys_drawn(gaddr first, int count) {
+int openrac_game_mobys_drawn(gaddr first, int count) {
 #ifdef OPENRAC_FRONTEND
     if (g_window && count > 0) {
         const auto* ram = runtime::Memory::get().base();
         frontend::mobys_drawn(std::span<const std::uint8_t>(ram, 32u * 1024 * 1024), first, count);
+        return count <= 0xFF ? 1 : 0;
     }
 #else
     (void)first;
     (void)count;
 #endif
+    return 0;
 }
 
 void openrac_game_effect_quad(const openrac_game_quad* quad) {
@@ -666,6 +676,17 @@ void openrac_game_effect_quad(const openrac_game_quad* quad) {
     }
 #else
     (void)quad;
+#endif
+}
+
+void openrac_game_sky_shell(int shell, const float* matrix) {
+#ifdef OPENRAC_FRONTEND
+    if (g_window) {
+        frontend::sky_shell(shell, matrix);
+    }
+#else
+    (void)shell;
+    (void)matrix;
 #endif
 }
 
@@ -836,13 +857,16 @@ extern "C" __declspec(dllimport) unsigned int __stdcall timeBeginPeriod(unsigned
 #ifdef OPENRAC_FRONTEND
 // --check-levels: every level the window draws from (level_00 to level_18, the flight world 98 and
 // the title's 99) is read as the window reads it, without a window. A level that cannot be read,
-// or that has nothing to draw, is named with the reason; when all are whole, `verified.json` is
-// written beside them, which the launcher asks for before it offers Play. A game started over
-// levels that are missing or cut short shows its HUD over a black world and says nothing else.
+// or that has nothing to draw, is named with the reason; when all are whole, `verified-<format>.json`
+// (the extracted levels' format, viewer::kManifestFormat) is written beside them, which the launcher
+// asks for before it offers Play. A game started over levels that are missing or cut short shows
+// its HUD over a black world and says nothing else; levels of an older format fail the check (their
+// manifests are refused), so the launcher reads them from the disc again.
 static int check_levels(const fs::path& levels) {
-    const fs::path stamp = levels / "verified.json";
+    const fs::path stamp = levels / std::format("verified-{}.json", viewer::kManifestFormat);
     std::error_code ignored;
     fs::remove(stamp, ignored);
+    fs::remove(levels / "verified.json", ignored);  // the stamp before formats were named
     std::vector<int> ids;
     for (int i = 0; i < 19; ++i) {
         ids.push_back(i);
@@ -881,7 +905,8 @@ static int check_levels(const fs::path& levels) {
         return 1;
     }
     if (std::FILE* f = std::fopen(stamp.string().c_str(), "wb")) {
-        std::fprintf(f, "{\"format\": 1, \"levels\": %zu, \"program\": \"%s\"}\n", ids.size(), program_name().c_str());
+        std::fprintf(f, "{\"format\": %d, \"levels\": %zu, \"program\": \"%s\"}\n", viewer::kManifestFormat, ids.size(),
+                     program_name().c_str());
         std::fclose(f);
     } else {
         log::error("cannot write {}", stamp.string());

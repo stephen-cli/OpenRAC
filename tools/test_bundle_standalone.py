@@ -28,14 +28,14 @@ class PlayerActions(unittest.TestCase):
         self.assertNotIn("--levels", play["args"])      # the game's own default is <data>/port
         # Play waits for the check's stamp, and the check for the export.
         check = self.pal["port-levels-check"]
-        self.assertEqual(check["makes"], "{data}/port/verified.json")
+        self.assertEqual(check["makes"], "{data}/port/verified-3.json")
         self.assertNotIn("--levels", check["args"])
         self.assertEqual([need["path"] for need in check["needs"]], [self.pal["port-levels"]["artifact"]])
         self.assertEqual([need["path"] for need in play["needs"]], [check["makes"]])
         self.assertNotIn("python", play.get("requires", []))
 
     def test_every_action_starts_in_a_folder_the_copy_has(self):
-        # 0.4.0 started the game in games/rac1/pal, which only a checkout has: Play failed with
+        # 0.4.0 started the game in games/rac1, which only a checkout has: Play failed with
         # "the directory name is invalid".
         self.assertEqual(self.pal["play"]["cwd"], "{data}")
         self.assertIn(self.pal["port-levels"]["cwd"], (".", "{root}"))

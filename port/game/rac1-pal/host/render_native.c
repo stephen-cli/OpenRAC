@@ -124,7 +124,22 @@ static void mark_drawn_mobys(gaddr first, int count) {
 int func_00212658(int a0, int a1, int a2, int a3) {
     mark_drawn_mobys((gaddr)a0, a2);
     openrac_game_draw(OPENRAC_DRAW_MOBYS);
-    openrac_game_mobys_drawn((gaddr)a0, a2);
+    if (openrac_game_mobys_drawn((gaddr)a0, a2)) {
+        /* A moby marker in the display list (as ui2d.c's quad markers: DMA cnt and VIF DIRECT of two
+         * quadwords, a PACKED GIF tag of one A+D register, the A+D write to NOP), the count in bits
+         * 32-39 and the first moby in the low word: the mobys of a screen the game renders to a
+         * texture (the vendor's item and salesman) are drawn into it there. */
+        const gaddr at = GREF(gaddr, OPENRAC_DATA(0x00161000u));
+        GREF(uint32_t, at + 0) = 0x10000002u;
+        GREF(uint32_t, at + 4) = 0;
+        GREF(uint32_t, at + 8) = 0;
+        GREF(uint32_t, at + 12) = 0x50000002u;
+        GREF(uint64_t, at + 16) = 1ull | (1ull << 15) | (1ull << 60);
+        GREF(uint64_t, at + 24) = 0xEull;
+        GREF(uint64_t, at + 32) = (0x4D42ull << 48) | ((uint64_t)(a2 & 0xFF) << 32) | (uint32_t)a0;
+        GREF(uint64_t, at + 40) = 0x7Full;
+        GREF(gaddr, OPENRAC_DATA(0x00161000u)) = at + 48;
+    }
     (void)a0;
     (void)a1;
     (void)a2;
@@ -136,9 +151,13 @@ int func_00212658(int a0, int a1, int a2, int a3) {
  * PartProc, the particle renderer: each live record of the pool (2048 records of 0x40 bytes at the
  * pool pointer; byte 1 bit 7 marks a free one; the highest live index is kept with the pool's
  * counters) goes to the window, which draws it as the game's VU1 sprite program does
- * (openrac_game_particle). Its texture is entry +0x02 of the particle texture table, which sits
- * 0x200 bytes past the pool's allocation bitmap: (palette address << 4 | CLUT offset, pixels address
- * << 4 | log2 side).
+ * (openrac_game_particle). Its texture is entry +0x02 of the particle texture table, 128 words
+ * 0x200 bytes past the pool's allocation bitmap (level 0's 0x1B1E00, which PartProc copies to the
+ * scratchpad each frame) read at entry * 8: the low half the palette's address << 4 | the CLUT
+ * offset, the high half the pixels' address << 4. The loader (func_00219704) always gives the
+ * texture 32 x 32 (0x505). Read as two words an entry with the size from a nibble, most particles
+ * named another texture or a single texel: the explosions' smoke came out as opaque white or noisy
+ * squares, and the nanotech crates' orbs as nothing.
  */
 void func_00218B10(void) {
     if (openrac_guest_overlay() < 0) {
@@ -149,7 +168,7 @@ void func_00218B10(void) {
     const gaddr pool = GREF(gaddr, OPENRAC_LDATA(0, 0x0016022Cu));
     const int high = GREF(int, OPENRAC_LDATA(0, 0x00160234u));
     const gaddr table = OPENRAC_LDATA(0, 0x001B1C00u) + 0x200;
-    if (pool == 0 || pool >= 0x01FE0000u || table >= 0x01FFF000u) {
+    if (pool == 0 || pool >= 0x01FE0000u) {
         return;
     }
     for (int i = 0; i <= high && i < 2048; ++i) {
@@ -157,10 +176,9 @@ void func_00218B10(void) {
         if ((r[1] & 0x80) != 0) {
             continue;
         }
-        uint64_t lo, hi;
-        memcpy(&lo, G(table + (gaddr)r[2] * 16), 8);
-        memcpy(&hi, G(table + (gaddr)r[2] * 16 + 8), 8);
-        openrac_game_particle(r, (uint32_t)(hi >> 4), (uint32_t)(lo >> 4), (int)(hi & 0xF));
+        uint64_t entry;
+        memcpy(&entry, G(table + (gaddr)r[2] * 8), 8);
+        openrac_game_particle(r, (uint32_t)(entry >> 32) >> 4, (uint32_t)entry >> 4, 5);
     }
 }
 
@@ -212,6 +230,18 @@ int func_0022B648(int a0) {
 void func_0022B8F8(gaddr a0, gaddr a1) {
     (void)a0;
     (void)a1;
+}
+
+/*
+ * SkyDrawShell(shell): the sky code (the levels' skies, the flight's DrawSkyShells) builds each
+ * shell's matrix at D_001D9A70 before drawing it: its turn, scale and, in the flight, the
+ * translation that moves the stars past the ship. The window draws the shells natively with it.
+ */
+void func_0022C9A8(int shell) {
+    float m[16];
+    memcpy(m, G(OPENRAC_DATA(0x001D9A70u)), sizeof(m));
+    openrac_game_sky_shell(shell, m);
+    func_0022C9A8__game(shell);
 }
 
 /* SkyDrawShellTextured */
@@ -382,10 +412,6 @@ int func_L00_002963D8(void) {
     return 0;
 }
 
-/* tieproc_00299108.c: a renderer of the console's (the port draws natively) */
-void func_L00_00299B68(int a0) {
-    (void)a0;
-}
 /* moby_anim_eval_chain (hand-written VU0, 2640 bytes): the pose matrices of the joints marked in
  * a1 for the moby a0, into the scratchpad (MobyGetBoneMatrix reads them: the menu panels' corners,
  * items in Ratchet's hands). The port's evaluator (viewer/moby_pose, after ReRAC's evaluate_chains;

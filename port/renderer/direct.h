@@ -60,11 +60,10 @@ struct DirectConfig {
     // The game's frame buffer: 512 x 448 for PAL Ratchet & Clank.
     int screen_width = 512;
     int screen_height = 448;
-    // The game's frame buffers (block addresses): what it displays and what it draws the frame
-    // in (PAL Ratchet & Clank: the 512-line display buffer at 0, the draw buffer at 0x1000). Any
+    // The game's display buffer (a block address; its draw buffer is g_draw_buffer_block). Any
     // other target is drawn off screen, to be sampled later, however wide it is (the save page
     // draws its 512 x 128 hint panel at 0x1E00, right after the draw buffer).
-    std::uint32_t frame_blocks[2] = {0x0000, 0x1000};
+    std::uint32_t display_block = 0x0000;
 };
 
 // One vertex as the GPU gets it (32 bytes).
@@ -119,6 +118,13 @@ struct DirectDraw {
     DirectState state;
     std::uint32_t first = 0;  // first vertex
     std::uint32_t count = 0;  // vertices (three per triangle)
+    // Not 0: no vertices, the mobys a moby marker names, drawn into state.target here
+    // (FrameInput::target_mobys), about the target's centre (its XYOFFSET's 2048), in its pixels.
+    std::uint64_t mobys = 0;
+    float centre_x = 0.0f, centre_y = 0.0f;
+    // The first mobys since the target was last drawn into otherwise (a new panel): its depth is
+    // cleared first. Mobys drawn one after another (Ratchet, then the Clank on his back) share it.
+    bool clear_depth = false;
 };
 
 // Debugging: while set, every sprite and primitive the 2D path draws is logged (OPENRAC_DUMP_DRAWS).
@@ -140,11 +146,17 @@ struct FrameSnapshot {
 };
 inline FrameSnapshot g_frame_snapshot;
 
-// The draw buffer the games read back and write into (PAL Ratchet & Clank: block 0x1000, 8 x 64
-// pixels wide, 448 lines).
-inline constexpr std::uint32_t kDrawBufferBlock = 0x1000;
+// The draw buffer the games draw the frame in, read back and write into: 8 x 64 pixels wide, right
+// after the display buffer. Where it is and how tall follow the display the game sets
+// (set_draw_buffer_block): PAL Ratchet & Clank's 512-line display puts it at block 0x1000, 448
+// lines tall; the 448-line display of its 60 Hz mode (and of the NTSC games) at 0xE00, 416 lines.
+inline std::uint32_t g_draw_buffer_block = 0x1000;
+inline int g_draw_buffer_lines = 448;
 inline constexpr std::uint32_t kDrawBufferWidth = 8;
-inline constexpr int kDrawBufferLines = 448;
+inline void set_draw_buffer_block(std::uint32_t block, int lines) {
+    g_draw_buffer_block = block;
+    g_draw_buffer_lines = lines;
+}
 
 // Where pixel (x, y) of a PSMCT32 rectangle at block `base`, `width` 64-pixel units wide, is in the
 // draw buffer: through the chip's 64 x 32 pixel pages (the same pages whichever buffer width the
@@ -162,10 +174,15 @@ public:
     bool gif(std::span<const std::uint8_t> input);
 
     // The 2D layer's quads drawn natively: a marker in the 2D path (an A+D write to the NOP
-    // register, kUiQuadMarker in the value's top 16 bits, the index in its low bits) draws
-    // quads[index] there, in the context the packets before it set up.
+    // register, kUiQuadMarker in the value's top 16 bits, the index in its low 24 bits; bits 24-29
+    // name the tick that recorded it, which the frontend reads) draws quads[index] there, in the
+    // context the packets before it set up.
     void set_ui_quads(std::span<const UiQuad> quads) { m_ui_quads = quads; }
     static constexpr std::uint64_t kUiQuadMarker = 0x4E55;
+    // Mobys the game drew while rendering to a texture: a marker of the same form, kMobyMarker in
+    // the top 16 bits, the mobys' count in bits 32-39 and the first's address in the low 32,
+    // becomes a draw of no vertices (DirectDraw::mobys) in the target being drawn.
+    static constexpr std::uint64_t kMobyMarker = 0x4D42;
 
     // A VIF1 stream carrying GIF data in DIRECT and DIRECTHL commands, with
     // the bookkeeping codes around them (NOP, FLUSH, STCYCL...). A command
@@ -315,8 +332,11 @@ public:
     void flush(RenderState& state, bool background = false);
 
     GifInterpreter& interpreter() { return *m_interpreter; }
+    // The frame being drawn, for its moby markers (FrameInput::target_mobys).
+    void set_frame_input(const FrameInput* input) { m_frame = input; }
 
 private:
+    const FrameInput* m_frame = nullptr;
     void apply(const DirectState& state, RenderState& render_state);
     void draw(const DirectDraw& draw, RenderState& render_state);
     bool m_background = false;  // flush(): the part before the world
@@ -347,7 +367,7 @@ private:
 
     struct Uniforms {
         int textured, tcc, tfx, tex_alpha_scale, fog_enable, fog_colour, alpha_test, alpha_ref,
-            alpha_keep_failing, distance_field, tex_T1;
+            alpha_keep_failing, distance_field, tex_T1, pixel_offset;
     } m_uniforms{};
 };
 
@@ -363,6 +383,7 @@ public:
     void render(const FrameInput& input, RenderState& state) override {
         if (!input.direct_before_world.empty()) {
             m_direct.interpreter().set_ui_quads(input.ui_quads);
+            m_direct.set_frame_input(&input);
             m_direct.submit(input.direct_before_world);
             m_direct.flush(state, true);
         }

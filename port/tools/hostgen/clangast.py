@@ -98,6 +98,8 @@ def fix_from_diagnostics(text: str, stderr: str, rel: str) -> tuple[str, list[st
       earlier declaration (a shared header that says `void *` where the
       body takes `float *`): the alias is declared with f's symbol on the
       definition's own line, and the definition is the alias's.
+    - A later global declaration that contradicts a function-local extern
+      gets its own C name and the same assembler symbol.
     - An asm label Clang refuses (given after the function's first use, or
       a second spelling of one already given): removed from that
       declaration, and the name recorded as an alias of the label's symbol
@@ -114,12 +116,49 @@ def fix_from_diagnostics(text: str, stderr: str, rel: str) -> tuple[str, list[st
     diags = list(_DIAG.finditer(stderr))
     inserts: dict[int, list[str]] = {}
     for k, d in enumerate(diags):
+        note = diags[k + 1] if k + 1 < len(diags) else None
+        if (d["kind"] == "error" and d["msg"].startswith("conflicting asm label")
+                and not d["file"].replace("\\", "/").endswith(rel) and note is not None and note["kind"] == "note"
+                and note["file"].replace("\\", "/").endswith(rel)):
+            # A header gives a function another label than a declaration earlier in this file
+            # (FUN_001f99c0 there, func_001F99C0 here). GCC kept the first: this file's declaration
+            # and its uses take an alias name with its own label, and the header's stands alone.
+            at = int(note["line"]) - 1
+            lm = re.search(r"\b(\w+)\s*\([^;{]*\)\s*(?:__asm__|asm)\s*\(\s*\"([^\"]+)\"\s*\)", lines[at])
+            if lm:
+                name = lm.group(1)
+                alias = f"{name}__openrac_decl_{at + 1}"
+                lines[at] = lines[at][:lm.start(1)] + alias + lines[at][lm.end(1):]
+                for j in range(at + 1, len(lines)):
+                    lines[j] = re.sub(rf"\b{name}\b", alias, lines[j])
+                fixes.append(f"line {at + 1}: {name}, labelled {lm.group(2)} here and otherwise in a header, kept apart")
+            continue
         if d["kind"] != "error" or not d["file"].replace("\\", "/").endswith(rel):
             continue
         msg = d["msg"]
         line = int(d["line"]) - 1
         col = int(d["col"]) - 1
-        m = re.match(r"conflicting types for '(\w+)'", msg)
+        m = re.match(r"redeclaration of '(\w+)' with a different type", msg)
+        # an extern of a variable: plain, of an anonymous struct ({...}), or with attributes
+        if m and re.match(r"^\s*extern\b(?:[^;{}]|\{[^{}]*\})*;\s*$", lines[line]) \
+                and not re.search(rf"\b{m.group(1)}\s*\(", lines[line]):
+            name = m.group(1)
+            alias = f"{name}__openrac_decl_{line + 1}"
+            decl = re.sub(rf"\b{name}\b", alias, lines[line], count=1)
+            if not re.search(r"\b(?:__asm__|asm|SDATA|SBSS)\b", decl):
+                label = f' __asm__("{name}")'
+                attrs = re.search(r"((?:[ \t]+(?:__attribute__\s*\(\([^;]*?\)\)|[A-Z][A-Z0-9_]*(?:\([^;()]*\))?))+)\s*;\s*$", decl)
+                if attrs:
+                    pos = attrs.start(1)
+                    decl = decl[:pos] + label + decl[pos:]
+                else:
+                    decl = re.sub(r";\s*$", label + ";", decl)
+            lines[line] = decl
+            for j in range(line + 1, len(lines)):
+                lines[j] = re.sub(rf"\b{name}\b", alias, lines[j])
+            fixes.append(f"line {line + 1}: global declaration of {name} kept apart from a local extern")
+            continue
+        m = re.match(r"(?:conflicting types for|redefinition of) '(\w+)'", msg)
         if m:
             name = m.group(1)
             note = diags[k + 1] if k + 1 < len(diags) else None
@@ -172,6 +211,22 @@ def fix_from_diagnostics(text: str, stderr: str, rel: str) -> tuple[str, list[st
             inserts.setdefault(at, []).append(f'int {alias}() __asm__("{name}");')
             fixes.append(f"line {use + 1}: {name} called before its declaration, as int {name}()")
             continue
+        if msg.startswith(("cannot apply asm label to variable after its first use", "conflicting asm label")):
+            # A variable's label: GCC 2.95 kept the first label a name was given (rac1/ntsc's
+            # l16 rocket.c reads D_0015ED6C where a later line says D_0015EE6C), and took a label
+            # after a use. The label at the error's column goes; when it names another symbol than
+            # the variable's own, the name is recorded as an alias of it, which hostgen follows.
+            src = lines[line]
+            vm = re.compile(r"\b(\w+)(\s*\[[^\]]*\])?\s*(?:__asm__|asm)\s*\(\s*\"([^\"]+)\"\s*\)").search(src, max(col - 1, 0))
+            if vm and vm.start() <= col + 1 and not re.match(r"\s*\(", src[vm.end(1):]):
+                lines[line] = src[:vm.end(2) if vm.group(2) else vm.end(1)] + src[vm.end():]
+                if msg.startswith("conflicting"):
+                    fixes.append(f"line {line + 1}: second asm label {vm.group(3)} for {vm.group(1)} removed (GCC kept the first)")
+                elif vm.group(3) != vm.group(1):
+                    fixes.append(f"alias {vm.group(1)} {vm.group(3)}")
+                else:
+                    fixes.append(f"line {line + 1}: asm label repeating {vm.group(1)} after its use removed")
+                continue
         if msg.startswith(("cannot apply asm label to function after its first use", "conflicting asm label")):
             # The label may be on a declaration that runs over several lines, and for a conflict
             # it may be on the earlier declaration the note points at, not on this line.

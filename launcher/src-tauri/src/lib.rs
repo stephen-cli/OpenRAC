@@ -12,6 +12,7 @@ use openrac_launcher_core::detect::{self, Check, Detected, Tool};
 use openrac_launcher_core::install;
 use openrac_launcher_core::jobs::{Event, Jobs, Started};
 use openrac_launcher_core::library::{self, Library};
+use openrac_launcher_core::overrides::{self, PackView};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -50,6 +51,11 @@ fn app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
         config_file: state.config_file.clone(),
         standalone: state.bundled.is_some() && state.config.lock().unwrap().root == state.bundled,
     }
+}
+
+#[tauri::command]
+fn relaunch_app(app: AppHandle) {
+    tauri::process::restart(&app.env());
 }
 
 #[tauri::command]
@@ -124,9 +130,12 @@ fn run_action(
     scope: Scope,
     id: String,
     level: Option<u32>,
+    path: Option<String>,
+    option: Option<String>,
 ) -> Result<Started, String> {
     let config = state.config.lock().unwrap().clone();
-    let plan = library::plan(&config, &scope, &id, level)?;
+    let inputs = openrac_launcher_core::actions::Inputs { level, path, option };
+    let plan = library::plan(&config, &scope, &id, &inputs)?;
     let is_play = if let Scope::Version(_) = &scope {
         if let Some(root) = &config.root {
             if let Ok(file) = openrac_launcher_core::actions::load(root) {
@@ -309,21 +318,33 @@ async fn sync_progress_from_web(state: State<'_, AppState>) -> Result<Library, S
     let config = state.config.lock().unwrap().clone();
     let root = config.root.clone().ok_or("the OpenRAC folder is not set")?;
 
-    // Attempt to fetch latest numbers from openrac.dev using curl (available across all Linux distros)
-    let output = std::process::Command::new("curl")
-        .arg("-s")
-        .arg("--connect-timeout")
-        .arg("4")
-        .arg("https://openrac.dev/progress.json")
-        .output();
-
-    if let Ok(out) = output {
-        if out.status.success() {
-            if let Ok(json_str) = String::from_utf8(out.stdout) {
-                let _ = openrac_launcher_core::catalog::update_progress_from_openrac_dev(&root, &json_str);
+    // Every project's latest progress from bytematch.dev, and each game's project JSON for its
+    // functional C, with curl (on Linux, macOS and Windows 10+). Offline, the kept copy is read.
+    let root_for_fetch = root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use openrac_launcher_core::catalog;
+        let fetch = |url: &str| -> Option<String> {
+            let out = std::process::Command::new("curl")
+                .args(["-s", "-f", "--connect-timeout", "4", "--max-time", "10", url])
+                .output()
+                .ok()?;
+            if out.status.success() {
+                String::from_utf8(out.stdout).ok()
+            } else {
+                None
+            }
+        };
+        let Some(list) = fetch(catalog::BYTEMATCH_PROJECTS) else { return };
+        let mut jsons = std::collections::BTreeMap::new();
+        for (_key, slug) in catalog::bytematch_projects_for(&root_for_fetch, &list).unwrap_or_default() {
+            if let Some(text) = fetch(&catalog::bytematch_project_url(&slug)) {
+                jsons.insert(slug, text);
             }
         }
-    }
+        let _ = catalog::update_progress_from_bytematch(&root_for_fetch, &list, &jsons);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     tauri::async_runtime::spawn_blocking(move || library::library(&config)).await.map_err(|e| e.to_string())?
 }
@@ -332,7 +353,7 @@ async fn sync_progress_from_web(state: State<'_, AppState>) -> Result<Library, S
 async fn apply_progress_json(state: State<'_, AppState>, json: String) -> Result<Library, String> {
     let config = state.config.lock().unwrap().clone();
     let root = config.root.clone().ok_or("the OpenRAC folder is not set")?;
-    openrac_launcher_core::catalog::update_progress_from_openrac_dev(&root, &json)?;
+    openrac_launcher_core::catalog::update_progress_from_bytematch(&root, &json, &Default::default())?;
     tauri::async_runtime::spawn_blocking(move || library::library(&config)).await.map_err(|e| e.to_string())?
 }
 
@@ -349,6 +370,53 @@ fn backup_saves(serial: String, note: Option<String>) -> Result<openrac_launcher
 #[tauri::command]
 fn restore_backup(serial: String, backup_name: String) -> Result<(), String> {
     openrac_launcher_core::saves::restore_backup(&serial, &backup_name)
+}
+
+/// A game's overrides folder (`<data>/overrides`), from the install folder in Settings.
+fn overrides_dir(state: &State<'_, AppState>, game: &str) -> Result<PathBuf, String> {
+    let install = state.config.lock().unwrap().install_dir.clone().ok_or("no install folder (Settings)")?;
+    Ok(overrides::dir(&install, game))
+}
+
+/// The game's overrides packs, in the order they apply.
+#[tauri::command]
+fn overrides_list(state: State<'_, AppState>, game: String) -> Result<Vec<PackView>, String> {
+    overrides::list(&overrides_dir(&state, &game)?)
+}
+
+#[tauri::command]
+fn overrides_set_enabled(
+    state: State<'_, AppState>,
+    game: String,
+    id: String,
+    enabled: bool,
+) -> Result<Vec<PackView>, String> {
+    overrides::set_enabled(&overrides_dir(&state, &game)?, &id, enabled)
+}
+
+#[tauri::command]
+fn overrides_move(state: State<'_, AppState>, game: String, id: String, up: bool) -> Result<Vec<PackView>, String> {
+    overrides::move_pack(&overrides_dir(&state, &game)?, &id, up)
+}
+
+#[tauri::command]
+fn overrides_remove(state: State<'_, AppState>, game: String, id: String) -> Result<Vec<PackView>, String> {
+    overrides::remove(&overrides_dir(&state, &game)?, &id)
+}
+
+/// Opens a folder inside a game's set-up folder (an export, the overrides): folders only, and
+/// only there, so the page cannot open anything else with it.
+#[tauri::command]
+fn open_game_folder(app: AppHandle, state: State<'_, AppState>, game: String, path: String) -> Result<(), String> {
+    let install = state.config.lock().unwrap().install_dir.clone().ok_or("no install folder (Settings)")?;
+    let data = install::data_dir(&install, &game);
+    let _ = std::fs::create_dir_all(data.join("exports"));
+    let data = std::fs::canonicalize(&data).map_err(|e| format!("{}: {e}", data.display()))?;
+    let target = std::fs::canonicalize(Path::new(&path)).map_err(|e| format!("{path}: {e}"))?;
+    if !target.starts_with(&data) || !target.is_dir() {
+        return Err(format!("{path} is not a folder of the game's set-up"));
+    }
+    app.opener().open_path(target.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -468,6 +536,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             #[cfg(target_os = "linux")]
             ensure_linux_desktop_integration();
@@ -515,6 +584,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            relaunch_app,
             get_config,
             save_config,
             detect,
@@ -535,6 +605,11 @@ pub fn run() {
             backup_saves,
             restore_backup,
             open_saves_folder,
+            overrides_list,
+            overrides_set_enabled,
+            overrides_move,
+            overrides_remove,
+            open_game_folder,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher failed to start");
