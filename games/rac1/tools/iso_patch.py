@@ -85,14 +85,24 @@ def main() -> int:
         return 1
 
     writes: list[tuple[int, bytes, str]] = []
+    appended = b""
     with IMAGE.open("rb") as f:
         lba, size = find_file(f, EXE_NAME)
+        total_sectors = IMAGE.stat().st_size // SECTOR
     elf = args.elf.read_bytes()
-    if len(elf) != size:
-        print(f"{args.elf} is {len(elf)} bytes, the disc's executable is {size}: a larger "
-              f"executable needs a re-layout, not an in-place patch", file=sys.stderr)
-        return 1
-    writes.append((lba * SECTOR, elf, f"{EXE_NAME} (sector {lba}, {size} bytes)"))
+    if len(elf) <= size:
+        writes.append((lba * SECTOR, elf.ljust(size, b"\0"), f"{EXE_NAME} (sector {lba}, {len(elf)} bytes)"))
+    else:
+        # A larger executable goes in new sectors after the end of the image
+        # (nothing else moves: the disc addresses everything else by sector),
+        # and the directory record and the volume size follow it there.
+        new_lba = total_sectors
+        appended = elf.ljust(-(-len(elf) // SECTOR) * SECTOR, b"\0")
+        writes += directory_updates(IMAGE, EXE_NAME, new_lba, len(elf))
+        writes.append((16 * SECTOR + 80, both_endian(total_sectors + len(appended) // SECTOR),
+                       "primary volume descriptor: volume space size"))
+        print(f"{EXE_NAME} grows from {size} to {len(elf)} bytes: placed at sector {new_lba}, "
+              f"image grows by {len(appended) // SECTOR} sectors")
 
     if args.patches:
         base = args.patches.parent
@@ -121,8 +131,40 @@ def main() -> int:
             out.seek(offset)
             out.write(blob)
             print(f"  wrote {what}: {changed} byte(s) changed")
-    print(f"done: {changed_total} byte(s) differ from the original image")
+        if appended:
+            out.seek(0, 2)
+            out.write(appended)
+            print(f"  appended {len(appended)} bytes ({len(appended) // SECTOR} sectors)")
+    print(f"done: {changed_total} byte(s) differ from the original image"
+          + (f", plus {len(appended)} appended" if appended else ""))
     return 0
+
+
+def both_endian(value: int) -> bytes:
+    """A 32-bit field as ISO 9660 stores it: little-endian, then big-endian."""
+    return struct.pack("<I", value) + struct.pack(">I", value)
+
+
+def directory_updates(image: Path, name: str, new_lba: int, new_size: int) -> list[tuple[int, bytes, str]]:
+    """Writes that move NAME's root directory record to NEW_LBA/NEW_SIZE
+    (both byte orders, as ISO 9660 stores them)."""
+    with image.open("rb") as f:
+        extent, size = root_directory(f)
+        f.seek(extent * SECTOR)
+        data = f.read(size)
+    pos = 0
+    while pos < len(data):
+        length = data[pos]
+        if length == 0:
+            pos = (pos // SECTOR + 1) * SECTOR
+            continue
+        rec = data[pos:pos + length]
+        if rec[33:33 + rec[32]].decode("ascii", "replace") == name:
+            base = extent * SECTOR + pos
+            return [(base + 2, both_endian(new_lba), f"directory record of {name}: extent"),
+                    (base + 10, both_endian(new_size), f"directory record of {name}: size")]
+        pos += length
+    raise SystemExit(f"{name} not found in the root directory")
 
 
 if __name__ == "__main__":
