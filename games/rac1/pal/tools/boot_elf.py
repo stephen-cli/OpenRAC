@@ -30,9 +30,36 @@ LINKED = Path("build-sn/rac1.elf")
 SHF_ALLOC = 0x2
 
 
+def add_segment(image: bytearray, addr: int, data: bytes) -> bytearray:
+    """IMAGE with DATA appended as one more PT_LOAD at ADDR. Retail's program
+    header table (one entry at 0x34) is followed by zeros up to the first
+    segment at 0x1000, so the new entry goes right after it. The data goes
+    after the file's end (the section headers), at an offset congruent to
+    ADDR modulo the page size, as the ELF rules want."""
+    import struct
+    e_phoff, = struct.unpack_from("<I", image, 28)
+    e_phentsize, e_phnum = struct.unpack_from("<HH", image, 42)
+    new_hdr = e_phoff + e_phnum * e_phentsize
+    if any(image[new_hdr:new_hdr + e_phentsize]):
+        raise SystemExit("no room for another program header")
+    page = 0x1000
+    offset = len(image)
+    offset += (addr - offset) % page
+    image = image + bytes(offset - len(image)) + data
+    image += bytes((-len(image)) % 16)
+    # PT_LOAD, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, PF_R|PF_W|PF_X, p_align
+    struct.pack_into("<8I", image, new_hdr, 1, offset, addr, addr, len(data), len(data), 7, page)
+    struct.pack_into("<H", image, 44, e_phnum + 1)
+    return image
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("-o", "--output", type=Path, default=Path("build-sn/SCES_509.16"))
+    ap.add_argument("--segment", metavar="ADDR:FILE", action="append", default=[],
+                    help="add a loadable segment: FILE's bytes at hex address ADDR (a second PT_LOAD "
+                         "the console's loader places in RAM at boot; for code of your own outside "
+                         "retail's image, e.g. a mod's resident code)")
     args = ap.parse_args()
 
     if not RETAIL.is_file():
@@ -70,6 +97,13 @@ def main() -> int:
             changed += sum(1 for a, b in zip(old, data) if a != b)
             retail[off:off + size] = data
             written += size
+
+    for spec in args.segment:
+        addr_text, _, file_text = spec.partition(":")
+        addr = int(addr_text, 16)
+        data = Path(file_text).read_bytes()
+        retail = add_segment(retail, addr, data)
+        print(f"added segment: {len(data)} bytes at 0x{addr:08X} from {file_text}")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(retail)
