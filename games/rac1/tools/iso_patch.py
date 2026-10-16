@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 SECTOR = 2048
+TAIL_SECTORS = 32
 IMAGE = Path("baserom/SCES_509.16.iso")
 EXE_NAME = "SCES_509.16;1"
 
@@ -129,6 +130,11 @@ def main() -> int:
             writes.append((first * SECTOR, blob, f"{name} (sectors {first}-{first + count - 1})"))
 
     if appended:
+        # The game's stream reader reads past the end of a file by up to a few
+        # sectors (seen: one sector past the text table). In the middle of the disc
+        # that lands on the next file; at the end of the image it is an error, so
+        # keep a margin of blank sectors after the last appended file.
+        appended += bytes(TAIL_SECTORS * SECTOR)
         writes.append((16 * SECTOR + 80, both_endian(total_sectors + len(appended) // SECTOR),
                        "primary volume descriptor: volume space size"))
 
