@@ -71,6 +71,9 @@ def main() -> int:
     ap.add_argument("--elf", type=Path, default=Path("build-sn/SCES_509.16"),
                     help="bootable executable from tools/boot_elf.py")
     ap.add_argument("--patches", type=Path, help="patches.tsv from `editor/extract.py pack`")
+    ap.add_argument("--append", metavar="FILE@OFFSET", action="append", default=[],
+                    help="place FILE in new sectors at the end of the image and write its first sector "
+                         "and sector count (two u32) at byte OFFSET (hex), e.g. a table-of-contents entry")
     ap.add_argument("-o", "--output", type=Path, default=Path("build-sn/SCES_509.16.iso"))
     args = ap.parse_args()
 
@@ -99,10 +102,17 @@ def main() -> int:
         new_lba = total_sectors
         appended = elf.ljust(-(-len(elf) // SECTOR) * SECTOR, b"\0")
         writes += directory_updates(IMAGE, EXE_NAME, new_lba, len(elf))
-        writes.append((16 * SECTOR + 80, both_endian(total_sectors + len(appended) // SECTOR),
-                       "primary volume descriptor: volume space size"))
         print(f"{EXE_NAME} grows from {size} to {len(elf)} bytes: placed at sector {new_lba}, "
               f"image grows by {len(appended) // SECTOR} sectors")
+
+    for spec in args.append:
+        file_text, _, off_text = spec.rpartition("@")
+        blob = Path(file_text).read_bytes()
+        padded = blob.ljust(-(-len(blob) // SECTOR) * SECTOR, b"\0")
+        first = total_sectors + len(appended) // SECTOR
+        appended += padded
+        writes.append((int(off_text, 16), struct.pack("<2I", first, len(padded) // SECTOR),
+                       f"{Path(file_text).name}: {len(blob)} bytes at sector {first}, entry at 0x{int(off_text, 16):X}"))
 
     if args.patches:
         base = args.patches.parent
@@ -117,6 +127,10 @@ def main() -> int:
                 return 1
             blob = blob.ljust(count * SECTOR, b"\0")
             writes.append((first * SECTOR, blob, f"{name} (sectors {first}-{first + count - 1})"))
+
+    if appended:
+        writes.append((16 * SECTOR + 80, both_endian(total_sectors + len(appended) // SECTOR),
+                       "primary volume descriptor: volume space size"))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     print(f"copying {IMAGE} -> {args.output} ({IMAGE.stat().st_size} bytes)")
