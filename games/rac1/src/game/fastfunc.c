@@ -46,9 +46,11 @@ extern void func_001F3140(void);
 extern int D_0018E840[];
 extern void func_001F7B40(void);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9810);
+LINKER_REMNANT("asm/remnants/text", func_001F9810);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9850);
+ASM_FUNC("asm/handwritten/text", func_001F9840);
+
+ASM_FUNC("asm/handwritten/text", func_001F9850);
 
 /*
  * Hand-written: return *(float *)&D_0015EE64 * x;  (gp 0x0015EE64)
@@ -62,9 +64,9 @@ INCLUDE_ASM("asm/nonmatchings/text", func_001F9850);
  * (tools/ps2eeas_nops.py exempts it). Our C comes out 12 bytes, retail
  * is 16. An older note blamed an assembler load delay.
  */
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9878);
+ASM_FUNC("asm/handwritten/text", func_001F9878);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9888);
+ASM_FUNC("asm/handwritten/text", func_001F9888);
 
 /*
  * Hand-written: return *(float *)&D_0015EE68 * x;  (gp 0x0015EE68)
@@ -78,13 +80,13 @@ INCLUDE_ASM("asm/nonmatchings/text", func_001F9888);
  * (tools/ps2eeas_nops.py exempts it). Our C comes out 12 bytes, retail
  * is 16. An older note blamed an assembler load delay.
  */
-INCLUDE_ASM("asm/nonmatchings/text", func_001F98B0);
+ASM_FUNC("asm/handwritten/text", func_001F98B0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F98C0);
+ASM_FUNC("asm/handwritten/text", func_001F98C0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F98E8);
+ASM_FUNC("asm/handwritten/text", func_001F98E8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F98F8);
+ASM_FUNC("asm/handwritten/text", func_001F98F8);
 
 ASM_FUNC("asm/handwritten/text", func_001F9908);
 
@@ -118,9 +120,9 @@ ASM_FUNC("asm/handwritten/text", func_001F9AC0);
  * diff under the scratch-register-allocation open question; that was a
  * misread.
  */
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9AF0);
+ASM_FUNC("asm/handwritten/text", func_001F9AF0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9B20);
+ASM_FUNC("asm/handwritten/text", func_001F9B20);
 
 LINKER_REMNANT("asm/remnants/text", func_001F9B48);
 
@@ -128,7 +130,7 @@ INCLUDE_ASM("asm/nonmatchings/text", func_001F9B50);
 
 ASM_FUNC("asm/handwritten/text", func_001F9B70);
 
-float func_001F9B88(float arg0) {
+float FastAbsF(float arg0) {
     return __builtin_fabsf(arg0);
 }
 
@@ -157,13 +159,13 @@ float func_001F9B88(float arg0) {
  * as the old core_text func_00112380 drift, which is why that one was
  * worth fixing rather than tolerating.)
  */
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9B90);
+ASM_FUNC("asm/handwritten/text", func_001F9B90);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9B98);
+ASM_FUNC("asm/handwritten/text", func_001F9B98);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9BA0);
+ASM_FUNC("asm/handwritten/text", func_001F9BA0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9BB0);
+ASM_FUNC("asm/handwritten/text", func_001F9BB0);
 
 /*
  * Same-size-but-4-over near-miss NOT kept (size mismatch: 12 vs
@@ -174,49 +176,49 @@ INCLUDE_ASM("asm/nonmatchings/text", func_001F9BB0);
  * the store source. `__builtin_memset(arg0, 0, 16)` produces the same
  * extra instruction. Not reachable from source tried so far.
  */
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9BC0);
+ASM_FUNC("asm/handwritten/text", func_001F9BC0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9BC8);
+ASM_FUNC("asm/handwritten/text", func_001F9BC8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9BD8);
+ASM_FUNC("asm/handwritten/text", func_001F9BD8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9BF0);
+ASM_FUNC("asm/handwritten/text", func_001F9BF0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9C08);
+ASM_FUNC("asm/handwritten/text", func_001F9C08);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9C30);
+ASM_FUNC("asm/handwritten/text", func_001F9C30);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9C48);
+ASM_FUNC("asm/handwritten/text", func_001F9C48);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9C60);
+ASM_FUNC("asm/handwritten/text", func_001F9C60);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9C78);
+ASM_FUNC("asm/handwritten/text", func_001F9C78);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9CA0);
+ASM_FUNC("asm/handwritten/text", func_001F9CA0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9CB8);
+ASM_FUNC("asm/handwritten/text", func_001F9CB8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9CE8);
+ASM_FUNC("asm/handwritten/text", func_001F9CE8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9D10);
+ASM_FUNC("asm/handwritten/text", func_001F9D10);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9D48);
+ASM_FUNC("asm/handwritten/text", func_001F9D48);
 
 ASM_FUNC("asm/handwritten/text", func_001F9D78);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9DC0);
+ASM_FUNC("asm/handwritten/text", func_001F9DC0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9E10);
+ASM_FUNC("asm/handwritten/text", func_001F9E10);
 
 ASM_FUNC("asm/handwritten/text", func_001F9E58);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9EC0);
+ASM_FUNC("asm/handwritten/text", func_001F9EC0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9EE8);
+ASM_FUNC("asm/handwritten/text", func_001F9EE8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9F18);
+ASM_FUNC("asm/handwritten/text", func_001F9F18);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001F9F30);
+ASM_FUNC("asm/handwritten/text", func_001F9F30);
 
 ASM_FUNC("asm/handwritten/text", func_001F9F60);
 
@@ -228,19 +230,19 @@ INCLUDE_ASM("asm/nonmatchings/text", func_001F9FC0);
 
 ASM_FUNC("asm/handwritten/text", func_001FA058);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA168);
+ASM_FUNC("asm/handwritten/text", func_001FA168);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA190);
+ASM_FUNC("asm/handwritten/text", func_001FA190);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA1C0);
+ASM_FUNC("asm/handwritten/text", func_001FA1C0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA1F8);
+ASM_FUNC("asm/handwritten/text", func_001FA1F8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA218);
+ASM_FUNC("asm/handwritten/text", func_001FA218);
 
 ASM_FUNC("asm/handwritten/text", func_001FA238);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA460);
+ASM_FUNC("asm/handwritten/text", func_001FA460);
 
 /*
  * Reverted (size mismatch: 28 vs retail's 32). Semantics certain: a
@@ -259,21 +261,21 @@ INCLUDE_ASM("asm/nonmatchings/text", func_001FA460);
  * allocates, and its twin func_001FA460 has the same body with a
  * `sqc2 $vf0` in the slot. fastfunc.o is hand-written noreorder code.
  */
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA480);
+ASM_FUNC("asm/handwritten/text", func_001FA480);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA4A0);
+ASM_FUNC("asm/handwritten/text", func_001FA4A0);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA4F0);
+ASM_FUNC("asm/handwritten/text", func_001FA4F0);
 
 ASM_FUNC("asm/handwritten/text", func_001FA540);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA588);
+ASM_FUNC("asm/handwritten/text", func_001FA588);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA5C8);
+ASM_FUNC("asm/handwritten/text", func_001FA5C8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA648);
+ASM_FUNC("asm/handwritten/text", func_001FA648);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA6C0);
+ASM_FUNC("asm/handwritten/text", func_001FA6C0);
 
 /*
  * Close but not exact: angle-wrap-to-[-pi,pi] on arg0+arg1 (retail's
@@ -287,17 +289,17 @@ INCLUDE_ASM("asm/nonmatchings/text", func_001FA6C0);
  * separate assignment+accumulate instead of one combined expression;
  * no change. See docs/DECOMP_PROGRESS.md.
  */
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA748);
+ASM_FUNC("asm/handwritten/text", func_001FA748);
 
 /* Same register-allocation-choice issue as func_001FA748 above (its
    arg0-arg1 sibling); logic confirmed identical shape via objdump. */
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA790);
+ASM_FUNC("asm/handwritten/text", func_001FA790);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA7D8);
+ASM_FUNC("asm/handwritten/text", func_001FA7D8);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA850);
+ASM_FUNC("asm/handwritten/text", func_001FA850);
 
-float func_001FA888(int arg0) {
+float IntToFloat(int arg0) {
     return (float)arg0;
 }
 
@@ -312,7 +314,7 @@ float func_001FA888(int arg0) {
  */
 INCLUDE_ASM("asm/nonmatchings/text", func_001FA898);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_001FA8A8);
+ASM_FUNC("asm/handwritten/text", func_001FA8A8);
 
 ASM_FUNC("asm/handwritten/text", func_001FA8F0);
 

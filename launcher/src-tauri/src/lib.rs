@@ -9,10 +9,14 @@ use std::sync::{Arc, Mutex};
 use openrac_launcher_core::actions::{Platform, Scope};
 use openrac_launcher_core::config::{self, Config};
 use openrac_launcher_core::detect::{self, Check, Detected, Tool};
+use openrac_launcher_core::disc_choice::{self, DiscChoice};
+use openrac_launcher_core::discs::{self, FoundDisc};
 use openrac_launcher_core::install;
 use openrac_launcher_core::jobs::{Event, Jobs, Started};
+use openrac_launcher_core::launcher_log;
 use openrac_launcher_core::library::{self, Library};
 use openrac_launcher_core::overrides::{self, PackView};
+use openrac_launcher_core::reports::{self, ReportEntry};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -115,6 +119,31 @@ async fn check_tool(tool: Tool, path: PathBuf) -> Result<Check, String> {
     tauri::async_runtime::spawn_blocking(move || detect::check_tool(tool, &path)).await.map_err(|e| e.to_string())
 }
 
+/// Takes a Godot that works when none is set, or the one set is gone: the first run looks only
+/// once, and a player often gets Godot later, from the Mods page's link. The config as it is.
+#[tauri::command]
+async fn adopt_godot(state: State<'_, AppState>) -> Result<Config, String> {
+    if state.config.lock().unwrap().godot.as_deref().is_some_and(Path::is_file) {
+        return Ok(state.config.lock().unwrap().clone());
+    }
+    let found = tauri::async_runtime::spawn_blocking(|| {
+        let first = detect::tool_candidates(Tool::Godot).into_iter().next()?;
+        detect::check_tool(Tool::Godot, &first.path).ok.then_some(first.path)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut config = state.config.lock().unwrap();
+    if let (Some(godot), Some(file)) = (found, state.config_file.as_deref()) {
+        if !config.godot.as_deref().is_some_and(Path::is_file) {
+            let mut next = config.clone();
+            next.godot = Some(godot);
+            config::save(file, &next)?;
+            *config = next;
+        }
+    }
+    Ok(config.clone())
+}
+
 #[tauri::command]
 async fn library(state: State<'_, AppState>) -> Result<Library, String> {
     let config = state.config.lock().unwrap().clone();
@@ -181,7 +210,9 @@ fn run_action(
         _ => None,
     };
     let app_handle = app.clone();
-    state.jobs.start(&plan, config.root.as_deref(), move |event| {
+    let title = plan.title.clone();
+    launcher_log::line(&format!("run: {}", openrac_launcher_core::jobs::command_line(&plan)));
+    let started = state.jobs.start(&plan, config.root.as_deref(), move |event| {
         let _ = match &event {
             Event::Output { line, .. } => {
                 // The planet and bolts the game logs.
@@ -200,7 +231,15 @@ fn run_action(
                 }
                 app.emit("job-output", &event)
             }
-            Event::Exit { .. } => {
+            Event::Exit { code, cancelled, .. } => {
+                launcher_log::line(&format!(
+                    "ended: {title}: {}",
+                    if *cancelled {
+                        "cancelled".to_string()
+                    } else {
+                        code.map_or("stopped by a signal (no exit code)".to_string(), |c| format!("exit code {c}"))
+                    }
+                ));
                 if is_play {
                     if let Some(st) = app_handle.try_state::<AppState>() {
                         let cfg = st.config.lock().unwrap().clone();
@@ -220,7 +259,108 @@ fn run_action(
                 app.emit("job-exit", &event)
             }
         };
+    });
+    if let Err(e) = &started {
+        launcher_log::line(&format!("could not start: {e}"));
+    }
+    started
+}
+
+// ---- Logs and crash reports (core/src/reports.rs) ----
+
+/// A game's data folder, where its logs and crash reports are.
+fn game_data(state: &State<'_, AppState>, game: &str) -> Result<PathBuf, String> {
+    if game.is_empty() || game.contains(['/', '\\', '.']) {
+        return Err(format!("{game} is not a game"));
+    }
+    let install = state.config.lock().unwrap().install_dir.clone().ok_or("no install folder (Settings)")?;
+    Ok(install::data_dir(&install, game))
+}
+
+#[tauri::command]
+async fn reports_list(state: State<'_, AppState>, game: String) -> Result<Vec<ReportEntry>, String> {
+    let data = game_data(&state, &game)?;
+    tauri::async_runtime::spawn_blocking(move || reports::list(&data)).await.map_err(|e| e.to_string())
+}
+
+/// Deletes one log or crash report of a game from its data folder (core checks the name).
+#[tauri::command]
+async fn report_delete(state: State<'_, AppState>, game: String, file: String) -> Result<(), String> {
+    let data = game_data(&state, &game)?;
+    let name = file.clone();
+    let g = game.clone();
+    tauri::async_runtime::spawn_blocking(move || reports::delete(&data, &g, &file))
+        .await
+        .map_err(|e| e.to_string())??;
+    launcher_log::line(&format!("deleted a report of {game}: {name}"));
+    Ok(())
+}
+
+/// Deletes every log and crash report of a game; returns how many files went.
+#[tauri::command]
+async fn reports_delete_all(state: State<'_, AppState>, game: String) -> Result<usize, String> {
+    let data = game_data(&state, &game)?;
+    let g = game.clone();
+    let count = tauri::async_runtime::spawn_blocking(move || reports::delete_all(&data, &g))
+        .await
+        .map_err(|e| e.to_string())??;
+    launcher_log::line(&format!("deleted all {count} reports of {game}"));
+    Ok(count)
+}
+
+/// The newest crash report written since `since` (seconds since 1970): after the game stopped.
+#[tauri::command]
+async fn latest_crash(state: State<'_, AppState>, game: String, since: u64) -> Result<Option<ReportEntry>, String> {
+    let data = game_data(&state, &game)?;
+    let found = tauri::async_runtime::spawn_blocking(move || reports::latest_crash(&data, since))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(e) = &found {
+        launcher_log::line(&format!(
+            "the game stopped unexpectedly: {} ({})",
+            e.file,
+            e.reason.as_deref().unwrap_or("?")
+        ));
+    }
+    Ok(found)
+}
+
+#[tauri::command]
+async fn report_text(app: AppHandle, state: State<'_, AppState>, game: String, file: String) -> Result<String, String> {
+    let data = game_data(&state, &game)?;
+    let version = app.package_info().version.to_string();
+    tauri::async_runtime::spawn_blocking(move || reports::copy_text(&data, &file, &version))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Saves the .zip for `file` in the player's Downloads folder and shows it there; returns its path.
+#[tauri::command]
+async fn report_save(app: AppHandle, state: State<'_, AppState>, game: String, file: String) -> Result<String, String> {
+    let data = game_data(&state, &game)?;
+    let version = app.package_info().version.to_string();
+    let folder = reports::save_folder().ok_or("no folder to save in")?;
+    let out = folder.join(reports::bundle_name(&file));
+    let target = out.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        reports::bundle(&data, &file, launcher_log::path().as_deref(), &version, &target)
     })
+    .await
+    .map_err(|e| e.to_string())??;
+    launcher_log::line(&format!("saved a report: {}", out.display()));
+    let _ = app.opener().reveal_item_in_dir(&out);
+    Ok(reports::tidy(&out.to_string_lossy(), reports::home().as_deref()))
+}
+
+/// Opens the folder a game's logs are in (its crash reports' folder when `crashes`).
+#[tauri::command]
+fn open_reports_folder(app: AppHandle, state: State<'_, AppState>, game: String, crashes: bool) -> Result<(), String> {
+    let data = game_data(&state, &game)?;
+    let dir = if crashes && data.join("crashes").is_dir() { data.join("crashes") } else { data };
+    if !dir.is_dir() {
+        return Err("nothing has been logged for this game yet".into());
+    }
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -281,6 +421,11 @@ fn install_game(app: AppHandle, state: State<'_, AppState>, game: String, image:
     let config = state.config.lock().unwrap().clone();
     let install_dir = config.install_dir.clone().ok_or("no install folder (Settings)")?;
     let plan = install::plan_extract(&config, &install_dir, &game, &image)?;
+    // A developer's other disc set up before is kept aside, not replaced (disc_choice.rs).
+    if config.developer {
+        let catalog = openrac_launcher_core::catalog::load(config.root()?)?;
+        disc_choice::before_set_up(&config, &catalog, &game, &image)?;
+    }
     state.jobs.start(&plan, config.root.as_deref(), move |event| {
         let _ = match &event {
             Event::Output { .. } => app.emit("job-output", &event),
@@ -289,18 +434,54 @@ fn install_game(app: AppHandle, state: State<'_, AppState>, game: String, image:
     })
 }
 
+/// The games folder looked through: the games OpenRAC knows among its images, and, for a
+/// developer, the games with more than one of their discs there (disc_choice.rs).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscScan {
+    found: Vec<FoundDisc>,
+    choices: Vec<DiscChoice>,
+}
+
+fn scan(config: &Config) -> Result<(openrac_launcher_core::catalog::Catalog, Vec<FoundDisc>), String> {
+    let catalog = openrac_launcher_core::catalog::load(config.root()?)?;
+    let found = config.discs_dir.as_deref().map(|dir| discs::scan(dir, &catalog)).unwrap_or_default();
+    Ok((catalog, found))
+}
+
 /// The games OpenRAC knows among the images in the player's games folder (none when no folder
-/// is chosen).
+/// is chosen), and the discs a developer can choose between.
 #[tauri::command]
-async fn scan_discs(state: State<'_, AppState>) -> Result<Vec<openrac_launcher_core::discs::FoundDisc>, String> {
+async fn scan_discs(state: State<'_, AppState>) -> Result<DiscScan, String> {
     let config = state.config.lock().unwrap().clone();
-    let (Some(dir), Some(root)) = (config.discs_dir, config.root) else { return Ok(Vec::new()) };
+    if config.discs_dir.is_none() || config.root.is_none() {
+        return Ok(DiscScan { found: Vec::new(), choices: Vec::new() });
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        let catalog = openrac_launcher_core::catalog::load(&root)?;
-        Ok(openrac_launcher_core::discs::scan(&dir, &catalog))
+        let (catalog, found) = scan(&config)?;
+        let choices = disc_choice::choices(&config, &catalog, &found);
+        Ok(DiscScan { found, choices })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Developers only: plays `version`'s disc of its game from now on. Its set-up is put in place
+/// and the other kept aside (disc_choice.rs); the choice is saved in the settings.
+#[tauri::command]
+async fn choose_disc(state: State<'_, AppState>, version: String) -> Result<Config, String> {
+    let file = state.config_file.clone().ok_or("no per-user config folder")?;
+    let mut config = state.config.lock().unwrap().clone();
+    let config = tauri::async_runtime::spawn_blocking(move || {
+        let (catalog, found) = scan(&config)?;
+        disc_choice::choose(&mut config, &catalog, &found, &version)?;
+        config::save(&file, &config)?;
+        Ok::<_, String>(config)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    *state.config.lock().unwrap() = config.clone();
+    Ok(config)
 }
 
 /// Removes what setting `game` up made (OpenGOAL's uninstall); the player's
@@ -323,9 +504,11 @@ async fn sync_progress_from_web(state: State<'_, AppState>) -> Result<Library, S
     let root_for_fetch = root.clone();
     tauri::async_runtime::spawn_blocking(move || {
         use openrac_launcher_core::catalog;
+        // detect::quiet: each curl opened a console window of its own on Windows, at every start.
         let fetch = |url: &str| -> Option<String> {
-            let out = std::process::Command::new("curl")
+            let out = detect::quiet(Path::new("curl"))
                 .args(["-s", "-f", "--connect-timeout", "4", "--max-time", "10", url])
+                .stdin(std::process::Stdio::null())
                 .output()
                 .ok()?;
             if out.status.success() {
@@ -367,9 +550,76 @@ fn backup_saves(serial: String, note: Option<String>) -> Result<openrac_launcher
     openrac_launcher_core::saves::backup_saves(&serial, note.as_deref())
 }
 
+/// Restores a backup of the card; refused while the game runs with it, as an edit is.
 #[tauri::command]
-fn restore_backup(serial: String, backup_name: String) -> Result<(), String> {
-    openrac_launcher_core::saves::restore_backup(&serial, &backup_name)
+async fn restore_backup(serial: String, backup_name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let card = openrac_launcher_core::saves::get_memcard_dir(&serial);
+        if let Some(game) = openrac_launcher_core::save_edit::card_in_use(&card, &serial)? {
+            return Err(format!("{game} is running with this memory card: close it first"));
+        }
+        openrac_launcher_core::saves::restore_backup(&serial, &backup_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The skill points' names from the set-up rac1 disc (`<install>/active/rac1/data/iso_data/rac1/
+/// disc.iso`; both rac1 discs hold the same names at the same text ids), or none.
+fn skill_names(install: Option<PathBuf>) -> Vec<String> {
+    install
+        .map(|i| install::data_dir(&i, "rac1").join("iso_data").join("rac1").join("disc.iso"))
+        .and_then(|iso| openrac_launcher_core::save_edit::skill_point_names(&iso))
+        .unwrap_or_default()
+}
+
+/// One save slot for the save editor (core/src/save_edit.rs), with the skill points' names.
+#[tauri::command]
+async fn read_save(
+    state: State<'_, AppState>,
+    serial: String,
+    slot: usize,
+) -> Result<openrac_launcher_core::save_edit::SaveView, String> {
+    let install = state.config.lock().unwrap().install_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let card = openrac_launcher_core::saves::get_memcard_dir(&serial);
+        let mut view = openrac_launcher_core::save_edit::read_save(&card, &serial, slot)?;
+        view.skill_names = skill_names(install);
+        Ok(view)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Writes the save editor's change into a slot: refused while the game runs with the card or if
+/// the file changed since it was read; the card is backed up first. Raw chunk edits only with the
+/// advanced save editor switched on in Settings.
+#[tauri::command]
+async fn write_save(
+    state: State<'_, AppState>,
+    serial: String,
+    slot: usize,
+    fingerprint: String,
+    change: openrac_launcher_core::save_edit::SaveChange,
+) -> Result<openrac_launcher_core::save_edit::WriteResult, String> {
+    use openrac_launcher_core::save_edit;
+    let (advanced, install) = {
+        let c = state.config.lock().unwrap();
+        (c.save_editor_advanced, c.install_dir.clone())
+    };
+    if matches!(change, save_edit::SaveChange::Raw { .. }) && !advanced {
+        return Err("raw edits need the advanced save editor (Settings)".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let card = openrac_launcher_core::saves::get_memcard_dir(&serial);
+        let mut result = save_edit::write_save(&card, &serial, slot, &fingerprint, &change, || {
+            save_edit::card_in_use(&card, &serial)
+        })?;
+        result.view.skill_names = skill_names(install);
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// A game's overrides folder (`<data>/overrides`), from the install folder in Settings.
@@ -500,6 +750,74 @@ fn ensure_linux_desktop_integration() {
     }
 }
 
+/// Game desktop entries and icons so KDE Plasma and other Linux desktop taskbars show the game's
+/// icon when launched from the launcher or directly.
+#[cfg(target_os = "linux")]
+fn ensure_linux_game_desktop_integration(root: &std::path::Path) {
+    let Ok(home) = std::env::var("HOME") else { return };
+    let home_path = PathBuf::from(home);
+    let icons_base = home_path.join(".local/share/icons/hicolor");
+    let app_dir = home_path.join(".local/share/applications");
+    let _ = std::fs::create_dir_all(&app_dir);
+
+    let games_dir = root.join("port/game");
+    let Ok(entries) = std::fs::read_dir(games_dir) else { return };
+
+    let mut icons_changed = false;
+    let mut entries_changed = false;
+
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let game_id = entry.file_name().to_string_lossy().to_string();
+        let icon_path = entry.path().join("icon.png");
+        if !icon_path.is_file() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&icon_path) else { continue };
+
+        let dir = icons_base.join("512x512/apps");
+        let _ = std::fs::create_dir_all(&dir);
+        let app_id = format!("dev.openrac.{game_id}");
+        let prog_id = format!("openrac-{game_id}");
+
+        icons_changed |= write_if_changed(&dir.join(format!("{app_id}.png")), &bytes);
+        icons_changed |= write_if_changed(&dir.join(format!("{prog_id}.png")), &bytes);
+
+        let exe_path = root.join(format!("port/build/release/openrac-{game_id}"));
+        let title = match game_id.as_str() {
+            "rac1-pal" => "Ratchet & Clank (PAL)",
+            "rac1-ntsc" => "Ratchet & Clank (NTSC)",
+            "rac2-ntsc" => "Ratchet & Clank: Going Commando (NTSC)",
+            "rac3-ntsc" => "Ratchet & Clank: Up Your Arsenal (NTSC)",
+            "rac4-ntsc" => "Ratchet: Deadlocked (NTSC)",
+            _ => "Ratchet & Clank",
+        };
+
+        let make_entry = |wm_class: &str, hidden: bool| {
+            format!(
+                "[Desktop Entry]\nType=Application\nName={title}\nComment=Play {title} with OpenRAC\nExec=\"{}\"\nIcon={app_id}\nTerminal=false\nCategories=Game;\nStartupNotify=true\nStartupWMClass={wm_class}\n{}",
+                exe_path.to_string_lossy(),
+                if hidden { "NoDisplay=true\n" } else { "" }
+            )
+        };
+
+        entries_changed |=
+            write_if_changed(&app_dir.join(format!("{app_id}.desktop")), make_entry(&app_id, false).as_bytes());
+        entries_changed |=
+            write_if_changed(&app_dir.join(format!("{prog_id}.desktop")), make_entry(&prog_id, true).as_bytes());
+    }
+
+    if icons_changed {
+        let _ = std::process::Command::new("gtk-update-icon-cache").arg("-f").arg("-t").arg(&icons_base).status();
+    }
+    if entries_changed || icons_changed {
+        let _ = std::process::Command::new("update-desktop-database").arg(&app_dir).status();
+        let _ = std::process::Command::new("kbuildsycoca6").status();
+    }
+}
+
 /// AppImageKit's AppRun unconditionally sets PYTHONHOME=$APPDIR/usr/ and
 /// PYTHONPATH=$APPDIR/usr/share/pyshared/:, which poisons any Python process
 /// started from the AppImage (both our carried python in resources/openrac/python
@@ -528,11 +846,30 @@ fn tune_webkit_for_wayland() {
     }
 }
 
+/// GTK 3's Wayland backend aborts on startup with an assertion failure in
+/// _gdk_wayland_display_get_scaled_cursor_theme (`display_wayland->cursor_theme_name`) if no
+/// cursor theme name can be resolved from GSettings (common in AppImages on GNOME Wayland or
+/// when cursor themes are misconfigured). Set safe fallbacks for XCURSOR_THEME and XCURSOR_SIZE.
+#[cfg(target_os = "linux")]
+fn ensure_wayland_cursor_fallback() {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    if wayland {
+        if std::env::var("XCURSOR_THEME").map_or(true, |v| v.trim().is_empty()) {
+            std::env::set_var("XCURSOR_THEME", "default");
+        }
+        if std::env::var("XCURSOR_SIZE").map_or(true, |v| v.trim().is_empty()) {
+            std::env::set_var("XCURSOR_SIZE", "24");
+        }
+    }
+}
+
 pub fn run() {
     #[cfg(target_os = "linux")]
     clean_appimage_python_env();
     #[cfg(target_os = "linux")]
     tune_webkit_for_wayland();
+    #[cfg(target_os = "linux")]
+    ensure_wayland_cursor_fallback();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -549,10 +886,33 @@ pub fn run() {
 
             let config_file = app.path().app_config_dir().ok().map(|dir| dir.join("launcher.json"));
             let mut config = config_file.as_deref().map(config::load).unwrap_or_default();
+
+            // First run / startup: ensure the OpenRAC folder exists in the user's home directory.
+            // On Linux: /home/<user>/OpenRAC
+            // On macOS: /Users/<user>/OpenRAC
+            // On Windows: C:\Users\<user>\OpenRAC
+            let home_dir = app.path().home_dir().ok().or_else(detect::home_dir);
+            let openrac_home = home_dir.as_ref().and_then(|h| detect::ensure_openrac_dir_in(h).ok());
+
             // OpenGOAL asks for an install folder at first start; until the
-            // player picks one, games are set up in the launcher's own data folder.
-            if config.install_dir.is_none() {
-                config.install_dir = app.path().app_local_data_dir().ok();
+            // player picks one, games are set up in the user's OpenRAC folder (or launcher's data folder).
+            let local_data = app.path().app_local_data_dir().ok();
+            if let Some(openrac_dir) = &openrac_home {
+                if config.install_dir.is_none() || config.install_dir.as_ref() == local_data.as_ref() {
+                    if let Some(data) = &local_data {
+                        let old_active = data.join("active");
+                        let new_active = openrac_dir.join("active");
+                        if old_active.exists() && !new_active.exists() {
+                            let _ = std::fs::rename(&old_active, &new_active);
+                        }
+                    }
+                    config.install_dir = Some(openrac_dir.clone());
+                    if let Some(cfg_file) = &config_file {
+                        let _ = config::save(cfg_file, &config);
+                    }
+                }
+            } else if config.install_dir.is_none() {
+                config.install_dir = local_data;
             }
 
             // The copy of OpenRAC the launcher carries: what a player plays from (detect::settle).
@@ -562,6 +922,11 @@ pub fn run() {
                 detect::bundled_python(dir).is_some_and(|python| detect::check_tool(Tool::Python, &python).ok)
             });
             detect::settle(&mut config, bundled.as_deref());
+
+            #[cfg(target_os = "linux")]
+            if let Some(root) = &config.root {
+                ensure_linux_game_desktop_integration(root);
+            }
 
             let client_id = config
                 .discord_client_id
@@ -579,6 +944,14 @@ pub fn run() {
                 });
             }
 
+            if let Some(dir) = config_file.as_deref().and_then(Path::parent) {
+                launcher_log::init(dir);
+                launcher_log::line(&format!(
+                    "the launcher {} started on {:?}",
+                    app.package_info().version,
+                    Platform::current()
+                ));
+            }
             app.manage(AppState { config: Mutex::new(config), config_file, jobs: Jobs::default(), discord, bundled });
             Ok(())
         })
@@ -590,6 +963,7 @@ pub fn run() {
             detect,
             check_root,
             check_tool,
+            adopt_godot,
             library,
             run_action,
             cancel_job,
@@ -598,6 +972,7 @@ pub fn run() {
             install_game,
             uninstall_game,
             scan_discs,
+            choose_disc,
             sync_progress_from_web,
             apply_progress_json,
             set_discord_status,
@@ -605,11 +980,20 @@ pub fn run() {
             backup_saves,
             restore_backup,
             open_saves_folder,
+            read_save,
+            write_save,
             overrides_list,
             overrides_set_enabled,
             overrides_move,
             overrides_remove,
             open_game_folder,
+            reports_list,
+            latest_crash,
+            report_text,
+            report_save,
+            report_delete,
+            reports_delete_all,
+            open_reports_folder,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher failed to start");

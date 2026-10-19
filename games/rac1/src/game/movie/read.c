@@ -10,7 +10,7 @@ extern void func_0023BF48(void *);
 extern void func_0023DFE0(void *, int);
 
 /* Copies wrapped input into free decoder spans, records timestamps, then submits the copied bytes. */
-int func_0023C9C0(void *unused, char *entry, char *buffer) {
+int videoCallback(void *unused, char *entry, char *buffer) {
     struct { char *p1; int n1; char *p2; int n2; } spans;
     char *source = *(char **)(entry + 8);
     int total = *(int *)(entry + 0xC);
@@ -31,11 +31,36 @@ int func_0023C9C0(void *unused, char *entry, char *buffer) {
     videoDecEndPut(D_0016130C + 0xD9048, copied);
     return copied > 0;
 }
-INCLUDE_ASM("asm/nonmatchings/text", func_0023CAF8); /* pcmCallback(sceMpeg *, sceMpegCbDataStr *, void *) */
+extern void audioDecBeginPut(void *, char **, int *, char **, int *);
+extern void audioDecEndPut(void *, int);
+
+/* Skips the entry's 4-byte prefix, wraps the source at the ring size (+0x50008),
+ * copies into the decoder's two free spans and reports whether anything was copied. */
+int func_0023CAF8(void *unused, char *entry, char *buffer) {
+    char *dst0, *dst1;
+    int len0, len1;
+    char *src;
+    char *ring;
+    int first, rest;
+    int total;
+    int copied;
+
+    total = *(int *)(entry + 0xC) - 4;
+    src = *(char **)(entry + 8) + 4;
+    if (src >= buffer + *(int *)(buffer + 0x50008)) src -= *(int *)(buffer + 0x50008);
+    first = buffer + *(int *)(buffer + 0x50008) - src;
+    if (total < first) first = total;
+    ring = buffer;
+    rest = total - first;
+    audioDecBeginPut(D_0016130C + 0xD9100, &dst0, &len0, &dst1, &len1);
+    copied = cpy2area(dst0, len0, dst1, len1, src, first, ring, rest);
+    audioDecEndPut(D_0016130C + 0xD9100, copied);
+    return copied > 0;
+}
 extern void *func_00115248(void *dest, const void *src, int n);
 
 /* cpy2area(unsigned char *, int, unsigned char *, int, unsigned char *, int, unsigned char *, int) */
-int func_0023CBE0(char *dst1, int size1, char *dst2, int size2,
+int cpy2area(char *dst1, int size1, char *dst2, int size2,
                   char *src1, int len1, char *src2, int len2) {
     if (size1 + size2 < len1 + len2) {
         return 0;

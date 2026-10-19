@@ -1,6 +1,6 @@
 # OpenRAC Launcher
 
-A desktop app for the Ratchet & Clank games through OpenRAC, for all four
+A desktop app for the Ratchet & Clank games through OpenRAC, for all five
 games. It is to OpenRAC what [OpenGOAL's launcher](https://github.com/open-goal/launcher)
 is to Jak and Daxter: a player sets a game up from the image of their own
 disc, plays the **native PC port**, and can open the levels in Godot to edit
@@ -84,11 +84,38 @@ the disc image and saves are kept.
 - **One main button**, always in the same place, says the next thing to do:
   Set up from your disc, Build the game, Play. What is done less often
   (rebuild, open the folder, the activity log, remove the set-up) is in the
-  menu beside it. The games page shows the same button on each game's tile.
+  menu beside it. Every game has this page, the same for all of them; the
+  list on the left switches between them, and the Games tab opens on the one
+  you used last.
 - **Save files**: the port's memory card (`~/.local/share/openrac/memcard/<serial>/`
   on Linux) with each slot's planet, bolts and save time, backups you can
-  restore, and the folder.
+  restore, and the folder. **Edit** opens a slot of Ratchet & Clank in the save
+  editor: the planet it loads on, bolts, health upgrades, weapons and gadgets,
+  ammo, gold weapons, gold bolts, planets and skill points. **Advanced save
+  editing** (Settings) adds every field and each part of the file as raw bytes,
+  for debugging. It refuses to write while the game runs
+  with that card, backs the card up before every write, and offers Undo
+  ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#the-save-editor)).
+- **When the game crashes**: the game's page says "The game stopped
+  unexpectedly". Your saves are kept. To help us fix it, press **Copy
+  report** and paste it in a [GitHub issue](https://github.com/OpenRAC/OpenRAC/issues)
+  or on the Discord, or **Save report** for a .zip in your Downloads folder
+  to attach. Say what you were doing. Nothing personal goes in: your home
+  folder reads `~`.
+- **Logs and crash reports**, under the save files: each time you played
+  and each crash, newest first, with the same Copy and Save, under **Help**
+  beside the saves. A recent crash marks the game in the list.
+  **Detailed logs** makes the game write more, for
+  when we ask for it.
 - **Level editor**: under **Mods** (below), and in the game's menu.
+- **Two discs of a game, for developers**: with developer tools on and both
+  a game's PAL and NTSC-U images in the games folder, a small **Disc** switch
+  under Play picks which one the page plays; Play, the levels, saves, logs and
+  crash reports follow it, and the choice is remembered. Each disc keeps its
+  own set-up, levels and build: switching moves the other's set-up aside
+  (`iso_data/<game>@<version>`), never reads it again or deletes it
+  ([core/src/disc_choice.rs](core/src/disc_choice.rs)). Players never see it,
+  and with one disc nothing changes.
 - **Layout**: Settings → Launcher switches between Compact (the default:
   the game's name and its main button side by side) and Classic, stacked and
   centred. Compact is one stylesheet, `src/layouts/compact.css`.
@@ -184,7 +211,16 @@ launcher/
   `%APPDATA%\dev.openrac.launcher\` on Windows). Settings shows the path.
 - **Games set up from discs**: the install folder (Settings; by default the
   launcher's per-user data folder), `active/<game>/data/`, as OpenGOAL lays
-  it out.
+  it out (a developer's other disc of the same game waits beside it as
+  `iso_data/<game>@<version>`). The game writes its logs there (`openrac-<id>.log` and the five
+  before it) and its crash reports (`crashes/`).
+- **Its own log**: `launcher.log` beside `launcher.json`: when it started,
+  each command it ran and how it ended; moved to `launcher.1.log` past 1 MB.
+- **A saved report**: `OpenRAC-<report>.zip` in your Downloads folder, only
+  when you press Save report.
+- **The memory card**, only when you ask: a backup (`.backup_<time>…` beside the
+  game's folder in the card), a restored backup, or a slot changed in the save
+  editor, always after a backup of the whole card.
 - **Through the tools it runs**: whatever those tools write in the checkout
   (`baserom/` inputs, build output, `assets/godot` for the level editor), all
   ignored by git.

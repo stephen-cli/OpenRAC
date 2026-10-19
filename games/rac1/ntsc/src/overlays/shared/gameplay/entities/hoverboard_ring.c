@@ -14,12 +14,13 @@
 /* Ported from rac1-decomp (src/overlays/shared/vendor_002CF2C0.c: func_L05_0031C0F0), where it is exact; names translated to the US level program. */
 
 extern float random_angle_radians(void) __asm__("FUN_00213308");
-extern int FUN_001fa728(char *, float);
+extern int fast_bsphere_check(char *, float) __asm__("FUN_001fa728");
 extern s32 scale_game_frames(s32) __asm__("func_001F96F8");
 extern unsigned char *FUN_L00_002743a8(float f0, float f1, int a0, void *pos, int timer, int flag,
                                        int col, float *vel);
 
-void FUN_L05_0031abe0(char *moby) {
+void hoverboard_ring_update(char *moby) __asm__("FUN_L05_0031abe0");
+void hoverboard_ring_update(char *moby) {
     switch (((unsigned char *)moby)[0x20]) {
     case 0:
         ((unsigned char *)moby)[0x30] = 0x80;
@@ -31,7 +32,7 @@ void FUN_L05_0031abe0(char *moby) {
         int i;
         qcopy(v, moby + 0x10);
         v[3] = 8.0f;
-        if (FUN_001fa728((char *)v, 128.0f) != -1) {
+        if (fast_bsphere_check((char *)v, 128.0f) != -1) {
             if (hero.state.control_mode == 0x16) {
                 for (i = 0; i < 3; i++) {
                     float a = random_angle_radians();
@@ -104,6 +105,7 @@ extern char *FUN_L05_0031d160(unsigned char *);
 void FUN_L05_0031cf58(char *m);
 
 /* Mine update: sets its glow, fades it out with camera distance and blows up into debris, smoke and sparks when something touches it. */
+void FUN_L05_0031c8e0(struct Moby *moby);
 void FUN_L05_0031c8e0(struct Moby *moby) {
     struct MineVars_c8e0 *vars = (struct MineVars_c8e0 *)moby->pvars;
     Vec4 tip;
@@ -291,17 +293,17 @@ void FUN_L05_0031cf58(char *m) {
 extern char *FUN_0020c4f8_d160(int) __asm__("FUN_0020c4f8");
 extern void FUN_L00_00250df8_d160(void *) __asm__("FUN_L00_00250df8");
 
-char *FUN_L05_0031d160(unsigned char *a0) {
+char *FUN_L05_0031d160(unsigned char *source_moby) {
     unsigned char *m = (unsigned char *)FUN_0020c4f8_d160(0x5EA);
     if (m != 0) {
-        m[0x30] = a0[0x30];
-        *(unsigned short *)(m + 0x32) = *(unsigned short *)(a0 + 0x32);
+        m[0x30] = source_moby[0x30];
+        *(unsigned short *)(m + 0x32) = *(unsigned short *)(source_moby + 0x32);
         m[0x31] = 1;
-        *(float *)(m + 0x40) = *(float *)(a0 + 0x40);
-        *(float *)(m + 0x44) = *(float *)(a0 + 0x44);
-        *(float *)(m + 0x48) = *(float *)(a0 + 0x48);
-        *(long *)(m + 0x38) = *(long *)(a0 + 0x38);
-        qcopy(m + 0x10, a0 + 0x10);
+        *(float *)(m + 0x40) = *(float *)(source_moby + 0x40);
+        *(float *)(m + 0x44) = *(float *)(source_moby + 0x44);
+        *(float *)(m + 0x48) = *(float *)(source_moby + 0x48);
+        *(long *)(m + 0x38) = *(long *)(source_moby + 0x38);
+        qcopy(m + 0x10, source_moby + 0x10);
         FUN_L00_00250df8_d160(m);
     }
     return (char *)m;
@@ -310,7 +312,7 @@ char *FUN_L05_0031d160(unsigned char *a0) {
 /* Ported from rac1-decomp (src/overlays/shared/vendor_002CF2C0.c: func_L05_0032A868), where it is exact; names translated to the US level program. */
 
 
-extern float FUN_001f9b80(float *, float *);
+extern float vector_distance(float *, float *) __asm__("FUN_001f9b80");
 extern void transform_vector(void *, void *, void *) __asm__("FUN_001f9d20");
 extern void add_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a10");
 extern void normalize_vector_xyz(void *out, void *a, f32 len) __asm__("FUN_001f9bf8");
@@ -331,7 +333,7 @@ void FUN_L05_00329358(char *moby) {
         w[1] = 447.82f;
         w[2] = 63.37f;
         w[3] = 1.0f;
-        if (FUN_001f9b80(w, p) < 48.0f) {
+        if (vector_distance(w, p) < 48.0f) {
             if (p[2] < 62.4f) {
                 p[2] = 62.4f;
             }
@@ -383,26 +385,26 @@ void FUN_L05_00329540(char *m) {
     struct Hero *g;
     char *a;
     char *b;
-    float v0[4];
-    float v1[4];
-    float v2[4];
-    float v3[4];
-    float v4[4];
+    float target_height_offset[4];
+    float look_direction[4];
+    float look_target[4];
+    float camera_offset[4];
+    float gravity_up[4];
     FUN_L05_00329358_c(m);
     g = &hero;
     a = d + 0x80;
     b = d + 0xE0;
-    normalize_vector_xyz(v3, ((char *)g->moby) + 0xC0, 1.0f);
-    normalize_vector_xyz(v3, v3, *(float *)(d + 0xE0));
-    subtract_vector_xyz(at, a, v3);
-    normalize_vector_xyz(v4, &g->gravity_dir, -1.0f);
-    normalize_vector_xyz(v3, v4, *(float *)(b + 0x10));
-    add_vector_xyz(at, at, v3);
-    normalize_vector_xyz(v0, v4, *(float *)(a + 0x4C));
-    add_vector_xyz(v2, v0, a);
-    subtract_vector_xyz(v1, v2, at);
-    normalize_vector_xyz(m, v1, 1.0f);
-    cross_vectors_xyz(up, m, v4);
+    normalize_vector_xyz(camera_offset, ((char *)g->moby) + 0xC0, 1.0f);
+    normalize_vector_xyz(camera_offset, camera_offset, *(float *)(d + 0xE0));
+    subtract_vector_xyz(at, a, camera_offset);
+    normalize_vector_xyz(gravity_up, &g->gravity_dir, -1.0f);
+    normalize_vector_xyz(camera_offset, gravity_up, *(float *)(b + 0x10));
+    add_vector_xyz(at, at, camera_offset);
+    normalize_vector_xyz(target_height_offset, gravity_up, *(float *)(a + 0x4C));
+    add_vector_xyz(look_target, target_height_offset, a);
+    subtract_vector_xyz(look_direction, look_target, at);
+    normalize_vector_xyz(m, look_direction, 1.0f);
+    cross_vectors_xyz(up, m, gravity_up);
     cross_vectors_xyz(side, up, m);
     normalize_vector_xyz(up, up, 1.0f);
     normalize_vector_xyz(side, side, 1.0f);
@@ -583,11 +585,11 @@ extern void cross_vectors_xyz(void *, void *, void *) __asm__("FUN_001f9ad8");
 extern void subtract_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a28");
 extern void add_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a10");
 extern void scale_vector_xyz(void *, void *, f32) __asm__("FUN_001f9a68");
-extern f32 FUN_001f9ab0(void *, void *);
+extern f32 fast_vec_dot(void *, void *) __asm__("FUN_001f9ab0");
 extern f32 vector_length_xyz(void *) __asm__("FUN_001f9af0");
 extern float fast_arc_sin(float) __asm__("FUN_001f9df8");
 extern void rotate_about_axis(void *out, void *v, void *axis, f32 ang) __asm__("FUN_00214890");
-extern float FUN_L00_001eb328(void *, float, float, float, float, float);
+extern float rope_spring_turn(void *, float, float, float, float, float) __asm__("FUN_L00_001eb328");
 extern float FUN_001ebd78(void *, float, float, float, float, float);
 
 /* Camera that orbits the hero while hero.unk88E is set, easing yaw, pitch and distance toward their goals. */
@@ -617,22 +619,22 @@ void FUN_L05_003298d8(Camera *cam) {
         cross_vectors_xyz(&fwd, &up, &side);
         normalize_vector_xyz(&fwd, &fwd, 1.0f);
         subtract_vector_xyz(&rel, &cam->pos, focus);
-        dot = FUN_001f9ab0(&rel, &up);
+        dot = fast_vec_dot(&rel, &up);
         normalize_vector_xyz(&along, &up, dot);
         subtract_vector_xyz(&flat, &rel, &along);
-        dot = FUN_001f9ab0(&fwd, &flat);
+        dot = fast_vec_dot(&fwd, &flat);
         len = vector_length_xyz(&flat);
         if (len == 0.0f) {
             len = 0.0001f;
         }
         ang = 1.5707964f - fast_arc_sin(dot / len);
         normalize_vector_xyz(&unit, &flat, 1.0f);
-        if (FUN_001f9ab0(&side, &unit) < 0.0f) {
+        if (fast_vec_dot(&side, &unit) < 0.0f) {
             ang = -ang;
         }
         cam->yaw = ang;
         rotate_about_axis(&rot, &fwd, &up, ang);
-        dot = FUN_001f9ab0(&rot, &rel);
+        dot = fast_vec_dot(&rot, &rel);
         len = vector_length_xyz(&rel);
         if (len == 0.0f) {
             len = 0.0001f;
@@ -640,7 +642,7 @@ void FUN_L05_003298d8(Camera *cam) {
         tilt = 1.5707964f - fast_arc_sin(dot / len);
         normalize_vector_xyz(&unit, &rel, 1.0f);
         pitch = -tilt;
-        if (FUN_001f9ab0(&up, &unit) < 0.0f) {
+        if (fast_vec_dot(&up, &unit) < 0.0f) {
             pitch = tilt;
         }
         cam->pitch = pitch;
@@ -666,8 +668,8 @@ void FUN_L05_003298d8(Camera *cam) {
         normalize_vector_xyz(&fwd, &fwd, 1.0f);
         rotate_about_axis(&side, &side, &fwd, cam->pitch);
         add_vector_xyz(&cam->pos, focus, &side);
-        cam->yaw = FUN_L00_001eb328(&spring[3], cam->yaw, spring[0], spring[6], spring[9], 0.0f);
-        cam->pitch = FUN_L00_001eb328(&spring[4], cam->pitch, spring[1], spring[7], spring[10], 0.0f);
+        cam->yaw = rope_spring_turn(&spring[3], cam->yaw, spring[0], spring[6], spring[9], 0.0f);
+        cam->pitch = rope_spring_turn(&spring[4], cam->pitch, spring[1], spring[7], spring[10], 0.0f);
         cam->dist = FUN_001ebd78(&spring[5], cam->dist, spring[2], spring[8], spring[11], 0.0f);
         if (hero.unk88E == 0) {
             o->mode = 0;
@@ -746,7 +748,7 @@ typedef struct { char pad0[0x48]; float vel; } Preset_32B1F8;
 typedef struct { char pad0[0x1C]; Preset_32B1F8 *preset; } Row_32B1F8;
 
 extern f32 dot_vectors_xyz(void *, void *) __asm__("func_001F9AB0");
-extern int FUN_L00_001f0d60(float, void *, int, void *);
+extern int coll_sphere(float, void *, int, void *) __asm__("FUN_L00_001f0d60");
 extern void scale_vector_xyz_c(void *, void *, float) __asm__("FUN_001f9a68");
 f32 cam_interp_values(void *, f32, f32, f32, f32, f32) __asm__("FUN_001ebd78");
 float absolute_float(float input) __asm__("func_001F99C0");
@@ -762,7 +764,7 @@ extern void fast_vec_scale(void *, void *, float) __asm__("FUN_001f9a68");
 extern int collide_32B1F8(float, void *, int, void *) __asm__("FUN_L00_001f0d60");
 extern float fabs_32B1F8(float) __asm__("FUN_001f99c0");
 extern void fast_vec_cross(void *, void *, void *) __asm__("FUN_001f9ad8");
-extern void orbit_32B1F8(Camera_32B1F8 *) __asm__("FUN_L05_003298d8");
+extern void FUN_L05_003298d8_c(Camera_32B1F8 *) __asm__("FUN_L05_003298d8");
 
 extern float D_L05_00174278 __attribute__((section(".data")));
 void FUN_L05_00329ce8(Camera_32B1F8 *camera) {
@@ -867,7 +869,7 @@ void FUN_L05_00329ce8(Camera_32B1F8 *camera) {
         else if (focus_state->dist < focus_distance) focus_state->dist = focus_state->dist + 0.02f;
         else focus_state->dist = focus_state->dist - 0.02f;
     }
-    orbit_32B1F8(camera);
+    FUN_L05_003298d8_c(camera);
     qcopy(&focus_state->pos, &orbit->next);
     qcopy(&focus, &focus_state->pos);
     fast_vec_normalize(&offset, &focus_state->axis, focus_state->dist);

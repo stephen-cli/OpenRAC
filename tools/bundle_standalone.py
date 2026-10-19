@@ -16,7 +16,8 @@ OUT (launcher/src-tauri/resources/openrac for an installer) gets:
                              launcher's data folder (a carried copy is read-only)
   port/build/release/        the game built for this system (--game-build:
                              the folder tools/build_port.py built into), with
-                             the libraries beside it
+                             the libraries beside it; on macOS each game is its
+                             application bundle, apps/openrac-<id>/<title>.app
   python/                    a Python to run the tools (--python: an unpacked
                              python-build-standalone "install_only" archive)
 
@@ -37,9 +38,25 @@ ROOT = Path(__file__).resolve().parent.parent
 # What a player's launcher offers for a version, from launcher/actions.json. The rest (the
 # decompilation's builds and checks, the level editor, building the port) needs a checkout.
 KEEP = ("port-levels", "port-levels-check", "play")
-# Where the carried copy writes instead of the checkout's assets/: the game's own default.
-LEVELS = "{data}/port"
-GAMES = ("openrac-rac1-pal",)
+# Where the carried copy writes instead of the checkout's assets/port/<game>/<version>. {data} is the
+# game's, shared by its versions: each version's levels are <data>/port/<version>, which is also where
+# the program looks without --levels.
+LEVELS_ROOT = "{data}/port"
+# The programs carried when the build has them; the first is required.
+GAMES = ("openrac-rac1-pal", "openrac-rac1-ntsc")
+
+
+def levels_folder(key: str) -> str:
+    """The data folder's place for version KEY's levels: <data>/port/<version>."""
+    return f"{LEVELS_ROOT}/{key.split('/')[-1]}"
+
+
+def point_at(args: list[str], levels: str) -> list[str]:
+    """ARGS with --levels naming LEVELS."""
+    if "--levels" not in args:
+        return list(args)
+    at = args.index("--levels")
+    return args[:at + 1] + [levels] + args[at + 2:]
 
 
 def player_actions() -> dict:
@@ -49,6 +66,7 @@ def player_actions() -> dict:
     out["repository"] = []
     out["versions"] = {}
     for key, actions in source["versions"].items():
+        levels = levels_folder(key)
         kept = []
         for action in actions:
             if action["id"] not in KEEP:
@@ -58,21 +76,18 @@ def player_actions() -> dict:
                 args = action.get("args", [])
                 if action["id"] == "port-levels":
                     # editor/extract.py port DISC OUT: OUT is the data folder's, wherever it is.
-                    action["args"] = args[:3] + [LEVELS, "--anywhere", "--replace"]
-                    action["artifact"] = f"{LEVELS}/level_99/manifest.json"
+                    action["args"] = args[:3] + [levels, "--anywhere", "--replace"]
+                    action["artifact"] = f"{levels}/level_99/manifest.json"
                     action["description"] = ("Reads the levels from your disc into the form the game draws: the worlds "
                                              "behind the menus and all 19 levels. About half a minute and 1 GB, once.")
                 elif action["id"] == "port-levels-check":
-                    at = args.index("--levels")
-                    action["args"] = args[:at] + args[at + 2:]          # <data>/port, the game's own default
-                    action["makes"] = f"{LEVELS}/verified-3.json"
-                    action["needs"] = [{"path": f"{LEVELS}/level_99/manifest.json", "from": need["from"]}
+                    action["args"] = point_at(args, levels)
+                    action["makes"] = f"{levels}/verified-3.json"
+                    action["needs"] = [{"path": f"{levels}/level_99/manifest.json", "from": need["from"]}
                                        for need in action.get("needs", [])]
                 else:
-                    at = args.index("--levels") if "--levels" in args else -1
-                    if at >= 0:
-                        action["args"] = args[:at] + args[at + 2:]      # the game looks in <data>/port by itself
-                    action["needs"] = [{"path": f"{LEVELS}/verified-3.json", "from": need["from"]}
+                    action["args"] = point_at(args, levels)
+                    action["needs"] = [{"path": f"{levels}/verified-3.json", "from": need["from"]}
                                        for need in action.get("needs", [])]
                     # The game is started in the data folder: what it writes beside itself (a
                     # screenshot) has a place there, and the copy has no folder for each version.
@@ -89,6 +104,24 @@ def copy_tree(source: Path, dest: Path, keep) -> None:
         if path.is_file() and "__pycache__" not in rel.parts and keep(rel):
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest / rel)
+
+
+def copy_games(build: Path, dest: Path) -> list[str]:
+    """The game programs in BUILD, copied to DEST; their names. On macOS a game is an application
+    bundle named by its title in apps/openrac-<id>/ (port/cmake/MacApp.cmake), carried whole; the
+    build folder's link to its program is not."""
+    carried = []
+    for game in GAMES:
+        apps = build / "apps" / game
+        if any(apps.glob("*.app")):
+            shutil.copytree(apps, dest / "apps" / game, symlinks=True, dirs_exist_ok=True)
+            carried.append(f"apps/{game}")
+            continue
+        for path in sorted(build.glob(f"{game}*")):
+            if path.is_file() and path.suffix in ("", ".exe"):
+                shutil.copy2(path, dest / path.name)
+                carried.append(path.name)
+    return carried
 
 
 def main() -> int:
@@ -129,18 +162,14 @@ def main() -> int:
     if args.game_build:
         dest = out / "port/build/release"
         dest.mkdir(parents=True, exist_ok=True)
-        for game in GAMES:
-            for path in sorted(args.game_build.glob(f"{game}*")):
-                if path.is_file() and path.suffix in ("", ".exe", ".pdb") and path.suffix != ".pdb":
-                    shutil.copy2(path, dest / path.name)
-                    carried.append(path.name)
+        carried += copy_games(args.game_build, dest)
         # The libraries the game was linked against as files of their own (SDL3 when it is not
         # built into the program).
         for pattern in ("*.dll", "*.dylib", "*.so", "*.so.*"):
             for path in sorted(args.game_build.glob(pattern)):
                 shutil.copy2(path, dest / path.name, follow_symlinks=True)
                 carried.append(path.name)
-        if not any(name.startswith(GAMES[0]) for name in carried):
+        if not any(name.split("/")[-1].startswith(GAMES[0]) for name in carried):
             sys.exit(f"{args.game_build} has no {GAMES[0]}: build it first (tools/build_port.py rac1-pal)")
     if args.python:
         if not any((args.python / rel).is_file() for rel in ("bin/python3", "python.exe")):

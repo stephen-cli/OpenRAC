@@ -261,9 +261,10 @@ These variables are read by `openrac-<game>` at run time. Unless said otherwise,
 | Variable | Value | What it does | Read in |
 | --- | --- | --- | --- |
 | `OPENRAC_DATA` | folder path | The extracted data folder, used when `--data` is not given. Without either, the program prints usage and stops. | `port/game/common/main.cpp` |
-| `OPENRAC_DIRECT` | any (set) | Together with `--level N`, goes straight into level N from the title world, as the save page's "continue without saving" starts a new game, skipping the title wait and menus. Without `--level` it does nothing. | `port/game/rac1-pal/host/boot.c` |
+| `OPENRAC_DIRECT` | any (set) | Together with `--level N`, goes straight into level N from the title world, as the save page's "continue without saving" starts a new game, skipping the title wait and menus. Without `--level` it does nothing. | `port/game/rac1/host/boot.c` |
 | `OPENRAC_PRESS` | `FRAME:MASK:FRAMES[:LX:LY[:RX:RY]],...` | Holds pad buttons on port 0 for scripted runs. `FRAME` is the window frame to start at (world, 2D and movie frames all count), `MASK` is hexadecimal in the pad's own bit values (0x4000 cross, 0x8 start), `FRAMES` the number of frames (default 5). The optional sticks are 0-255, 128 centred, 0 left or up; left stick `LX:LY`, right stick `RX:RY`. | `port/game/common/frontend.cpp` |
 | `OPENRAC_WRITE` | `FRAME:ADDRESS:VALUE[:FRAMES],...` | Writes a 32-bit word into the game's memory at each vertical blank from `FRAME` for `FRAMES` blanks (default 1). `ADDRESS` and `VALUE` are hexadecimal; `FRAME` and `FRAMES` decimal. | `port/game/common/main.cpp` |
+| `OPENRAC_HIDDEN` | any (set) | With `--window`: the window is made and drawn as always but never shown, so scripted runs open nothing on the screen and several can run at once. Screenshots still work. Without `--window` the game has no pad, terrain collision or disc movies, so it cannot be played by script. | `port/game/common/frontend.cpp` |
 | `OPENRAC_DEBUG_MENU` | `N` (decimal frame) | Opens the developer menu by script at window frame `N` (or later), if the menu is available: `OPENRAC_DEVELOPER` on, and the boot program (title and main menu) loaded. Unset means never. | `port/game/common/debug_menu.cpp` |
 | `OPENRAC_DEVELOPER` | `1` | Turns the launcher's developer mode on. The value matters: unset, empty or `0` is off; anything else is on. Without it the menus are the game's own. | `port/game/common/debug_menu.cpp` |
 
@@ -284,7 +285,8 @@ These variables are read by `openrac-<game>` at run time. Unless said otherwise,
 
 | Variable | Value | What it does | Read in |
 | --- | --- | --- | --- |
-| `OPENRAC_LOG` | `debug` | Sets the log level to debug. Any other value, or unset, leaves it at info. | `port/common/log.cpp` |
+| `OPENRAC_LOG` | `verbose`, `debug` | `verbose`: the detailed log a player can turn on (the launcher's Detailed logs; `verbose_log = 1` in the settings): level program loads, the first pad's changes, the callers of functions with no C, repeated calls to unknown code addresses. `debug`: everything, each frame's DMA chains and texture uploads too. Unset: info. | `port/common/log.cpp` |
+| `OPENRAC_CRASH_TEST` | `KIND:FRAME` | For testing the crash report only: stops the program on purpose at that frame. `segv` (game memory that is not mapped), `host` (a host address), `abort`, `fpe`, `fatal` (`log::fatal`), `trap` (the game's trap). The report goes to `<data>/crashes/` (port/common/crash.h). | `port/game/common/main.cpp` |
 | `OPENRAC_DEBUG` | any (set) | Every 100th frame, logs the game's state: level, camera, mobys, layers drawn, menu and pad words, fog, load stage, for bring-up. Also gates `OPENRAC_FX_DUMP`. | `port/game/common/frontend.cpp` |
 | `OPENRAC_FX_DUMP` | `FRAME` (decimal) | Only read inside the `OPENRAC_DEBUG` report (so every 100th frame): for frames from `FRAME` up to `FRAME`+99, logs each effect quad. | `port/game/common/frontend.cpp` |
 | `OPENRAC_MOBY_LOG` | `N[:RADIUS]` | Every `N` ticks (`N` > 0), logs the mobys within `RADIUS` game units of the hero (default 20): class, address, state, mode bits, animation, position, distance, collision radius and update function. | `port/game/common/frontend.cpp` |
@@ -294,15 +296,16 @@ These variables are read by `openrac-<game>` at run time. Unless said otherwise,
 | `OPENRAC_FPS` | any (set) | Every 300 frames, logs the frames per second over that span. | `port/game/common/main.cpp` |
 | `OPENRAC_HITCH` | any (set) | Logs each frame that took more than 1.25 times the frame time, with its duration in ms. | `port/game/common/main.cpp` |
 | `OPENRAC_WATCH` | `ADDRESS:COUNT[:i],...` | Each frame, logs `COUNT` values (at most 32) from each hexadecimal game `ADDRESS`: floats by default, words with the third field `i`. `COUNT` is decimal. | `port/game/common/main.cpp` |
+| `OPENRAC_STRAFE_TRACE` | any (set) | Ratchet & Clank: each pad report, logs the strafe setting and what it does, the hero's state, slot 0's item, the buttons as held and as the game sees them, Hold's latched yaw, his facing, move yaw, the camera's yaw and his position ([SETTINGS.md](SETTINGS.md#7-strafe-ratchet--clank)). | `port/game/rac1/host/strafe.c` |
 | `OPENRAC_TRACE_INPUT` | any (set) | Logs a port's buttons and stick values, at most every 25 frames per port. | `port/game/common/frontend.cpp` |
 | `OPENRAC_TRACE_CD` | any (set) | Prints each disc read (sector count, start sector, destination address) on stderr. | `port/game/common/lib/cdvd.c` |
-| `OPENRAC_TRACE_WAD` | any (set) | Prints each WAD decompression (addresses, first four bytes, output size) on stderr. | `port/game/rac1-pal/host/hand.c` |
+| `OPENRAC_TRACE_WAD` | any (set) | Prints each WAD decompression (addresses, first four bytes, output size) on stderr. | `port/game/rac1/host/hand.c` |
 | `OPENRAC_TRACE_MISSING` | any (set) | On the first call to each function that has no C, also prints a host stack trace. Without it only the warning is logged. | `port/runtime/guest.cpp` |
 | `OPENRAC_TRACE_RELOCATION` | any (set) | Reports level-code relocation: level addresses with no paired address nearby, searches of the executable's code in a level, and calls and hooks resolved inside level copies. | `port/runtime/guest.cpp` |
-| `OPENRAC_SOUND_LOG` | any (set) | Prints each command the game sends its sound driver, with its first four words and the reply, on stderr. | `port/game/rac1-pal/host/hand.c` |
-| `OPENRAC_HIT_LOG` | any (set) | Prints each hit sphere with a template, and the mobys it listed, on stderr. | `port/game/rac1-pal/host/collision.c` |
-| `OPENRAC_COLL_TRACE` | any (set) | Counts collision queries and hits by kind (line, sphere, capsule, sphere-mobys, hero-groups, boot line) and prints the totals on stderr every 2000 queries. | `port/game/rac1-pal/host/collision.c` |
-| `OPENRAC_UI_LOG` | any (set) | Logs the caller of each 2D quad routine call and each emitted quad. | `port/game/rac1-pal/host/ui2d.c` |
+| `OPENRAC_SOUND_LOG` | any (set) | Prints each command the game sends its sound driver, with its first four words and the reply, on stderr. | `port/game/rac1/host/hand.c` |
+| `OPENRAC_HIT_LOG` | any (set) | Prints each hit sphere with a template, and the mobys it listed, on stderr. | `port/game/rac1/host/collision.c` |
+| `OPENRAC_COLL_TRACE` | any (set) | Counts collision queries and hits by kind (line, sphere, capsule, sphere-mobys, hero-groups, boot line) and prints the totals on stderr every 2000 queries. | `port/game/rac1/host/collision.c` |
+| `OPENRAC_UI_LOG` | any (set) | Logs the caller of each 2D quad routine call and each emitted quad. | `port/game/rac1/host/ui2d.c` |
 
 ### Renderer and timing switches
 
@@ -312,7 +315,7 @@ These variables are read by `openrac-<game>` at run time. Unless said otherwise,
 | `OPENRAC_NO_BLEND` | any (set) | Forces one frame per tick (no interpolation between ticks) and no vertical sync, whatever the frame rate setting. | `port/game/common/frontend.cpp` |
 | `OPENRAC_ANIM` | `0` | Draws every moby in its bind pose. Only the value `0` has an effect; unset or anything else animates. | `port/game/common/frontend.cpp` |
 | `OPENRAC_UI_REPLAY` | any (set) | Replays the game's own GS packets for the 2D layer instead of drawing its quads natively, for comparing. | `port/game/common/frontend.cpp` |
-| `OPENRAC_UI_SKIP` | `NAME,...` | The listed 2D routines (matched by substring against the list, for example `func_001F5800`) send the game's own packets instead of native quads, for bisecting. | `port/game/rac1-pal/host/ui2d.c` |
+| `OPENRAC_UI_SKIP` | `NAME,...` | The listed 2D routines (matched by substring against the list, for example `func_001F5800`) send the game's own packets instead of native quads, for bisecting. | `port/game/rac1/host/ui2d.c` |
 | `OPENRAC_UI_RESIDUAL` | any (set) | Logs, once each, the kinds of 2D primitive still drawn from the game's GS packets rather than as native quads. | `port/renderer/direct.cpp` |
 | `OPENRAC_SHOW_MISSING` | any (set) | Draws textured primitives whose texture has not been uploaded with the magenta placeholder; by default such draws write nothing. | `port/renderer/direct.cpp` |
 | `OPENRAC_NO_PUMP_FIBER` | any (set) | Windows only: runs the game and the window pump in one loop instead of in separate fibers, for comparing. | `port/platform/pump.cpp` |

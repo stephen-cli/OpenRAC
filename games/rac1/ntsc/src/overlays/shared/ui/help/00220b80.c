@@ -71,7 +71,7 @@ void FUN_L02_002226d8(void)
 {
     Vec4 old_pos;
     Vec4 tmp;
-    Vec4 tmp2;
+    Vec4 velocity_projection_source;
     f32 limit;
     f32 d;
     f32 w;
@@ -142,15 +142,15 @@ void FUN_L02_002226d8(void)
     }
     normalize_vector_xyz(&hero.motion.unk130, &tmp, d);
 
-    qcopy(&tmp2, &hero.motion.velocity);
-    FUN_L00_00233ba0((float *)&tmp2, (float *)&tmp2, 0.0f);
+    qcopy(&velocity_projection_source, &hero.motion.velocity);
+    FUN_L00_00233ba0((float *)&velocity_projection_source, (float *)&velocity_projection_source, 0.0f);
     FUN_L00_00233ba0((float *)&hero.motion.unk120, (float *)&hero.motion.unk120, 0.0f);
     normalize_vector_xyz(&hero.motion.unk120, &hero.motion.unk120, 1.0f);
-    d = dot_vectors_xyz(&hero.motion.unk120, &tmp2);
+    d = dot_vectors_xyz(&hero.motion.unk120, &velocity_projection_source);
     if (d < 0.0f) {
         d = 0.0f;
     }
-    normalize_vector_xyz(&hero.motion.unk120, &tmp2, d);
+    normalize_vector_xyz(&hero.motion.unk120, &velocity_projection_source, d);
 
     hero.motion.speed_xy = vector_length_xyz(&hero.motion.unk110);
     hero.motion.unk164 = vector_length_xy(&hero.motion.unk110);
@@ -372,7 +372,7 @@ extern void FUN_L00_00217658(void);
 extern void FUN_L00_00221ee0(void);
 extern void FUN_L00_00222158(void);
 extern s32 get_ammo(s32) __asm__("FUN_L00_00233e98");
-extern s32 FUN_L00_0028d8c0(struct Moby *, s32);
+extern s32 voice_is_playing(struct Moby *, s32) __asm__("FUN_L00_0028d8c0");
 extern void FUN_L00_0029a6b0(s32);
 
 /*
@@ -540,7 +540,7 @@ s32 FUN_L02_0022ee00(void)
                         FUN_L00_0020e4c8();
                     }
                 } else if ((controller_state.held & buttons) && get_ammo(-1) == 0 &&
-                           FUN_L00_0028d8c0(hero.items[0].moby, vars->voice) == 0) {
+                           voice_is_playing(hero.items[0].moby, vars->voice) == 0) {
                     vars->voice = allocate_voice_for_target_entry(0, 0, hero.items[0].moby);
                 }
             }

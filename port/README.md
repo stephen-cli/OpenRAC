@@ -50,13 +50,24 @@ games/rac1 (the decompilation, read only)
    │  hostgen writes it again for game memory
    ▼
 build/.../games/rac1-pal/gen/*.c  +  game/common/lib/*.c (library replacements, shared)
-                                 +  game/rac1-pal/host/*.c (the game's own, if any)
+                                 +  game/rac1-pal/host/*.c (the game's own, if any;
+                                    rac1's versions share game/rac1/host)
    │  compiled as C, linked with runtime/
    ▼
 openrac-rac1-pal --data <install>/active/rac1/data
    loads the player's executable's data to its addresses, registers every
    function by code address, runs the game's main()
 ```
+
+On macOS each windowed program is also an application bundle named by the
+game's title and version, so that the Dock, Cmd-Tab, Activity Monitor and
+crash reports show "Ratchet & Clank (PAL)" rather than the file name:
+`build/release/apps/openrac-rac1-pal/Ratchet & Clank (PAL).app` (the title
+and the version's video standard from `games/<game>/game.json`, which the
+window's title shows too; see
+[cmake/MacApp.cmake](cmake/MacApp.cmake)). `build/release/openrac-rac1-pal`
+is a link to its program, for a shell; macOS names a program started through
+the link after the link. The launcher starts the one in the bundle.
 
 The program stops at the first function that has no C yet and names it.
 For OpenRAC's decompilation that is the boot stage, still assembly; a copy

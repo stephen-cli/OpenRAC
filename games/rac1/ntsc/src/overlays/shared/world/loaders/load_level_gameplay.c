@@ -35,7 +35,7 @@ typedef struct {
     f32 length;
 } P_241788;
 
-extern f32 FUN_001fa6c0(s32);
+extern f32 convert_integer_to_float(s32) __asm__("FUN_001fa6c0");
 extern s32 FUN_001fa6d0(f32);
 extern s32 fptodp(f32) __asm__("FUN_00120478");
 extern void debug_print(void *, s32, s32) __asm__("FUN_001e93b0");
@@ -58,7 +58,7 @@ void FUN_L00_00241788(u8 *src, s32 n) {
             if (next_start == 0) {
                 next_start = *(s32 *)(src + 0x40);
             }
-            entries[i].length = FUN_001fa6c0(next_start - *(s32 *)(src + 0)) * 0.0009765625f;
+            entries[i].length = convert_integer_to_float(next_start - *(s32 *)(src + 0)) * 0.0009765625f;
             entries[i + 1].id = -1.0f;
             entries[i + 1].length = 0.0f;
         }
@@ -66,7 +66,7 @@ void FUN_L00_00241788(u8 *src, s32 n) {
     }
     do {
         done = 1;
-        for (j = 0; j < n - 1; j++) {
+        for (j = 0; j < n; j++) {
             if (entries[j].length < entries[j + 1].length) {
                 f32 id = entries[j].id;
                 f32 length = entries[j].length;
@@ -410,7 +410,7 @@ extern char *D_L00_00160108_macro __asm__("D_L00_00160108") MACRO_ADDR;
 extern char *D_L00_0016016C_macro __asm__("D_L00_0016016C") MACRO_ADDR;
 extern char *D_L00_0015F318  MACRO_ADDR;
 extern char *D_L00_001B04B0[];
-extern char *func_0020D348_m(int);
+extern char *func_0020D348_m(int) __asm__("FUN_0020c4f8");
 extern char D_L00_00166C80[];
 extern char D_L00_0016C780[];
 extern char D_L00_0016C7B0[];
@@ -466,7 +466,7 @@ extern int D_L00_0016C058[];
 extern int D_L00_001AB840[];
 extern int D_L00_001BA4D0[];
 extern int debug_print_alt() __asm__("FUN_001e93b0");
-extern int FUN_L00_0024d8d0(void *, void *);
+extern int fast_decompress(void *, void *) __asm__("FUN_L00_0024d8d0");
 extern int FUN_L00_00284d90(int, int);
 extern s32 truncate_float_to_s32(f32) __asm__("func_001FA6D0");
 extern short D_L00_001AC780[];
@@ -520,7 +520,7 @@ extern unsigned char D_L00_001BB684[];
 extern f32 frame_scale __asm__("D_0015ED60") MACRO_ADDR;
 extern s32 pal_mode __asm__("D_0015ED80") MACRO_ADDR;
 extern s32 game_language __asm__("D_0015ED88") MACRO_ADDR;
-char *load_level_gameplay(int arg0) {
+char *load_level_gameplay(int skip_gameplay_read) {
     LevelHeader *hdr;
     char *mem;
     float *ship;
@@ -529,7 +529,7 @@ char *load_level_gameplay(int arg0) {
 
     hdr = D_L00_00173E00.f4;
     mem = D_L00_00173E00.f18;
-    if (arg0 == 0) {
+    if (skip_gameplay_read == 0) {
         if (pal_mode != 0) {
             load(mem, D_00137B80.f2978, D_00137B80.f297C);
         } else {
@@ -538,7 +538,7 @@ char *load_level_gameplay(int arg0) {
         level_root[1] = mem; /* D_0015EE50 */
     }
     FlushCache(0);
-    FUN_L00_0024d8d0(level_root[1], hdr);
+    fast_decompress(level_root[1], hdr);
     FlushCache(0);
     FillTransferWords(&D_0013F350, 0, 0x2310);
     FillTransferWords(D_L00_00166C80, 0, 0x3A0);
@@ -1850,9 +1850,9 @@ s32 FUN_L00_00244110(s32 full, s32 keep) {
     char *end;
     Span244110 *span;
     TexRef244110 *tex;
-    TexRef244110 *t1;
-    TexRef244110 *t3;
-    TexRef244110 *t4;
+    TexRef244110 *tfrag_texture_refs;
+    TexRef244110 *tie_texture_refs;
+    TexRef244110 *shrub_texture_refs;
     char *tbl;
     s32 i;
     s32 j;
@@ -1868,7 +1868,7 @@ s32 FUN_L00_00244110(s32 full, s32 keep) {
     s32 ci;
     char *x;
     char *y;
-    s32 a1, a2, a3;
+    s32 a1, a2, sound_slot_index;
     char *q1, *q2;
     u64 *t;
 
@@ -1898,23 +1898,23 @@ s32 FUN_L00_00244110(s32 full, s32 keep) {
         D_L00_001827F0[1] = 0x0000FFA0000000E0;
         D_L00_001827F0[2] = 0x0040000400004000;
 
-        t1 = (TexRef244110 *)((char *)h + h[0xD]);
+        tfrag_texture_refs = (TexRef244110 *)((char *)h + h[0xD]);
         D_L00_00160F54 = h[0xC];
         for (c1 = 0; c1 < D_L00_00160F54; c1++)
-            D_L00_001C4A00[c1] = D_L00_0015F40C + t1[c1].offset + (log2dim(t1[c1].kind) << 28);
+            D_L00_001C4A00[c1] = D_L00_0015F40C + tfrag_texture_refs[c1].offset + (log2dim(tfrag_texture_refs[c1].kind) << 28);
         tex = (TexRef244110 *)((char *)h + h[0xF]);
         texture_count = h[0xE];
         for (c2 = 0; c2 < texture_count; c2++)
             D_L00_00199A80[c2] = D_L00_0015F40C + tex[c2].offset + (log2dim(tex[c2].kind) << 28);
         fast_mem_copy(D_L00_001AEBC0, tex, texture_count * 16);
-        t3 = (TexRef244110 *)((char *)h + h[0x11]);
+        tie_texture_refs = (TexRef244110 *)((char *)h + h[0x11]);
         D_L00_00160FD4 = h[0x10];
         for (c3 = 0; c3 < D_L00_00160FD4; c3++)
-            D_L00_001C6700[c3] = D_L00_0015F40C + t3[c3].offset + (log2dim(t3[c3].kind) << 28);
-        t4 = (TexRef244110 *)((char *)h + h[0x13]);
+            D_L00_001C6700[c3] = D_L00_0015F40C + tie_texture_refs[c3].offset + (log2dim(tie_texture_refs[c3].kind) << 28);
+        shrub_texture_refs = (TexRef244110 *)((char *)h + h[0x13]);
         D_L00_001604AC = h[0x12];
         for (c4 = 0; c4 < D_L00_001604AC; c4++)
-            D_L00_001BC5B0[c4] = D_L00_0015F40C + t4[c4].offset + (log2dim(t4[c4].kind) << 28);
+            D_L00_001BC5B0[c4] = D_L00_0015F40C + shrub_texture_refs[c4].offset + (log2dim(shrub_texture_refs[c4].kind) << 28);
 
         initialize_tfrag_render_data(base + h[2], (char *)h + h[0xD]);
         if (h[3])
@@ -1989,14 +1989,14 @@ s32 FUN_L00_00244110(s32 full, s32 keep) {
         span++;
         free += n * 32;
         e = tbl + span->off;
-        for (a3 = 0; a3 < D_L00_0015F5F0; a3++) {
-            if (D_L00_0015F5F4[a3].sound >= span->count) {
+        for (sound_slot_index = 0; sound_slot_index < D_L00_0015F5F0; sound_slot_index++) {
+            if (D_L00_0015F5F4[sound_slot_index].sound >= span->count) {
                 printf_1e93b0(D_L00_001E8780);
-                D_L00_0015F5F4[a3].sound = -1;
+                D_L00_0015F5F4[sound_slot_index].sound = -1;
             } else {
-                D_L00_0015F5F4[a3].sound = *(u16 *)(e + D_L00_0015F5F4[a3].sound * 4);
+                D_L00_0015F5F4[sound_slot_index].sound = *(u16 *)(e + D_L00_0015F5F4[sound_slot_index].sound * 4);
             }
-            D_L00_0015F5F4[a3].time = sound_bank_handle;
+            D_L00_0015F5F4[sound_slot_index].time = sound_bank_handle;
         }
         end = free + 0x3F;
         span++;
@@ -2108,6 +2108,7 @@ extern s32 start_audio_stream_read(void *, s32, s32) __asm__("FUN_00216788");
 extern void update_audio_stream_until_idle(s32) __asm__("FUN_002168a8");
 
 /* streams entry i of the current sector list into the loader buffer */
+s32 FUN_L00_002451b8(s32 i);
 s32 FUN_L00_002451b8(s32 i) {
     u8 *buf = D_L00_0016C860.buf;
     s32 start;
@@ -2126,3 +2127,73 @@ s32 FUN_L00_002451b8(s32 i) {
     }
     return 1;
 }
+
+s64 D_L01_00182C60[1] __attribute__((section(".data"))) = {0};
+s64 D_L01_00182C68[1] __attribute__((section(".data"))) = {0};
+s64 D_L01_00182C78[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_0017441C[1] __attribute__((section(".data"))) = {0};
+s64 D_L02_00182DE0[1] __attribute__((section(".data"))) = {0};
+s64 D_L02_00182DE8[1] __attribute__((section(".data"))) = {0};
+s64 D_L02_00182DF8[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001B0220[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001B0280[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_00173F1C[1] __attribute__((section(".data"))) = {0};
+s64 D_L03_001828E0[1] __attribute__((section(".data"))) = {0};
+s64 D_L03_001828E8[1] __attribute__((section(".data"))) = {0};
+s64 D_L03_001828F8[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_00173F9C[1] __attribute__((section(".data"))) = {0};
+s64 D_L04_00182960[1] __attribute__((section(".data"))) = {0};
+s64 D_L04_00182968[1] __attribute__((section(".data"))) = {0};
+s64 D_L04_00182978[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_0017421C[1] __attribute__((section(".data"))) = {0};
+s64 D_L05_00182C60[1] __attribute__((section(".data"))) = {0};
+s64 D_L05_00182C68[1] __attribute__((section(".data"))) = {0};
+s64 D_L05_00182C78[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_0017461C[1] __attribute__((section(".data"))) = {0};
+s64 D_L08_00182FE0[1] __attribute__((section(".data"))) = {0};
+s64 D_L08_00182FE8[1] __attribute__((section(".data"))) = {0};
+s64 D_L08_00182FF8[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001B0420[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001B0480[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_00173F9C[1] __attribute__((section(".data"))) = {0};
+s64 D_L09_00182960[1] __attribute__((section(".data"))) = {0};
+s64 D_L09_00182968[1] __attribute__((section(".data"))) = {0};
+s64 D_L09_00182978[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_0017429C[1] __attribute__((section(".data"))) = {0};
+s64 D_L10_00182C60[1] __attribute__((section(".data"))) = {0};
+s64 D_L10_00182C68[1] __attribute__((section(".data"))) = {0};
+s64 D_L10_00182C78[1] __attribute__((section(".data"))) = {0};
+s64 D_L11_001831E0[1] __attribute__((section(".data"))) = {0};
+s64 D_L11_001831E8[1] __attribute__((section(".data"))) = {0};
+s64 D_L11_001831F8[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001B0620[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001B0680[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_0017429C[1] __attribute__((section(".data"))) = {0};
+s64 D_L12_00182C60[1] __attribute__((section(".data"))) = {0};
+s64 D_L12_00182C68[1] __attribute__((section(".data"))) = {0};
+s64 D_L12_00182C78[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_0017411C[1] __attribute__((section(".data"))) = {0};
+s64 D_L13_00182AE0[1] __attribute__((section(".data"))) = {0};
+s64 D_L13_00182AE8[1] __attribute__((section(".data"))) = {0};
+s64 D_L13_00182AF8[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_0017451C[1] __attribute__((section(".data"))) = {0};
+s64 D_L14_00182EE0[1] __attribute__((section(".data"))) = {0};
+s64 D_L14_00182EE8[1] __attribute__((section(".data"))) = {0};
+s64 D_L14_00182EF8[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001B0320[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001B0380[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_0017441C[1] __attribute__((section(".data"))) = {0};
+s64 D_L15_00182DE0[1] __attribute__((section(".data"))) = {0};
+s64 D_L15_00182DE8[1] __attribute__((section(".data"))) = {0};
+s64 D_L15_00182DF8[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001B0220[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001B0280[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_0017421C[1] __attribute__((section(".data"))) = {0};
+s64 D_L16_00182C60[1] __attribute__((section(".data"))) = {0};
+s64 D_L16_00182C68[1] __attribute__((section(".data"))) = {0};
+s64 D_L16_00182C78[1] __attribute__((section(".data"))) = {0};
+s64 D_L17_001830E0[1] __attribute__((section(".data"))) = {0};
+s64 D_L17_001830E8[1] __attribute__((section(".data"))) = {0};
+s64 D_L17_001830F8[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001B0520[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001B0580[1] __attribute__((section(".data"))) = {0};

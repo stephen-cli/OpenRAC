@@ -9,6 +9,7 @@ import {
   type ActionView,
   type AppInfo,
   type Config,
+  type DiscChoice,
   type FoundDisc,
   type Library,
   type RunInputs,
@@ -17,9 +18,10 @@ import {
   type VersionView,
 } from "./api";
 import { Queue, type Job } from "./queue";
+import { lastLines, PLAY_ACTIONS, unseenRecent, type StopNotice } from "./reports";
 import { checkForUpdate, type UpdateInfo } from "./updates";
 
-export type Page = "library" | "game" | "mods" | "tasks" | "settings";
+export type Page = "library" | "game" | "mods" | "tasks" | "develop" | "settings";
 
 interface AppState {
   info: AppInfo | null;
@@ -29,12 +31,22 @@ interface AppState {
   libraryError: string | null;
   /** The games found in the player's games folder (api.scanDiscs). */
   discs: FoundDisc[];
+  /** Developers only: the games whose disc can be switched (core/src/disc_choice.rs). */
+  discChoices: DiscChoice[];
   page: Page;
   /** The version the game page shows (`rac1/pal`). */
   version: string | null;
+  /** What Develop shows: "checkout", "console", or a version's key (`rac1/pal`). */
+  develop: string;
   toasts: { id: number; text: string; kind: "info" | "error" }[];
   update: UpdateInfo | null;
   showUpdateModal: boolean;
+  /** The game stopped unexpectedly: the notice on its Play page, until dismissed. */
+  stopped: StopNotice | null;
+  /** Bumped when the logs may have changed (the game ended): the logs list reads them again. */
+  reportsChanged: number;
+  /** Each set-up game's crash reports: how many, and how many in the last three days (the tiles' mark). */
+  crashes: Record<string, { total: number; recent: number }>;
 }
 
 export const app = $state<AppState>({
@@ -43,11 +55,16 @@ export const app = $state<AppState>({
   library: null,
   libraryError: null,
   discs: [],
+  discChoices: [],
   page: "library",
   version: null,
+  develop: "checkout",
   toasts: [],
   update: null,
   showUpdateModal: false,
+  stopped: null,
+  reportsChanged: 0,
+  crashes: {},
 });
 
 /** The time, once a second: what a running job's elapsed time is counted against. One timer for
@@ -90,7 +107,14 @@ export async function start() {
     queue.apply(event);
     if (event.type === "exit") {
       const job = queue.jobs.find((j) => j.id === event.id);
-      if (job?.state === "failed") toast(`${job.title} failed`, "error");
+      const played = !!job && PLAY_ACTIONS.includes(job.actionId) && job.scope.kind === "version";
+      if (played) {
+        app.reportsChanged++;
+        void countCrashes();
+      }
+      // The game stopping on its own is not a failed task: the Play page says what happened.
+      if (job?.state === "failed" && played) void gameStopped(job);
+      else if (job?.state === "failed") toast(`${job.title} failed`, "error");
       if (job) settle(job.key, job.state === "succeeded");
       void refresh();
       updateDiscordPresence();
@@ -102,30 +126,124 @@ export async function start() {
   if (app.config.lastVersion) app.version = app.config.lastVersion;
   await refresh();
   void syncProgressWeb();
-  if (app.info.version) {
-    void checkForUpdate(app.info.version).then((up) => {
-      if (up) app.update = up;
-    });
+  void adoptGodot();
+  // A new launcher is looked for at start unless the player turned that off (Settings).
+  if (app.info.version && app.config.checkUpdates) {
+    void lookForUpdate();
+  }
+}
+
+/** The game ended with an error status or a signal: find its crash report and show the notice. */
+async function gameStopped(job: Job) {
+  if (job.scope.kind !== "version") return;
+  const versionKey = job.scope.key;
+  const game = versionKey.split("/")[0] ?? versionKey;
+  const since = Math.floor((job.startedAt ?? job.queuedAt) / 1000) - 2;
+  // No install folder: the notice still says it stopped.
+  const crash = await api.latestCrash(game, since).catch(() => null);
+  app.stopped = { game, versionKey, code: job.code, at: job.endedAt ?? Date.now(), crash, lines: lastLines(job.lines) };
+  // On another page, the player is told where to look.
+  if (app.page !== "game" || currentVersion()?.game !== game) {
+    toast("The game stopped unexpectedly. Its page has a report you can send us.", "error");
+  }
+}
+
+/** How many crash reports each set-up game has, for the tiles and the Play page's badge. */
+export async function countCrashes() {
+  const counts: AppState["crashes"] = {};
+  const recent = Date.now() / 1000 - 3 * 86400;
+  for (const g of app.library?.games ?? []) {
+    if (!g.install?.extracted) continue;
+    try {
+      const crashes = (await api.reportsList(g.id)).filter((e) => e.kind === "crash");
+      const seen = app.config?.crashesSeen[g.id] ?? 0;
+      counts[g.id] = { total: crashes.length, recent: unseenRecent(crashes, seen, recent).length };
+    } catch {
+      // no install folder: nothing to count
+    }
+  }
+  app.crashes = counts;
+}
+
+/**
+ * The player has seen the crashes this game has now: no notice, button or tile mark is shown for
+ * them again, only for one that comes later. Kept in the launcher's settings (crashesSeen).
+ */
+export async function dismissCrashes(game: string) {
+  if (!app.config) return;
+  let newest = app.config.crashesSeen[game] ?? 0;
+  try {
+    for (const e of await api.reportsList(game)) if (e.kind === "crash") newest = Math.max(newest, e.time);
+  } catch {
+    // no install folder: nothing to mark
+  }
+  const saved = await guard(
+    api.saveConfig({ ...app.config, crashesSeen: { ...app.config.crashesSeen, [game]: newest } }),
+  );
+  if (saved) app.config = saved;
+  await countCrashes();
+}
+
+/** Puts the notice away; its crash counts as seen. */
+export function dismissStopped() {
+  const game = app.stopped?.game;
+  app.stopped = null;
+  if (game) void dismissCrashes(game);
+}
+
+/** Looks for a new launcher now (at start, or Settings' "Check now"); true when one is out. */
+/** Asks whether a newer launcher is out: "found" (app.update holds it), "latest", or "failed"
+ *  when the question could not be asked (no connection), which is never read as "latest". */
+export async function lookForUpdate(): Promise<"found" | "latest" | "failed"> {
+  if (!app.info?.version) return "failed";
+  try {
+    const up = await checkForUpdate(app.info.version);
+    app.update = up;
+    return up ? "found" : "latest";
+  } catch {
+    return "failed";
   }
 }
 
 /** Reads the library again: after a job, on focus, after settings change. */
+// What the library and the disc scan last were, as JSON: refresh runs on every focus of the
+// window, and an answer that did not change is not put in `app`, so nothing that shows it is
+// worked out and drawn again.
+const seen = { library: "", discs: "" };
+
+function same(key: keyof typeof seen, value: unknown): boolean {
+  const json = JSON.stringify(value);
+  if (json === seen[key]) return true;
+  seen[key] = json;
+  return false;
+}
+
+function setLibrary(library: Library | null) {
+  if (!same("library", library)) app.library = library;
+}
+
 export async function refresh() {
   if (!app.config?.root) {
-    app.library = null;
+    setLibrary(null);
     app.libraryError = "Choose your OpenRAC folder in Settings.";
     return;
   }
   try {
-    app.library = await api.library();
+    setLibrary(await api.library());
     app.libraryError = null;
   } catch (e) {
     app.libraryError = errorText(e);
   }
+  void countCrashes();
+  let scan: { found: FoundDisc[]; choices: DiscChoice[] } = { found: [], choices: [] };
   try {
-    app.discs = app.config.discsDir ? await api.scanDiscs() : [];
+    if (app.config.discsDir) scan = await api.scanDiscs();
   } catch {
-    app.discs = []; // a folder that went away: the tiles ask for an image as before
+    // A folder that went away: the game pages ask for an image as before.
+  }
+  if (!same("discs", scan)) {
+    app.discs = scan.found;
+    app.discChoices = scan.choices;
   }
 }
 
@@ -134,9 +252,22 @@ export async function refresh() {
 export async function syncProgressWeb() {
   if (!app.config?.root) return;
   try {
-    app.library = await api.syncProgressFromWeb();
+    setLibrary(await api.syncProgressFromWeb());
   } catch {
     // Offline: keep what was read at start (the kept copy)
+  }
+}
+
+/** Godot installed after the first run, or moved: the Rust side looks for it again (detect.rs). */
+async function adoptGodot() {
+  try {
+    const config = await api.adoptGodot();
+    if (config.godot && config.godot !== app.config?.godot) {
+      app.config = config;
+      await refresh();
+    }
+  } catch {
+    // Not found is not an error: the Mods page offers Get Godot and Choose Godot
   }
 }
 
@@ -158,6 +289,13 @@ export function openVersion(key: string) {
       if (saved) app.config = saved;
     });
   }
+}
+
+/** Opens Develop on TARGET: "checkout", "console" or a version's key; by default the version
+ *  the game page shows, else the checkout. */
+export function openDevelop(target?: string) {
+  app.develop = target ?? app.version ?? "checkout";
+  app.page = "develop";
 }
 
 export function currentVersion(): VersionView | null {
@@ -300,11 +438,23 @@ export async function installGame(game: string, title: string, found?: string): 
   });
   pump();
   const ok = await ended;
-  toast(ok ? `${title} is set up from your disc.` : `Setting ${title} up failed: see Tasks.`, ok ? "info" : "error");
+  toast(
+    ok ? `${title} is set up from your disc.` : `Setting ${title} up stopped: Activity has what it printed.`,
+    ok ? "info" : "error",
+  );
   return ok;
 }
 
 /** Removes what setting GAME up made, after the player confirmed. */
+/** Developers only: plays VERSION's disc of its game from now on (the switch on the game's page). */
+export async function chooseDisc(version: string) {
+  const saved = await guard(api.chooseDisc(version));
+  if (saved) {
+    app.config = saved;
+    await refresh();
+  }
+}
+
 export async function uninstallGame(game: string) {
   await guard(api.uninstallGame(game));
   await refresh();

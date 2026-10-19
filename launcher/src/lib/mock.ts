@@ -21,12 +21,18 @@ import type {
   Library,
   PackView,
   Platform,
+  ReportEntry,
   Progress,
+  SaveChange,
+  SaveFields,
+  SaveView,
   Scope,
   Started,
   VersionStatus,
   VersionView,
+  WriteResult,
 } from "./api";
+import type { UpdateInfo, UpdateProgressCallback } from "./updates";
 
 // ---- the files, as the Rust side parses them --------------------------------------
 
@@ -92,12 +98,17 @@ const summary = summaryFile as RawSummary;
 const platform: Platform = "linux";
 
 let config: Config = {
-  root: "/home/you/OpenRAC",
+  // ?setup: a first start where no OpenRAC folder was found, so the welcome screen asks for one.
+  root: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("setup")
+    ? null
+    : "/home/you/OpenRAC",
   python: "/usr/bin/python3",
   godot: null,
   docker: "/usr/bin/docker",
   // ?developer shows the contributor's pages.
   developer: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("developer"),
+  // ?advanced switches the advanced save editor on.
+  saveEditorAdvanced: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("advanced"),
   // ?setup opens the first-run screen.
   setupComplete: !new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("setup"),
   installDir: "/home/you/.local/share/dev.openrac.launcher",
@@ -107,9 +118,71 @@ let config: Config = {
     : null,
   lastVersion: null,
   discordRpc: true,
+  checkUpdates: true,
   layout: "compact",
   discordClientId: null,
+  detailedGameLog: false,
+  crashesSeen: {},
+  discChoice: {},
 };
+
+const query = new URLSearchParams(typeof location === "undefined" ? "" : location.search);
+
+/** The preview's logs and crash reports: ?crash makes Play stop with a crash; ?nologs shows none. */
+const now = Math.floor(Date.now() / 1000);
+const mockCrash: ReportEntry = {
+  kind: "crash",
+  file: "crashes/crash-2026-10-17_20-08-29.txt",
+  program: "openrac-rac1-pal",
+  time: now - 60,
+  duration: null,
+  reason: "access (SIGSEGV) at game address 0x0F000000, which is not mapped",
+  level: 6,
+  planet: "Batalia",
+  crashed: true,
+  session: "2026-10-17 20:01:09 -0600",
+  size: 9120,
+};
+let mockReports: ReportEntry[] = query.has("nologs")
+  ? []
+  : [
+      mockCrash,
+      {
+        ...mockCrash,
+        kind: "session",
+        file: "openrac-rac1-pal.log",
+        time: now - 23 * 60 - 60,
+        duration: 23 * 60,
+        reason: null,
+        size: 48211,
+      },
+      {
+        kind: "session",
+        file: "openrac-rac1-pal.1.log",
+        program: "openrac-rac1-pal",
+        time: now - 26 * 3600,
+        duration: 74 * 60,
+        reason: null,
+        level: 3,
+        planet: "Kerwan",
+        crashed: false,
+        session: "2026-10-16 18:00:00 -0600",
+        size: 120400,
+      },
+      {
+        kind: "session",
+        file: "openrac-rac1-pal.2.log",
+        program: "openrac-rac1-pal",
+        time: now - 3 * 86400,
+        duration: 40,
+        reason: null,
+        level: null,
+        planet: null,
+        crashed: false,
+        session: "2026-10-14 10:00:00 -0600",
+        size: 8200,
+      },
+    ];
 
 /** Which games pretend to be set up from the player's disc, and as which version. */
 const fresh = new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("fresh");
@@ -126,12 +199,15 @@ const installs: Record<string, BuildInfo | undefined> = fresh
       },
     };
 
+/** ?built (and ?crash): the game is built and its levels are ready, so Play is the main button. */
+const built = query.has("built") || query.has("crash");
+
 function installState(game: string): InstallState {
   return {
     dir: `${config.installDir ?? ""}/active/${game}/data`,
     extracted: installs[game] ?? null,
     decompiled: false,
-    compiled: false,
+    compiled: built && !!installs[game],
   };
 }
 
@@ -188,7 +264,7 @@ function view(action: RawAction, st: VersionStatus | null): ActionView {
         python: !config.python,
         godot: !config.godot,
         docker: !config.docker,
-        artifact: true,
+        artifact: !built,
       };
       const words: Record<string, string> = {
         disc: "your disc image (baserom/)",
@@ -215,8 +291,8 @@ function view(action: RawAction, st: VersionStatus | null): ActionView {
     thisPlatform,
     runnable: blockers.length === 0,
     blockers,
-    // The mock has no files: nothing is built or made.
-    done: false,
+    // The mock has no files: nothing is built or made (but with ?built).
+    done: built,
   };
 }
 
@@ -332,7 +408,7 @@ function lastLines(id: string, args: Record<string, unknown>): string[] {
       mockPacks.push({ ...samplePack(name), id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-") });
       return [`Added ${name} as ${name.toLowerCase()}, on, last in the order.`];
     case "overrides-stack":
-      return [`Stacked ${mockPacks.filter((p) => p.enabled).length + 1} layer(s), 99 file(s): ${data}/mods`];
+      return [`Stacked ${mockPacks.filter((p) => p.enabled).length + 1} layer(s), 99 file(s): ${data}/mods/pal`];
     default:
       return ["\u2714 step one", "\u2714 step two", "done"];
   }
@@ -380,11 +456,32 @@ function start(scope: Scope, id: string, args: Record<string, unknown> = {}): St
   if (action.detached) return { id: 0, title: action.label, command, detached: true };
 
   const lines = [`$ ${command}`, "(browser preview: nothing really runs)", "working…", ...lastLines(id, args)];
+  // The build prints ninja's counter and long paths, as the real one does: to try the progress strip.
+  if (id === "port-build") {
+    const total = 60;
+    for (let n = 1; n <= total; n++) {
+      lines.splice(
+        2 + n,
+        0,
+        `[${n}/${total}] Building C object CMakeFiles/openrac-rac1-pal.dir/__w/OpenRAC/OpenRAC/games/rac1/pal/src/level_${n}/func_001E99D8_generated_long_name.c.o`,
+      );
+    }
+  }
+  // ?fail: every job stops with an error, to see how a failure reads.
+  if (query.has("fail")) {
+    const failed = [...lines.slice(0, 3), "error: the step could not finish (browser preview)"];
+    return fakeJob(action.label, command, failed, () => undefined, 1);
+  }
+  // ?crash: the game stops on a fault, as the port does (exit status 3, a report in crashes/).
+  if (action.kind === "play" && query.has("crash")) {
+    const crashed = [...lines, "[error] ==== the program stopped: fault ===="];
+    return fakeJob(action.label, command, crashed, () => (mockCrash.time = Math.floor(Date.now() / 1000)), 3);
+  }
   return fakeJob(action.label, command, lines, () => undefined);
 }
 
-/** A job that prints LINES one by one, then succeeds and calls DONE. */
-function fakeJob(title: string, command: string, lines: string[], done: () => void): Started {
+/** A job that prints LINES one by one, then ends with CODE (0: it worked) and calls DONE. */
+function fakeJob(title: string, command: string, lines: string[], done: () => void, code = 0): Started {
   const job = ++nextJob;
   let i = 0;
   timers.set(
@@ -398,7 +495,7 @@ function fakeJob(title: string, command: string, lines: string[], done: () => vo
       clearInterval(timers.get(job));
       timers.delete(job);
       done();
-      emit({ type: "exit", id: job, code: 0, cancelled: false });
+      emit({ type: "exit", id: job, code, cancelled: false });
     }, 450),
   );
   return { id: job, title, command, detached: false };
@@ -421,6 +518,215 @@ function install(game: string, image: string): Started {
   return fakeJob(`Set up ${game} from your disc`, command, lines, () => {
     installs[game] = { serial, version: `${game}/${name}`, elfSha1: v.boot?.sha1 ?? "", files: 3, image };
   });
+}
+
+// ---- the save editor ---------------------------------------------------------------
+
+/** The items and planets as core/src/save_edit.rs lists them. */
+const mockItems: [number, string, "weapon" | "gadget", number, boolean][] = [
+  [2, "Heli-Pack", "gadget", 0, false],
+  [3, "Thruster-Pack", "gadget", 0, false],
+  [4, "Hydro-Pack", "gadget", 0, false],
+  [5, "Sonic Summoner", "gadget", 0, false],
+  [6, "O2 Mask", "gadget", 0, false],
+  [7, "Pilot's Helmet", "gadget", 0, false],
+  [9, "Suck Cannon", "weapon", 0, true],
+  [10, "Bomb Glove", "weapon", 40, true],
+  [11, "Devastator", "weapon", 20, true],
+  [12, "Swingshot", "gadget", 0, false],
+  [13, "Visibomb Gun", "weapon", 20, false],
+  [14, "Taunter", "gadget", 0, false],
+  [15, "Blaster", "weapon", 200, true],
+  [16, "Pyrocitor", "weapon", 240, true],
+  [17, "Mine Glove", "weapon", 50, true],
+  [18, "Walloper", "weapon", 0, false],
+  [19, "Tesla Claw", "weapon", 240, true],
+  [20, "Glove of Doom", "weapon", 10, true],
+  [21, "Morph-o-Ray", "weapon", 0, true],
+  [22, "Hydrodisplacer", "gadget", 0, false],
+  [23, "R.Y.N.O.", "weapon", 50, false],
+  [24, "Drone Device", "weapon", 10, false],
+  [25, "Decoy Glove", "weapon", 20, true],
+  [26, "Trespasser", "gadget", 0, false],
+  [27, "Metal Detector", "gadget", 0, false],
+  [28, "Magneboots", "gadget", 0, false],
+  [29, "Grindboots", "gadget", 0, false],
+  [30, "Hoverboard", "gadget", 0, false],
+  [31, "Hologuise", "gadget", 0, false],
+  [32, "PDA", "gadget", 0, false],
+  [33, "Map-o-Matic", "gadget", 0, false],
+  [34, "Bolt Grabber", "gadget", 0, false],
+  [35, "Persuader", "gadget", 0, false],
+];
+const mockPlanets: [number, string, string, number][] = [
+  [1, "Novalis", "Tobruk Crater", 3],
+  [2, "Aridia", "Outpost X11", 4],
+  [3, "Kerwan", "Metropolis", 3],
+  [4, "Eudora", "Logging Site", 1],
+  [5, "Rilgar", "Blackwater City", 2],
+  [6, "Nebula G34", "Blarg Station", 2],
+  [7, "Umbris", "Qwark's HQ", 2],
+  [8, "Batalia", "Fort Krontos", 2],
+  [9, "Gaspar", "Blarg Depot", 2],
+  [10, "Orxon", "Kogor Refinery", 2],
+  [11, "Pokitaru", "Jowai Resort", 1],
+  [12, "Hoven", "Bomb Factory", 2],
+  [13, "Oltanis Orbit", "Gemlik Base", 1],
+  [14, "Oltanis", "Gorda City Ruins", 4],
+  [15, "Quartu", "Robot Plant", 2],
+  [16, "Kalebo III", "Gadgetron Site", 2],
+  [17, "Veldin Orbit", "Drek's Fleet", 2],
+  [18, "Veldin", "Kyzil Plateau", 3],
+];
+const savedFields: Record<string, SaveFields> = {};
+const savedRaw: Record<string, Record<string, string>> = {};
+
+/** The chunks as core/src/save_edit.rs lists them: id, size, name, decoded. */
+const mockGlobalChunks: [number, number, string, boolean][] = [
+  [0, 4, "Planet", true],
+  [1, 4, "Bolts", true],
+  [2, 4, "Times completed (challenge mode)", true],
+  [3, 4, "Time played (1/60 s)", true],
+  [4, 8, "When saved (clock)", true],
+  [5, 128, "Story flags", false],
+  [7, 12, "Cheats on", false],
+  [8, 32, "Skill points", true],
+  [9, 148, "Ammo by item", true],
+  [10, 37, "Items owned", true],
+  [11, 37, "Items ever had", true],
+  [12, 12, "Vendor stock", true],
+  [13, 32, "Quick select", true],
+  [19, 4, "Max health", true],
+  [14, 20, "Planets unlocked", true],
+  [20, 80, "Galaxy map order", true],
+  [15, 1936, "Map landmarks", false],
+  [16, 1184, "Help messages seen", false],
+  [17, 288, "Move help seen", false],
+  [18, 296, "Gadget help seen", false],
+  [21, 4, "Last item in hand", true],
+  [22, 4, "Wrench in hand", true],
+  [23, 4, "Thruster-Pack on the back", true],
+  [24, 4, "Unused", false],
+  [25, 4, "Camera left/right (1 normal)", true],
+  [26, 4, "Camera up/down (1 normal)", true],
+  [27, 4, "Camera speed (0 to 2)", true],
+  [28, 1, "HelpDesk voice", true],
+  [29, 1, "HelpDesk text", true],
+  [30, 40, "Gold weapons", true],
+  [31, 4, "Game beaten", true],
+  [32, 28, "Equipped: hand, feet, head, back", true],
+  [33, 1, "Subtitles", true],
+  [34, 4, "Stereo (1) or mono", true],
+  [35, 4, "Music volume (0 to 1024)", true],
+  [36, 4, "Effects volume (0 to 1024)", true],
+  [37, 12, "Cheats ever used", false],
+  [1000, 148, "Ammo bought by item", true],
+  [1001, 148, "Ammo picked up by item", true],
+  [1002, 148, "Ammo used by item", true],
+  [1003, 4, "Play time (ticks)", true],
+  [1004, 4, "Hits taken", true],
+  [1005, 4, "Deaths", true],
+  [1008, 4, "Bolt rate: ticks", false],
+  [1009, 4, "Bolt rate: bolts", false],
+  [1010, 150, "Help log", false],
+  [1011, 4, "Help log position", false],
+];
+const mockLevelChunks: [number, number, string, boolean][] = [
+  [3001, 1, "Visited (0 never, 1 visited, 2 left)", true],
+  [3002, 2048, "Map: the parts uncovered (packed)", false],
+  [3003, 4, "Gold bolts found", true],
+  [3004, 16, "Missions (0xff done)", true],
+  [3005, 256, "Enemies and crates destroyed (bits)", false],
+  [3006, 256, "Bolts from crates and enemies (pairs)", false],
+  [3007, 8, "Arrivals: count, time, levels", false],
+  [3008, 16, "Metal Detector spots", false],
+  [4000, 4, "Bolts collected here", true],
+  [4001, 4, "Hits taken here", true],
+  [4002, 4, "Deaths here", true],
+];
+const levelNames: [string, string][] = [
+  ["Veldin", "Kyzil Plateau"],
+  ...mockPlanets.map(([, name, location]): [string, string] => [name, location]),
+];
+
+function word(n: number): string {
+  return [0, 8, 16, 24].map((s) => ((n >>> s) & 0xff).toString(16).padStart(2, "0")).join(" ");
+}
+
+function mockChunks(serial: string, slot: number, f: SaveFields): SaveView["chunks"] {
+  const raw = savedRaw[`${serial}/${String(slot)}`] ?? {};
+  const zero = (n: number) => Array.from({ length: n }, () => "00").join(" ");
+  const out: SaveView["chunks"] = [];
+  for (const [id, size, name, known] of mockGlobalChunks) {
+    let hex = zero(size);
+    if (id === 0) hex = word(f.planet);
+    if (id === 1) hex = word(f.bolts);
+    if (id === 19) hex = word(f.nanotech === "ultra" ? 8 : f.nanotech === "premium" ? 5 : 4);
+    out.push({ section: null, id, size, name, known, hex: raw[`g:${String(id)}`] ?? hex });
+  }
+  for (let l = 0; l < 20; l++) {
+    for (const [id, size, name, known] of mockLevelChunks) {
+      out.push({ section: l, id, size, name, known, hex: raw[`${String(l)}:${String(id)}`] ?? zero(size) });
+    }
+  }
+  return out;
+}
+
+function mockSave(serial: string, slot: number): SaveView {
+  const owned = new Set([2, 10, 12, 15, 16, 28]);
+  const fields: SaveFields = savedFields[`${serial}/${String(slot)}`] ?? {
+    planet: slot === 1 ? 3 : 0,
+    bolts: slot === 1 ? 4890 : 1250,
+    nanotech: "premium",
+    items: mockItems.map(([id, , , max, gold]) => ({
+      id,
+      owned: owned.has(id),
+      ammo: max > 0 ? (owned.has(id) ? Math.floor(max / 2) : 0) : null,
+      gold: gold ? id === 15 : null,
+    })),
+    planets: mockPlanets.map(([id, , , n]) => ({
+      id,
+      unlocked: id <= 4,
+      goldBolts: Array.from({ length: n }, (_, k) => id <= 3 && k === 0),
+    })),
+    skillPoints: Array.from({ length: 30 }, (_, k) => k % 7 === 0),
+  };
+  return {
+    serial,
+    slot,
+    fingerprint: "preview",
+    planetName: levelNames[fields.planet]?.[0] ?? null,
+    savedAt: "2026-10-09 17:21:44",
+    fields: structuredClone(fields),
+    items: mockItems.map(([id, name, kind, max, gold]) => ({
+      id,
+      name,
+      kind,
+      maxAmmo: max > 0 ? max : null,
+      hasGold: gold,
+    })),
+    planets: mockPlanets.map(([id, name, location]) => ({
+      id,
+      name,
+      location,
+      canUnlock: id <= 16,
+      canLand: id <= 16,
+    })),
+    levels: levelNames.map(([name, location], id) => ({
+      id,
+      name,
+      location,
+      canUnlock: id >= 1 && id <= 16,
+      canLand: id >= 1 && id <= 16,
+    })),
+    maxBolts: 9_999_999,
+    chunks: mockChunks(serial, slot, fields),
+    playedSeconds: slot === 1 ? 3 * 3600 + 12 * 60 : 47 * 60,
+    // The names come from the player's disc; the preview has none, so ?skillnames shows sample ones.
+    skillNames: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("skillnames")
+      ? Array.from({ length: 30 }, (_, k) => `Skill point name ${String(k + 1)}`)
+      : [],
+  };
 }
 
 // ---- the commands ------------------------------------------------------------------
@@ -447,37 +753,72 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
     case "save_config":
       config = { ...(args.config as Config) };
       return delay({ ...config });
+    case "adopt_godot":
+      return delay({ ...config });
     case "detect":
       return delay<Detected>({
-        roots: [{ path: "/home/you/OpenRAC", source: "next to the launcher" }],
+        roots: query.has("setup") ? [] : [{ path: "/home/you/OpenRAC", source: "next to the launcher" }],
         pythons: [{ path: "/usr/bin/python3", source: "PATH" }],
         godots: [],
         dockers: [{ path: "/usr/bin/docker", source: "PATH" }],
       });
     case "check_root":
-      return delay<Check>({ ok: true, version: null, message: "4 games, 5 versions" });
-    case "check_tool":
-      return delay<Check>({ ok: true, version: "Python 3.12.4", message: "Python 3.12.4" });
+      return delay<Check>({
+        ok: true,
+        version: null,
+        message: `${Object.keys(manifests).length} games, ${Object.values(manifests).flatMap((m) => Object.keys(m.versions)).length} versions`,
+      });
+    case "check_tool": {
+      // What each program says about itself, as core/src/detect.rs reads it.
+      const versions: Record<string, string> = {
+        python: "Python 3.12.4",
+        godot: "Godot 4.7.stable",
+        docker: "Docker version 28.3.2",
+      };
+      const version = versions[String(args.tool)] ?? null;
+      return delay<Check>({ ok: true, version, message: version ?? "found" });
+    }
     case "library":
+      // ?nolib: the OpenRAC folder cannot be read, as when none is set.
+      if (query.has("nolib")) throw new Error("No OpenRAC folder is set: choose it in Settings.");
       return delay(library());
     case "install_game":
       return delay(install(args.game as string, args.image as string));
-    case "scan_discs":
-      // ?discs: the games folder holds the first game's PAL disc.
-      return delay(
-        config.discsDir && new URLSearchParams(location.search).has("discs")
+    case "scan_discs": {
+      // ?discs: the games folder holds the first game's PAL disc; ?discs=both, its NTSC-U disc too,
+      // which with developer tools on offers the disc switch (core/src/disc_choice.rs).
+      const asked = new URLSearchParams(location.search).get("discs");
+      const disc = (version: string, serial: string, region: string, file: string) => ({
+        path: `${config.discsDir}/${file}`,
+        serial,
+        game: "rac1",
+        version,
+        title: "Ratchet & Clank",
+        region,
+      });
+      const found =
+        config.discsDir && asked !== null
           ? [
-              {
-                path: `${config.discsDir}/Ratchet & Clank (Europe).iso`,
-                serial: "SCES_509.16",
-                game: "rac1",
-                version: "rac1/pal",
-                title: "Ratchet & Clank",
-                region: "PAL (Europe)",
-              },
+              disc("rac1/pal", "SCES_509.16", "PAL (Europe)", "Ratchet & Clank (Europe).iso"),
+              ...(asked === "both"
+                ? [disc("rac1/ntsc", "SCUS_971.99", "NTSC-U (North America)", "Ratchet & Clank (USA).iso")]
+                : []),
             ]
-          : [],
-      );
+          : [];
+      const versions = found.map((d) => d.version);
+      const remembered = config.discChoice.rac1 ?? "";
+      const choices =
+        config.developer && versions.length > 1
+          ? [{ game: "rac1", versions, chosen: versions.includes(remembered) ? remembered : versions[0] }]
+          : [];
+      return delay({ found, choices });
+    }
+    case "choose_disc": {
+      const version = args.version as string;
+      const game = version.split("/")[0] ?? version;
+      config = { ...config, discChoice: { ...config.discChoice, [game]: version } };
+      return delay(config);
+    }
     case "uninstall_game":
       installs[args.game as string] = undefined;
       return delay(null);
@@ -533,6 +874,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
             size: 59912,
             exists: true,
             isEmpty: false,
+            editable: true,
             bolts: 1250,
             planetId: 0,
             planetName: "Veldin",
@@ -546,6 +888,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
             size: 59912,
             exists: true,
             isEmpty: false,
+            editable: true,
             bolts: 4890,
             planetId: 3,
             planetName: "Kerwan",
@@ -559,6 +902,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
             size: 59912,
             exists: true,
             isEmpty: true,
+            editable: false,
             bolts: null,
             planetId: null,
             planetName: null,
@@ -572,6 +916,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
             size: 59912,
             exists: true,
             isEmpty: true,
+            editable: false,
             bolts: null,
             planetId: null,
             planetName: null,
@@ -585,6 +930,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
             size: 59912,
             exists: true,
             isEmpty: true,
+            editable: false,
             bolts: null,
             planetId: null,
             planetName: null,
@@ -596,6 +942,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
           {
             name: ".backup_1791560000_checkpoint",
             path: `/home/you/.local/share/openrac/memcard/${serial}/.backup_1791560000_checkpoint`,
+            note: "checkpoint",
             createdMillis: Date.now() - 86400000,
             totalSize: 364544,
           },
@@ -604,10 +951,12 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
     }
     case "backup_saves": {
       const serial = typeof args.serial === "string" ? args.serial : "SCES_509.16";
-      const note = typeof args.note === "string" ? args.note : "manual";
+      const note = typeof args.note === "string" && args.note.trim() ? args.note.trim() : null;
+      const name = `.backup_${Math.floor(Date.now() / 1000)}${note ? `_${note.replace(/\s+/g, "_")}` : ""}`;
       return delay({
-        name: `.backup_${Math.floor(Date.now() / 1000)}_${note}`,
-        path: `/home/you/.local/share/openrac/memcard/${serial}/.backup_${Math.floor(Date.now() / 1000)}_${note}`,
+        name,
+        path: `/home/you/.local/share/openrac/memcard/${serial}/${name}`,
+        note,
         createdMillis: Date.now(),
         totalSize: 364544,
       });
@@ -615,7 +964,112 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
     case "restore_backup":
     case "open_saves_folder":
       return delay(null);
+    case "reports_list":
+      return delay(args.game === "rac1" ? mockReports : []);
+    case "report_delete":
+      mockReports = mockReports.filter((e) => e.file !== args.file);
+      return delay(null);
+    case "reports_delete_all": {
+      const count = mockReports.length;
+      mockReports = [];
+      return delay(count);
+    }
+    case "latest_crash":
+      return delay(
+        query.has("crash") && mockReports.includes(mockCrash) && mockCrash.time >= Number(args.since ?? 0)
+          ? mockCrash
+          : null,
+      );
+    case "report_text":
+      return delay(
+        "**OpenRAC: the game stopped unexpectedly**\n\n- What happened: access (SIGSEGV) at game address 0x0F000000, which is not mapped\n- Where: Batalia (level 6)\n- OpenRAC: 0.7.1, commit ceffee00; launcher 0.7.1\n\n```\n4 Ratchet & Clank (PAL) 0x0000000104f1b3c0 func_0012DB18 + 68\n```\n",
+      );
+    case "report_save":
+      return delay(
+        `~/Downloads/OpenRAC-${String(args.file)
+          .split("/")
+          .pop()
+          ?.replace(/\.(txt|log)$/, "")}.zip`,
+      );
+    case "open_reports_folder":
+      console.info(`[preview] ${command}`, args);
+      return delay(null);
+    case "read_save":
+      return delay(mockSave(typeof args.serial === "string" ? args.serial : "SCES_509.16", Number(args.slot ?? 0)));
+    case "write_save": {
+      const key = `${String(args.serial)}/${String(args.slot)}`;
+      const change = args.change as SaveChange;
+      if (change.kind === "fields") {
+        if (change.fields.bolts > 9_999_999) throw new Error("bolts go up to 9999999");
+        savedFields[key] = structuredClone(change.fields);
+      } else {
+        if (!config.saveEditorAdvanced) throw new Error("raw edits need the advanced save editor (Settings)");
+        const raw = (savedRaw[key] ??= {});
+        for (const c of change.chunks) raw[`${c.section === null ? "g" : String(c.section)}:${String(c.id)}`] = c.hex;
+      }
+      const view = mockSave(String(args.serial), Number(args.slot));
+      const name = `.backup_${Math.floor(Date.now() / 1000)}_before_edit_slot${Number(args.slot) + 1}`;
+      return delay<WriteResult>({
+        backup: {
+          name,
+          path: `/home/you/.local/share/openrac/memcard/${String(args.serial)}/${name}`,
+          note: `Before editing slot ${Number(args.slot) + 1}`,
+          createdMillis: Date.now(),
+          totalSize: 364544,
+        },
+        view,
+      });
+    }
     default:
       throw new Error(`the preview has no ${command}: add it to src/lib/mock.ts`);
   }
+}
+
+// ---- launcher updates ----------------------------------------------------------------
+
+/** The preview's answer to "is a newer launcher out?": ?update (one is, and installs itself;
+ *  with ?download only from GitHub), ?latest (none), ?offline (GitHub cannot be reached).
+ *  Undefined: no switch, so the real check runs. */
+export function mockUpdate(current: string): UpdateInfo | null | Error | undefined {
+  if (query.has("offline")) return new Error("no connection to GitHub");
+  if (query.has("latest")) return null;
+  if (!query.has("update")) return undefined;
+  const [major = 0, minor = 0] = current
+    .replace(/^[^0-9]*/, "")
+    .split(".")
+    .map((n) => parseInt(n, 10) || 0);
+  const version = `${major}.${minor + 1}.0`;
+  return {
+    version,
+    tag: `v${version}`,
+    url: "https://github.com/OpenRAC/OpenRAC/releases",
+    name: `OpenRAC Launcher v${version}`,
+    body: [
+      "- Every game has the same page; the list on the left switches between them.",
+      "- Develop: the checkout, each version's decompilation and the console in one tab.",
+      "- Ratchet & Clank: Size Matters joins the games.",
+      "- Help beside your saves: a crash report to send in two clicks.",
+    ].join("\n"),
+    publishedAt: new Date(Date.now() - 86400000).toISOString(),
+    canInstallDirectly: !query.has("download"),
+  };
+}
+
+/** The preview's install: a 30 MB download in a few seconds, then installing; ?updatefail stops
+ *  it part way, as a lost connection would. Nothing restarts in a browser. */
+export async function mockInstall(onProgress?: UpdateProgressCallback): Promise<void> {
+  const total = 31_457_280;
+  for (let done = 0; done <= total; done += total / 20) {
+    await new Promise((r) => setTimeout(r, 120));
+    if (query.has("updatefail") && done > total * 0.4) throw new Error("the download stopped: the connection was lost");
+    onProgress?.({
+      stage: "downloading",
+      percent: Math.round((done / total) * 100),
+      downloadedBytes: done,
+      totalBytes: total,
+    });
+  }
+  onProgress?.({ stage: "installing", percent: 100, downloadedBytes: total, totalBytes: total });
+  await new Promise((r) => setTimeout(r, 900));
+  onProgress?.({ stage: "ready", percent: 100, downloadedBytes: total, totalBytes: total });
 }

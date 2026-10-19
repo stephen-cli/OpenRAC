@@ -80,13 +80,68 @@ extern void (*openrac_game_on_frame)(unsigned frame);
  * the launcher's Discord presence. */
 extern int (*openrac_game_bolts)(void);
 
-/* Whether an in-game cutscene is playing, when a game installs it (rac1/pal: boot.c, the game mode
- * 2): the window lets Start skip it (settings skip_cutscenes). */
-extern int (*openrac_game_in_cutscene)(void);
+/* The buttons a pressed Start also presses while Skip cutscenes is on (settings skip_cutscenes), when
+ * a game installs it: what the game's own skip of the scene playing now takes, as the window's pad
+ * bits (0x4000 Cross, 0x0F00 the four shoulders), or 0 while nothing skippable plays (rac1: boot.c,
+ * the shoulders in a cutscene, Cross in the ship's landing and take-off). */
+extern int (*openrac_game_skip_buttons)(void);
+
+/* For crash reports (port/common/crash.h), sampled once a frame, when a game installs them (rac1:
+ * boot.c): the game's mode word, and where the hero is. Each returns 0 when it has no answer now
+ * (no level loaded). */
+extern int (*openrac_game_mode)(uint32_t* mode);
+extern int (*openrac_game_hero_position)(float xyz[3]);
+
+/* For OPENRAC_TRACE (frontend.cpp), when a game installs it (rac1: boot.c): the hero's position,
+ * rotation (game axes; z the yaw) and state id. 0 when there is none now (no level loaded). */
+extern int (*openrac_game_hero)(float position[3], float rotation[3], int32_t* state);
+
+/* A trap the game raised on purpose, or another reason the game cannot go on: writes a crash
+ * report (<data>/crashes) and ends the program. */
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void openrac_game_crash(const char* reason);
 
 /* Called while Start is held with skip_cutscenes on, when a game installs it: skips what the game
  * lets the port skip besides its own cutscenes (rac1/pal: the flight between planets, boot.c). */
 extern void (*openrac_game_skip)(void);
+
+/* What the window's own menus and drawing need of a game's front end, when a game installs it
+ * (rac1: port/game/rac1/host/front_end.c, with each disc's addresses). NULL: the window adds
+ * nothing to the game's menus. */
+typedef struct openrac_front_end {
+    /* The developer menu (debug_menu.cpp): the levels, by the game's own numbers, and a new game
+     * started straight in one of them, as --level N with OPENRAC_DIRECT does. */
+    int levels;
+    const char* const* level_names;
+    void (*start_level)(int level);
+    /* The menus' sound for a widget (rac1: the confirm sound, 0x11, from the widget's moby). */
+    void (*menu_sound)(int sound, gaddr moby);
+    /* The front end's page menu, data in the boot program (rac1: debug_menu.cpp describes it). */
+    gaddr page_menu;      /* +4 the page shown */
+    gaddr options_list;   /* the Options list widget: +0x34 its items, 12 bytes each */
+    gaddr options_items;  /* the items the game gives it, ended by one without a label */
+    gaddr video_item;     /* the item that opens the Video page, added where the game's lack it */
+    gaddr language_page, language_title, language_list; /* what the Planets page is copied from */
+    int16_t planets_text;                                /* "Planets" */
+    const int16_t* planet_texts;                         /* each level's planet name, by level */
+    gaddr video_page, video_list, video_rows; /* the Video options page, its list, its own rows */
+    gaddr sound_hint;                         /* the Sound options page's hint widget */
+    int32_t sound_list_seq, sound_hint_seq;   /* that page's frame animations */
+    gaddr pad;        /* the first pad: +0x1C4 the buttons pressed this tick, +0x100 the sticks */
+    gaddr video_mode; /* a byte: the game's own 50/60 Hz choice, kept at 60 Hz; 0 for none */
+    /* The window (frontend.cpp): words of the boot program and the executable. */
+    gaddr game_mode;  /* the game mode; 6 in the boot program is the flight between planets */
+    gaddr light_bank; /* the directional light bank (relocated to the loaded program's copy) */
+    gaddr level;      /* the level being played, or -1 */
+    gaddr dialog;     /* the front end's dialog: +0 its kind, +0x1C its step (logged) */
+    gaddr title_exit; /* the title loop's exit (logged) */
+} openrac_front_end;
+
+extern const openrac_front_end* openrac_game_front_end;
 
 /* The game sends a DMA chain (sceDmaSend): channel is the game address of
  * the channel's registers (0x10009000 is VIF1, the display list; 0x1000A000
@@ -192,6 +247,16 @@ int openrac_game_ui_quad(const openrac_game_ui_rect* quad);
  * a side of the screen are moved out past that side: the width a wider picture gained there when
  * the player's HUD setting is "Edges", else 0. */
 int openrac_game_hud_side(void);
+
+/* How many times wider than the game's 4:3 the picture is (the player's aspect setting): its
+ * horizontal tangent is the game's times this. 1 for a 4:3 picture, and without a window. */
+float openrac_game_picture_wider(void);
+
+/* How the player strafes on foot (settings strafe; rac1: host/strafe.c): 0 the game's own turning,
+ * 1 hold L2 or R2: the camera swings behind him once, then he faces the camera's way, 2 that and,
+ * with a forward-firing weapon in hand, always facing the camera's way. 0 without a window (no
+ * settings). */
+int openrac_game_strafe_mode(void);
 
 /* A live particle the game's particle renderer would draw (rac1: PartProc): its 0x40-byte record
  * (+0x01 bits 0-1 the render kind: 0 camera-facing sprite, 1 flat quad, 2 line, 3 ribbon; +0x03

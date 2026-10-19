@@ -27,6 +27,9 @@ DEFAULT_DATA_NAMES = [r"^(?:D|func)_(?:L(?P<overlay>\d\d)_)?(?P<addr>[0-9A-Fa-f]
 
 ASM_MARK = "openrac_asm_"
 
+# A data symbol given as an asm label with a constant offset (`D_L16_0017C218+12`).
+_SYMBOL_OFFSET = re.compile(r"^\s*([A-Za-z_]\w*)\s*([+-])\s*(0[xX][0-9A-Fa-f]+|\d+)\s*$")
+
 # Helpers whose bodies are the decompilation's inline assembly
 # (include/common.h): the runtime has host versions (guest.h).
 BUILTINS = {
@@ -126,6 +129,13 @@ class Program:
                 break
         if not named and symbol in self.symbols:
             named = [(-1, self.symbols[symbol])]
+        if symbol not in self.places and named:
+            # Another spelling of the same function (func_L00_00256F14 for the catalogue's
+            # FUN_L00_00256f14) has the catalogue's places in the other levels.
+            other = self._place_owner().get(named[0])
+            if other is not None and other != symbol:
+                exe = [p for p in named if p[0] < 0 and p not in self.places[other]]
+                return exe + self.places[other]
         if symbol in self.places:
             # A function of the executable that the levels' programs also
             # carry is in the catalogue with its level places only: it keeps
@@ -134,6 +144,21 @@ class Program:
             return exe + self.places[symbol]
         return named
 
+    def _place_owner(self) -> dict:
+        """The catalogue's functions by their own address: (overlay, address) of the name."""
+        owner = getattr(self, "_owner_cache", None)
+        if owner is None or len(owner) == 0 and self.places:
+            owner = {}
+            for sym in self.places:
+                for pattern in self.code_names:
+                    m = pattern.match(sym)
+                    if m:
+                        overlay = m.groupdict().get("overlay")
+                        owner.setdefault((int(overlay) if overlay is not None else -1, int(m.group("addr"), 16)), sym)
+                        break
+            self._owner_cache = owner
+        return owner
+
     def data_address(self, symbol: str) -> int | None:
         if symbol in self.symbols:
             return self.symbols[symbol]
@@ -141,19 +166,54 @@ class Program:
             m = pattern.match(symbol)
             if m:
                 return int(m.group("addr"), 16)
+        offset = _SYMBOL_OFFSET.match(symbol)
+        if offset:
+            # An asm label with an offset (`__asm__("D_L16_0017C218+12")`): the assembler's
+            # symbol plus the constant, as the console's linker resolves it.
+            base = self.data_address(offset.group(1))
+            if base is not None:
+                text = offset.group(3)
+                n = int(text, 16) if text[:2] in ("0x", "0X") else int(text, 10)
+                return (base + n if offset.group(2) == "+" else base - n) & 0xFFFFFFFF
+        return None
+
+    def data_level(self, symbol: str) -> int | None:
+        """The level a data name says it is of (D_L05_..., the names' `overlay` group), or None."""
+        offset = _SYMBOL_OFFSET.match(symbol)
+        if offset:
+            symbol = offset.group(1)
+        for pattern in self.data_names:
+            m = pattern.match(symbol)
+            if m and m.groupdict().get("overlay") is not None:
+                return int(m.group("overlay"))
         return None
 
     def index_places(self) -> None:
         """Every function with C (or the port's own) by where it sits, so that
         two spellings of one address (FUN_0020c828, func_0020C828) meet."""
         self.by_place = {}
+        self.host_place = {}
+        for sym in sorted(self.host):
+            if sym:
+                # The port's own function replaces whatever the decompilation has at its place,
+                # under any spelling (a table carried from another version names it func_<addr>
+                # where this decompilation has FUN_<addr> with C of its own).
+                for place in self.code_places(sym):
+                    self.host_place.setdefault(place, sym)
+                    self.by_place[place] = self.host_place[place]
         for sym, f in sorted(self.functions.items()):
-            if f.unit is not None or sym in self.host:
+            if f.unit is not None:
                 for place in self.code_places(sym):
                     self.by_place.setdefault(place, sym)
 
     def canonical(self, symbol: str) -> str:
-        """The symbol with C at the same place as symbol, or symbol."""
+        """The symbol with C at the same place as symbol, or symbol: the port's own function
+        there before the decompilation's C."""
+        if symbol not in self.host:
+            for place in self.code_places(symbol):
+                other = getattr(self, "host_place", {}).get(place)
+                if other is not None and other != symbol:
+                    return other
         f = self.functions.get(symbol)
         if f is not None and (f.unit is not None or symbol in self.host):
             return symbol
@@ -439,3 +499,22 @@ def read_symbols(path: Path, program: Program) -> int:
             count += 1
     return count
 
+
+def prototype(f, typedefs: dict | None = None) -> str | None:
+    """A function's declaration as game_protos.h writes it (parameters a0, a1, ...), or None
+    when a type in its signature has no form there (a record by value)."""
+    sig = f.sig
+    ret = canon(sig.ret, typedefs)
+    if ret is None:
+        return None
+    if not sig.prototyped:
+        return f"{ret} {cname(f.symbol)}()"
+    params = []
+    for i, p in enumerate(sig.params):
+        c = canon(p, typedefs)
+        if c is None:
+            return None
+        params.append(f"{c} a{i}")
+    if sig.variadic:
+        params.append("...")
+    return f"{ret} {cname(f.symbol)}({', '.join(params) or 'void'})"

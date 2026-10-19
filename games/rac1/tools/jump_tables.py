@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from libgcc_units import SEGMENT_SOURCES  # noqa: E402
+import srcnames
 
 FUNC_DEF = re.compile(r"^(?!extern\b)[A-Za-z_].*?\b(func_[0-9A-Fa-f]{8})(?:_r)?\s*\(", re.M)
 STUB = re.compile(r"INCLUDE_ASM\([^)]*\b(func_[0-9A-Fa-f]{8})\)")
@@ -29,9 +30,10 @@ JTBL = re.compile(r"%hi\((jtbl_(?:L\d\d_)?[0-9A-F]{8})\)")
 
 def retail_tables(func: str) -> list[str]:
     """The jump tables retail's FUNC uses, in the order it first uses them."""
-    p = Path(f"asm/nonmatchings/text/{func}.s")
-    if p.exists():
-        return list(dict.fromkeys(JTBL.findall(p.read_text())))
+    for segment in ("text", "core_text"):
+        p = Path(f"asm/nonmatchings/{segment}/{func}.s")
+        if p.exists():
+            return list(dict.fromkeys(JTBL.findall(p.read_text())))
     # level code (docs/OVERLAYS.md): a joined function's pieces may hold its tables
     found = []
     for part in [func] + joined_pieces(func):
@@ -58,7 +60,7 @@ def provided() -> list[tuple[str, str, str]]:
     """(label, function, object) for every table a compiled function brings."""
     out = []
     for src in SEGMENT_SOURCES["text"]:
-        text = Path(src).read_text(errors="replace")
+        text = srcnames.read_c(src, errors="replace")
         stubs = set(STUB.findall(text))
         obj = "build-sn/" + Path(src).with_suffix(".o").as_posix().removeprefix("src/")
         for func in dict.fromkeys(FUNC_DEF.findall(text)):

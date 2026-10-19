@@ -85,8 +85,8 @@ jobs:
             python: aarch64-apple-darwin
             python_sha256: 233f8e15255b3e1d1fd47ea5dd5230dfed803f371138e896e54d98c60ae19f6f
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -130,7 +130,7 @@ jobs:
           "$llvm\bin" >> $env:GITHUB_PATH
 
       - name: Build the game
-        run: python tools/build_port.py rac1-pal --preset standalone
+        run: python tools/build_port.py rac1-pal rac1-ntsc --preset standalone
 
       - name: A Python for the tools
         shell: bash
@@ -155,8 +155,18 @@ jobs:
           py=build/standalone/python/bin/python3; [ -x "$py" ] || py=build/standalone/python/python.exe
           "$py" build/standalone/tools/extractor.py --help > /dev/null
           "$py" build/standalone/editor/extract.py --help > /dev/null
-          game=build/standalone/port/build/release/openrac-rac1-pal; [ -f "$game" ] || game="$game.exe"
+          # The program as the launcher finds it: openrac-<id>, openrac-<id>.exe, or on macOS the
+          # program in its application bundle, apps/openrac-<id>/<title>.app (port/cmake/MacApp.cmake).
+          program() {
+            local app; app=$(ls -d "$(dirname "$1")/apps/$(basename "$1")"/*.app/Contents/MacOS/* 2>/dev/null | head -1)
+            if [ -n "$app" ]; then echo "$app"; elif [ -f "$1" ]; then echo "$1"; else echo "$1.exe"; fi
+          }
+          game=$(program build/standalone/port/build/release/openrac-rac1-pal)
           "$game" --help || true
+          # Every disc's program is carried: the launcher plays the one the player's disc is.
+          us=$(program build/standalone/port/build/release/openrac-rac1-ntsc)
+          [ -f "$us" ] || { echo "the copy carries no openrac-rac1-ntsc"; exit 1; }
+          "$us" --help || true
           # On Linux: what the game asks of the system (only libc and libm, glibc 2.35 at most on x86_64 Ubuntu 22.04).
           if [ "${{ matrix.name }}" = linux ]; then
             readelf -d "$game" | grep NEEDED
@@ -173,7 +183,7 @@ jobs:
           fi
           tar -czf openrac-standalone.tar.gz -C build/standalone .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: openrac-standalone-${{ matrix.name }}
           path: openrac-standalone.tar.gz
@@ -197,6 +207,7 @@ jobs:
               launcher/target/release/bundle/msi/*.msi
               launcher/target/release/bundle/nsis/*.zip
               launcher/target/release/bundle/nsis/*.sig
+              launcher/target/release/bundle/msi/*.sig
           # The oldest Ubuntu the runners offer: what is built there starts
           # on newer systems too, not the other way round.
           - name: linux
@@ -204,7 +215,9 @@ jobs:
             args: "--bundles deb,rpm,appimage"
             files: |
               launcher/target/release/bundle/deb/*.deb
+              launcher/target/release/bundle/deb/*.sig
               launcher/target/release/bundle/rpm/*.rpm
+              launcher/target/release/bundle/rpm/*.sig
               launcher/target/release/bundle/appimage/*.AppImage
               launcher/target/release/bundle/appimage/*.tar.gz
               launcher/target/release/bundle/appimage/*.sig
@@ -213,7 +226,9 @@ jobs:
             args: "--bundles deb,rpm,appimage"
             files: |
               launcher/target/release/bundle/deb/*.deb
+              launcher/target/release/bundle/deb/*.sig
               launcher/target/release/bundle/rpm/*.rpm
+              launcher/target/release/bundle/rpm/*.sig
               launcher/target/release/bundle/appimage/*.AppImage
               launcher/target/release/bundle/appimage/*.tar.gz
               launcher/target/release/bundle/appimage/*.sig
@@ -229,8 +244,8 @@ jobs:
       run:
         working-directory: launcher
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       - name: Yarn (the version package.json names, through Corepack)
@@ -238,7 +253,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.name == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -254,7 +269,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev patchelf rpm file
           sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2 || true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: openrac-standalone-${{ matrix.name }}
           path: ${{ runner.temp }}/standalone
@@ -294,7 +309,7 @@ jobs:
           yarn install --immutable
           yarn tauri build ${{ matrix.args }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: openrac-launcher-${{ matrix.name }}
           path: ${{ matrix.files }}
@@ -305,7 +320,7 @@ jobs:
   fedora:
     name: fedora
     needs: game
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     container: registry.fedoraproject.org/fedora:44
     timeout-minutes: 60
     env:
@@ -320,11 +335,11 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ make curl file rpm-build \
             nodejs npm webkit2gtk4.1-devel gtk3-devel librsvg2-devel libsoup3-devel openssl-devel
           npm install -g corepack
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Yarn (the version package.json names, through Corepack)
         run: corepack enable
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -333,7 +348,7 @@ jobs:
           key: launcher-fedora-${{ hashFiles('launcher/Cargo.lock') }}
           restore-keys: launcher-fedora-
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: openrac-standalone-linux
           path: ${{ runner.temp }}/standalone
@@ -372,11 +387,14 @@ jobs:
           yarn install --immutable
           yarn tauri build --bundles rpm
           for f in target/release/bundle/rpm/*.x86_64.rpm; do mv "$f" "${f%.x86_64.rpm}.fc44.x86_64.rpm"; done
+          for f in target/release/bundle/rpm/*.x86_64.rpm.sig; do mv "$f" "${f%.x86_64.rpm.sig}.fc44.x86_64.rpm.sig"; done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: openrac-launcher-fedora
-          path: launcher/target/release/bundle/rpm/*.rpm
+          path: |
+            launcher/target/release/bundle/rpm/*.rpm
+            launcher/target/release/bundle/rpm/*.sig
           if-no-files-found: error
 
   # A tag `launcher-v*`: the installers of all the builds on a draft
@@ -384,12 +402,12 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/launcher-v')
     needs: [build, fedora]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
         with:
           pattern: openrac-launcher-*
           path: installers

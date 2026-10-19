@@ -47,7 +47,7 @@ extern void stub_printf() __asm__("FUN_001e93b0");
 extern void raise_kernel_trap(void) __asm__("FUN_001f97b0");
 extern float animation_start(int, int) __asm__("FUN_L04_002418b0");
 extern float animation_end(int, int) __asm__("FUN_L04_00241910");
-extern float FUN_001f96b0(float) __asm__("FUN_L04_001f1978");
+extern float FUN_L04_001f1978(float);
 extern void transform_scaled_vertex_batch(struct Moby *m, int count, int *joints, void *out) __asm__("FUN_0020cd48");
 extern void get_joint_matrix(struct Moby *m, int joint, float *mtx) __asm__("FUN_0020cca8");
 extern float fast_arc_tan(float, float) __asm__("FUN_001f9e90");
@@ -76,7 +76,7 @@ void FUN_L04_002923b8(struct Moby *moby, LegRig *rig) {
                     ? rig->anims[i]->phase[0].to[j] - rig->anims[i]->phase[0].from[j]
                     : rig->anims[i]->phase[0].to[j] + rig->anims[i]->len - rig->anims[i]->phase[0].from[j];
             }
-            rig->anims[i]->rate = rig->anims[i]->unk4 / FUN_001f96b0(rig->anims[i]->len + rig->anims[i]->len);
+            rig->anims[i]->rate = rig->anims[i]->unk4 / FUN_L04_001f1978(rig->anims[i]->len + rig->anims[i]->len);
         }
     }
     joints[0] = rig->legs[0].joint;
@@ -111,20 +111,21 @@ void FUN_L04_002923b8(struct Moby *moby, LegRig *rig) {
 }
 /* Ported from rac1-decomp (src/overlays/l04_eudora/vuchain_00293490.c: func_L04_00293990), where it is exact; names translated to the US level program. */
 
-extern int walker_gait_mask(int *a, char *b) __asm__("FUN_L00_002a13f0");
+extern int walker_gait_mask(int *a, float t) __asm__("FUN_L00_002a13f0");
 
-int FUN_L04_002927d0(char *arg0, char *arg1) {
-    int **p = (int **)(arg1 + 0x70);
+/* The phase t (the caller's $f12) goes through untouched to the gait mask. */
+int FUN_L04_002927d0(char *moby, char *rig, float t) {
+    int **p = (int **)(rig + 0x70);
     int *found = 0;
     int i;
     for (i = 12; i >= 0; i--) {
         int *e = *p++;
-        if (*e == (int)(unsigned char)arg0[0x52])
+        if (*e == (int)(unsigned char)moby[0x52])
             found = e;
     }
     if (found == 0)
-        return (unsigned char)arg1[0xB6];
-    return walker_gait_mask(found, arg1);
+        return (unsigned char)rig[0xB6];
+    return walker_gait_mask(found, t);
 }
 /* Ported from rac1-decomp src/overlays/l04_eudora/vuchain_00293490.c (func_L04_002939E8) */
 
@@ -364,7 +365,6 @@ extern f32 fast_difference_between_rotations(f32, f32) __asm__("FUN_001fa688");
 extern f32 FUN_001f99c0(f32);
 extern f32 D_0015ED60;
 extern f32 D_0015ED68;
-extern f32 D_0015ED6C;
 extern s32 D_L04_00173FF0[] __attribute__((section(".data")));
 
 s32 FUN_L04_00295778(struct Moby *moby, LegRig *rig, f32 speed, f32 heading, f32 step) {
@@ -506,8 +506,8 @@ s32 FUN_L04_00295778(struct Moby *moby, LegRig *rig, f32 speed, f32 heading, f32
                 LegRigAnim *anim;
                 f32 rate;
 
-                if (!(rig->speed < D_0015ED6C * 0.19f) || !(min_turn < fast_difference_between_rotations(moby->rot.z, heading)) ||
-                    !(speed < (rate = D_0015ED6C * 0.19f))) {
+                if (!(rig->speed < frame_time * 0.19f) || !(min_turn < fast_difference_between_rotations(moby->rot.z, heading)) ||
+                    !(speed < (rate = frame_time * 0.19f))) {
                     anim = *entry;
                     rate = rig->speed;
                 } else {

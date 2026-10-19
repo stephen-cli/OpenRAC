@@ -17,11 +17,14 @@ typedef unsigned int u128_init __attribute__((mode(TI), aligned(16)));
 extern struct Own D_L00_001B71F0;
 extern s32 D_L00_00173E04;
 extern s32 D_L00_00173E08;
-extern u8 D_L00_00173E40[] __attribute__((section(".data")));
+extern int D_L00_00173E40_lui[] __asm__("D_L00_00173E40") __attribute__((section(".data")));
 extern void *D_L00_00197300[];
 extern s32 D_L00_0015F3F8_gp __asm__("D_L00_0015F3F8") __attribute__((sda));
 extern s32 frame_size __asm__("D_0013E504");
 extern s32 D_L00_001611CC;
+/* The pause menu mobys' update (level 0's copy at 0x2DF638): by name, so each level's copy is
+ * meant, as each level program's own instruction forms its own address. */
+extern void FUN_0023a2c0(void *);
 #define D_L00_00184414 (*(s32 *)(D_L00_001841F0_init + 0x224))
 extern s32 D_L00_001B9E90_init[] __asm__("D_L00_001B9E90");
 extern s32 D_L00_00180260[];
@@ -90,7 +93,7 @@ void FUN_L00_00276368(void) {
     s32 id;
     struct Own *owner;
 
-    { s32 *table = (s32 *)D_L00_00173E40; table[4] |= 0x80000000; }
+    { s32 *table = (s32 *)((u8 *)&D_L00_00173E40_lui); table[4] |= 0x80000000; }
     D_L00_001B9CF0.unk124 = 0;
     D_L00_001B9CF0.unkD0 = 0;
     if (D_L00_001B9CF0.state == 10) {
@@ -225,7 +228,7 @@ void FUN_L00_00276368(void) {
             *handle = (s32)obj;
             if (obj != 0) {
                 *(u16 *)((u8 *)obj + 0x34) &= 0xfffd;
-                *(void **)((u8 *)*handle + 0x74) = (void *)0x002df638;
+                *(void **)((u8 *)*handle + 0x74) = (void *)FUN_0023a2c0;
                 *(f32 *)((u8 *)*handle + 0x10) = source[80];
                 *(f32 *)((u8 *)*handle + 0x14) = source[81];
                 *(f32 *)((u8 *)*handle + 0x18) = source[82];
@@ -251,7 +254,7 @@ extern s32 D_00141660[];
 extern s32 D_0015EE78_gp __attribute__((sda));
 extern void *D_L00_00197300[];
 extern u8 D_L00_0017E4D8[] __attribute__((section(".data")));
-extern u8 D_L00_00173E40[] __attribute__((section(".data")));
+extern int D_L00_00173E40_lui[] __asm__("D_L00_00173E40") __attribute__((section(".data")));
 extern void FUN_L00_002a09d8(s32);
 extern void FUN_L00_002a07f8(void) __asm__("FUN_002335d0");
 extern void FUN_L00_002a08c8(void);
@@ -347,7 +350,7 @@ void FUN_L00_00276908(void) {
         }
         D_L00_0015F5D8 = 1;
         {
-            s32 *table = (s32 *)D_L00_00173E40;
+            s32 *table = (s32 *)((u8 *)&D_L00_00173E40_lui);
             table[4] &= 0x7fffffff;
         }
         FUN_L00_002a08c8();
@@ -440,7 +443,7 @@ extern void FUN_L00_00276368(void);
 extern void FUN_L00_00276908(void);
 extern void FUN_L00_002831c0(void);
 extern void FUN_L00_0028ed58(s32);
-extern void FUN_L00_00298840(void *);
+extern void start_scene(void *) __asm__("FUN_L00_00298840");
 extern void FUN_L00_00299460(void *);
 extern void FUN_L00_002994f8(void *);
 extern void FUN_L00_00299560(void *);
@@ -524,7 +527,7 @@ void FUN_L00_00276bd0(void) {
             D_L00_001B9CF0.unk130 = tmp;
             fade_to_black(scale_game_frames(0x10));
             D_L00_0015F5C4 = 0;
-            FUN_L00_00298840(D_L00_001B9CF0.unkE4);
+            start_scene(D_L00_001B9CF0.unkE4);
         } else if (D_L00_001B9CF0.unkC == 7) {
             tmp = decode_mode;
             D_L00_001B9CF0.unk130 = tmp;
@@ -874,3 +877,50 @@ int FUN_L00_002779c8(int x) {
     return 0;
 }
 
+s32 D_L01_001BA248[1] __attribute__((section(".data"))) = {0};
+f32 D_L01_001BA258[1] __attribute__((section(".data"))) = {0};
+s32 D_L01_001BA310[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001BA3C8[1] __attribute__((section(".data"))) = {0};
+f32 D_L02_001BA3D8[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001BA490[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001B9EC8[1] __attribute__((section(".data"))) = {0};
+f32 D_L03_001B9ED8[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001B9F90[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001B9F48[1] __attribute__((section(".data"))) = {0};
+f32 D_L04_001B9F58[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001BA010[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001BA248[1] __attribute__((section(".data"))) = {0};
+f32 D_L05_001BA258[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001BA310[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001BA548[1] __attribute__((section(".data"))) = {0};
+f32 D_L06_001BA558[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001BA610[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001B9E48[1] __attribute__((section(".data"))) = {0};
+f32 D_L07_001B9E58[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001B9F10[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001BA5C8[1] __attribute__((section(".data"))) = {0};
+f32 D_L08_001BA5D8[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001BA690[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001B9F48[1] __attribute__((section(".data"))) = {0};
+f32 D_L09_001B9F58[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001BA010[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001BA248[1] __attribute__((section(".data"))) = {0};
+f32 D_L10_001BA258[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001BA310[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001BA248[1] __attribute__((section(".data"))) = {0};
+f32 D_L12_001BA258[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001BA310[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001BA0C8[1] __attribute__((section(".data"))) = {0};
+f32 D_L13_001BA0D8[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001BA190[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001BA4C8[1] __attribute__((section(".data"))) = {0};
+f32 D_L14_001BA4D8[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001BA590[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001BA3C8[1] __attribute__((section(".data"))) = {0};
+f32 D_L15_001BA3D8[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001BA490[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001BA248[1] __attribute__((section(".data"))) = {0};
+f32 D_L16_001BA258[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001BA310[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001BA6C8[1] __attribute__((section(".data"))) = {0};
+f32 D_L17_001BA6D8[1] __attribute__((section(".data"))) = {0};

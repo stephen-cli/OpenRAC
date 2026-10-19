@@ -33,7 +33,7 @@ typedef struct ViBuf {
 } ViBuf;
 
 /* getFIFOindex(ViBuf *, void *) */
-int func_0023CEC8(ViBuf *vb, unsigned int addr) {
+int getFIFOindex(ViBuf *vb, unsigned int addr) {
     unsigned int mask = 0x0FFFFFFF;
     if (addr == (((vb->count << 4) + (unsigned int)vb->tags + 16) & mask)) {
         return 0;
@@ -44,7 +44,7 @@ extern void func_0011D960(void);
 extern void func_0011D9A8(void);
 
 /* setD3_CHCR(unsigned int) */
-void func_0023CF10(unsigned int chcr) {
+void setD3_CHCR(unsigned int chcr) {
     func_0011D960();
     *(volatile unsigned int *)0x1000F590 = *(volatile unsigned int *)0x1000F520 | 0x10000;
     *(volatile unsigned int *)0x1000B000 = chcr;
@@ -52,7 +52,7 @@ void func_0023CF10(unsigned int chcr) {
     func_0011D9A8();
 }
 /* setD4_CHCR(unsigned int) */
-void func_0023CF80(unsigned int chcr) {
+void setD4_CHCR(unsigned int chcr) {
     func_0011D960();
     *(volatile unsigned int *)0x1000F590 = *(volatile unsigned int *)0x1000F520 | 0x10000;
     *(volatile unsigned int *)0x1000B400 = chcr;
@@ -60,7 +60,7 @@ void func_0023CF80(unsigned int chcr) {
     func_0011D9A8();
 }
 /* scTag2 */
-void func_0023CFF0(unsigned long *tag, unsigned int a, unsigned int b, unsigned int c) {
+void scTag2(unsigned long *tag, unsigned int a, unsigned int b, unsigned int c) {
     *tag = ((unsigned long)a << 32) | ((unsigned long)b << 28) | (unsigned long)c;
 }
 /* video input buffer: 0x5C bytes as touched by the asm */
@@ -91,7 +91,7 @@ extern int func_00118C70(SemaParam *);
 extern int func_0023D090();
 
 /* viBufCreate: fill the header, make a semaphore (1/1), reset, clear 0x48 */
-int func_0023D018(VB *vb, int data, unsigned int tags, int count, int f50, int f54) {
+int viBufCreate(VB *vb, int data, unsigned int tags, int count, int f50, int f54) {
     SemaParam sp;
 
     vb->f0 = data;
@@ -103,7 +103,7 @@ int func_0023D018(VB *vb, int data, unsigned int tags, int count, int f50, int f
     sp.init = 1;
     sp.max = 1;
     vb->sema = func_00118C70(&sp);
-    func_0023D090(vb);
+    viBufReset(vb);
     vb->f48 = 0;
     return 1;
 }
@@ -111,7 +111,7 @@ extern void func_0023CFF0(unsigned long *, unsigned int, unsigned int, unsigned 
 extern void func_0023CF80(unsigned int);
 
 /* viBufReset(ViBuf *) */
-int func_0023D090(ViBuf *vb) {
+int viBufReset(ViBuf *vb) {
     int i;
 
     vb->f44 = 1;
@@ -144,7 +144,7 @@ int func_0023D090(ViBuf *vb) {
     return 1;
 }
 /* viBufBeginPut(ViBuf *, unsigned char **, int *, unsigned char **, int *) */
-void func_0023D1F0(ViBuf *vb, unsigned char **p1, int *n1, unsigned char **p2, int *n2) {
+void viBufBeginPut(ViBuf *vb, unsigned char **p1, int *n1, unsigned char **p2, int *n2) {
     int tagIdx;
     int pos;
     int available;
@@ -171,13 +171,68 @@ void func_0023D1F0(ViBuf *vb, unsigned char **p1, int *n1, unsigned char **p2, i
     func_00118C90(vb->sema);
 }
 /* viBufEndPut(ViBuf *, int) */
-void func_0023D2E8(ViBuf *vb, int size) {
+void viBufEndPut(ViBuf *vb, int size) {
     func_00118CB0(vb->sema);
     vb->f14 += size;
     *(long *)(vb->pad48) += size;
     func_00118C90(vb->sema);
 }
-INCLUDE_ASM("asm/nonmatchings/text", func_0023D340); /* viBufAddDMA(ViBuf *) */
+extern char D_001E8E50[];
+extern int func_0023CEC8(ViBuf *, unsigned int);
+
+/* viBufAddDMA(ViBuf *): under the buffer's semaphore, reads the channel-4 DMA position,
+ * advances fC/f10 past the consumed slots, turns whole 0x800-byte units of f14 into
+ * ref tags (0x80 qwords each) and restarts channel 4. Returns 0 when f44 is clear. */
+int func_0023D340(ViBuf *vb) {
+    int ok = 0;
+    unsigned int chcr;
+    int idx;
+    int done;
+    int n;
+    int i;
+    int rd;
+    int pos;
+
+    func_00118CB0(vb->sema);
+    if (vb->f44 == 0) {
+        ErrMessage(D_001E8E50);
+        return 0;
+    }
+    setD4_CHCR(5);
+    chcr = *(volatile unsigned int *)0x1000B400;
+    rd = func_0023CEC8(vb, *(volatile unsigned int *)0x1000B410);
+    done = (rd + vb->count - vb->fC) % vb->count;
+    vb->fC = (vb->fC + done) % vb->count;
+    vb->f10 -= done;
+    pos = (vb->fC + vb->f10) % vb->count;
+
+    n = vb->f14 / 0x800;
+    vb->f14 -= n << 11;
+    if (n > 0) {
+        int last = vb->count - 1;
+        int prev = (vb->fC + vb->f10 + last) % vb->count;
+        scTag2((unsigned long *)(vb->tags + prev * 16), vb->base + (prev << 11), 3, 0x80);
+        ok = 1;
+    }
+    idx = pos;
+    for (i = 0; i < n; i++) {
+        int t = 0;
+        if (i != n - 1) {
+            t = 3;
+        }
+        scTag2((unsigned long *)(vb->tags + idx * 16), vb->base + (idx << 11), t, 0x80);
+        idx = (idx + 1) % vb->count;
+    }
+    vb->f10 += n;
+    if (vb->f10 != 0) {
+        if (ok) {
+            chcr = (chcr & 0x0FFFFFFF) | 0x30000000;
+        }
+        setD4_CHCR(chcr | 0x100);
+    }
+    func_00118C90(vb->sema);
+    return 1;
+}
 extern void func_0023CF10(unsigned int);
 
 /* Saved DMA/IPU register words at 0x1C-0x3C of the buffer. */
@@ -197,7 +252,7 @@ typedef struct VbDmaSave {
 /* viBufStopDMA(ViBuf *): clears f44, stops channel 4 and saves its registers, waits for
  * the IPU_CTRL 0xF0 bits to clear, stops channel 3 and saves its registers plus
  * IPU_TOP/IPU_CTRL. Returns 1. */
-int func_0023D540(ViBuf *vb) {
+int viBufStopDMA(ViBuf *vb) {
     VbDmaSave *s = (VbDmaSave *)vb;
 
     func_00118CB0(vb->sema);
@@ -212,7 +267,7 @@ int func_0023D540(ViBuf *vb) {
             break;
         }
     }
-    func_0023CF10(0);
+    setD3_CHCR(0);
     s->d3_madr = *(volatile unsigned int *)0x1000B010;
     s->d3_qwc = *(volatile unsigned int *)0x1000B020;
     s->d3_chcr = *(volatile unsigned int *)0x1000B000;
@@ -233,7 +288,7 @@ extern int func_0023CEC8(ViBuf *, unsigned int);
  * MADR/TADR/QWC/CHCR, restarts channel 3 if it had a transfer, re-issues the IPU
  * command with the saved bit position (IPU_TOP & 0x7F) when f10 is non-zero, restores
  * IPU_CTRL and sets f44. Returns 1. */
-int func_0023D650(ViBuf *vb) {
+int viBufRestartDMA(ViBuf *vb) {
     VbDmaSave *s = (VbDmaSave *)vb;
     int bp = s->ipu_top & 0x7F;
     int fifo = ((s->ipu_top >> 16) & 3) + ((s->ipu_top >> 8) & 0xF);
@@ -256,8 +311,8 @@ int func_0023D650(ViBuf *vb) {
             vb->f10++;
         }
     } else {
-        int a = func_0023CEC8(vb, s->d4_madr);
-        int b = func_0023CEC8(vb, madr);
+        int a = getFIFOindex(vb, s->d4_madr);
+        int b = getFIFOindex(vb, madr);
         if (a != b) {
             int id;
             int size = vb->count << 11;
@@ -276,7 +331,7 @@ int func_0023D650(ViBuf *vb) {
     if (s->d3_madr != 0 && s->d3_qwc != 0) {
         *(volatile unsigned int *)0x1000B010 = s->d3_madr;
         *(volatile unsigned int *)0x1000B020 = s->d3_qwc;
-        func_0023CF10(s->d3_chcr | 0x100);
+        setD3_CHCR(s->d3_chcr | 0x100);
     }
     if (vb->f10 != 0) {
         for (;;) {
@@ -306,7 +361,7 @@ extern void func_00118C80(int);     /* DeleteSema */
 
 /* viBufDelete(ViBuf *) -- stops DMA channel 4 (setD4_CHCR(5)), zeroes its MADR/QWC/TADR
  * and deletes the buffer's semaphore. Returns 1. */
-int func_0023D988(ViBuf *vb) {
+int viBufDelete(ViBuf *vb) {
     setD4_CHCR(5);
     *(volatile unsigned int *)0x1000B420 = 0;
     *(volatile unsigned int *)0x1000B410 = 0;
@@ -318,7 +373,7 @@ extern int func_00118CB0(int);
 extern int func_00118C90(int);
 
 /* viBufCount(ViBuf *) */
-int func_0023D9E0(ViBuf *vb) {
+int viBufCount(ViBuf *vb) {
     int count;
     func_00118CB0(vb->sema);
     count = (vb->f10 << 11) + vb->f14;
@@ -326,16 +381,54 @@ int func_0023D9E0(ViBuf *vb) {
     return count;
 }
 /* viBufFlush(ViBuf *) */
-void func_0023DA30(ViBuf *vb) {
+void viBufFlush(ViBuf *vb) {
     func_00118CB0(vb->sema);
     vb->f14 = ((vb->f14 + 0x7FF) / 0x800) * 0x800;
     func_00118C90(vb->sema);
 }
-INCLUDE_ASM("asm/nonmatchings/text", func_0023DA88); /* viBufModifyPts(ViBuf *, TimeStamp *) */
+/* a % b as a helper: once inlined, its zero-divisor check is tested against $0 */
+static inline int ring_mod(int a, int b) { return a % b; }
+
+/* viBufModifyPts(ViBuf *, TimeStamp *): walks the 0x18-byte entries of the table at
+ * 0x50 from the oldest one (index (f5C - f58) mod ntbl) while they lie within ts's
+ * byte range (pos/len, modulo the 0x800 * count ring), trims the overlapped bytes off
+ * each entry, clears an entry that becomes empty and lowers f58 (not below 0). */
+int func_0023DA88(ViBuf *vb, TimeStamp *ts) {
+    int i = (vb->f5C - vb->f58 + vb->ntbl) % vb->ntbl;
+    int size = vb->count << 11;
+    int go = 1;
+    TimeStamp *e;
+
+    if (vb->f58 > 0) {
+    while (go && (e = &((TimeStamp *)vb->tbl)[i])->len != 0 && ts->len != 0) {
+        if (ring_mod(e->pos + size - ts->pos, size) < ts->len) {
+            int n = ts->pos + ts->len - e->pos;
+            if (e->len < n) {
+                n = e->len;
+            }
+            e->pos = (e->pos + n) % size;
+            e->len -= n;
+            if (e->len == 0) {
+                if (e->pts >= 0) {
+                    e->pts = -1;
+                    e->dts = -1;
+                    e->pos = 0;
+                    e->len = 0;
+                }
+                vb->f58 = (vb->f58 - 1 < 0) ? 0 : vb->f58 - 1;
+            }
+        } else {
+            go = 0;
+        }
+        i = (i + 1) % vb->ntbl;
+    }
+    }
+    return 0;
+}
 extern int func_0023DA88(ViBuf *, TimeStamp *);
 
 /* viBufPutTs(ViBuf *, TimeStamp *) */
-int func_0023DBE0(ViBuf *vb, TimeStamp *ts) {
+int viBufPutTs(ViBuf *vb, TimeStamp *ts) {
     int ret = 0;
     func_00118CB0(vb->sema);
     if (vb->f58 < vb->ntbl) {
@@ -353,4 +446,47 @@ int func_0023DBE0(ViBuf *vb, TimeStamp *ts) {
     func_00118C90(vb->sema);
     return ret;
 }
-INCLUDE_ASM("asm/nonmatchings/text", func_0023DCF0); /* viBufGetTs(ViBuf *, TimeStamp *) */
+/* viBufGetTs(ViBuf *, TimeStamp *): works out the ring position the IPU is decoding
+ * (channel-4 MADR, less the qwords held in the IPU FIFO per IPU_TOP, plus the saved bit
+ * position at 0x38 in bytes), then searches the f58 pending entries of the table at 0x50
+ * from the oldest for one whose pos/len range covers it. On a hit copies its pts/dts to
+ * *ts, marks them -1 and lowers f58 (not below 0); otherwise *ts gets -1/-1. Returns 1. */
+static inline int ts_dist(int a, int size) {
+    return a % size;
+}
+
+/* viBufGetTs(ViBuf *, TimeStamp *) */
+int func_0023DCF0(ViBuf *vb, TimeStamp *ts) {
+    unsigned int madr = *(volatile unsigned int *)0x1000B410;
+    unsigned int top = *(volatile unsigned int *)0x10002020;
+    int bp = *(unsigned int *)((char *)vb + 0x38) & 0x7F;
+    int size = vb->count << 11;
+    int found = 0;
+    int pos;
+    int n;
+    int end;
+    int j;
+
+    madr -= (((top >> 16) & 3) + ((top >> 8) & 0xF)) << 4;
+    func_00118CB0(vb->sema);
+    ts->pts = -1;
+    ts->dts = -1;
+    madr += bp >> 3;
+    madr += size;
+    pos = (madr - vb->base) % size;
+    n = vb->f58;
+    end = vb->f5C;
+    for (j = 0; j < n && !found; j++) {
+        int k = (end - n + vb->ntbl + j) % vb->ntbl;
+        if (ts_dist(pos + size - ((TimeStamp *)vb->tbl)[k].pos, size) < ((TimeStamp *)vb->tbl)[k].len) {
+            found = 1;
+            ts->pts = ((TimeStamp *)vb->tbl)[k].pts;
+            ts->dts = ((TimeStamp *)vb->tbl)[k].dts;
+            ((TimeStamp *)vb->tbl)[k].pts = -1;
+            ((TimeStamp *)vb->tbl)[k].dts = -1;
+            vb->f58 -= (vb->f58 < 2) ? vb->f58 : 1;
+        }
+    }
+    func_00118C90(vb->sema);
+    return 1;
+}

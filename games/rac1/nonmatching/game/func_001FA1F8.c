@@ -1,3 +1,4 @@
+/* fcheck: unchecked (never called in fcheck's capture run of the title, menu and level 0; OpenRAC tools/fcheck_gate.py, 2026-10-18). */
 /* Rotation rows from Euler angles in[0..2] (x, y, z), out = 3 rows of 4 floats (the
    3-row form of euler_to_matrix, func_001FA218). Retail loads in into vf1 and runs VU0 microprogram 28259 at 0xD18 (vcallms 0x1A3),
    then stores vf20..vf22. That program (ReRAC rc-formats moby_light.rs rotation_rows and
@@ -5,7 +6,9 @@
    when its angle is zero (exponent bits zero), so row i = R.e_i with R = Rz.Ry.Rx. Sine and
    cosine fold the angle into [-pi/2, pi/2] with min/max and use a 9th-order odd polynomial;
    cosine is the sine of angle + pi/2. Only rows 0..2 are stored. */
-void func_001FA1F8(float *out, float *in) {
+void func_001FA1F8(void *out_, void *in_) {
+    float *out = out_;
+    float *in = in_;
     union { unsigned int u; float f; } cv;
     float k[7];
     float r[3][4];

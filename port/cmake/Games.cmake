@@ -15,6 +15,7 @@
 # The decompilations are only read: hostgen works on copies in the build tree.
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+include(MacApp)
 
 # hostgen uses every core itself: one game's translation at a time (Ninja).
 set_property(GLOBAL APPEND PROPERTY JOB_POOLS openrac_hostgen=1)
@@ -58,6 +59,16 @@ function(openrac_add_game config)
   set(OPENRAC_${ID}_SOURCE "${OPENRAC_REPO_DIR}/${source}" CACHE PATH
       "The decompilation openrac-${id} is built from")
   set(game_source "${OPENRAC_${ID}_SOURCE}")
+  # Where the game's setup wrote the assembly, if not in that decompilation (another copy of it).
+  set(OPENRAC_${ID}_ASM_SOURCE "" CACHE PATH "Where openrac-${id}'s assembly is, if not in its decompilation")
+  # The player's disc image, read for the instructions of the functions with no C (retail.py).
+  set(OPENRAC_${ID}_RETAIL_IMAGE "" CACHE FILEPATH "The disc image openrac-${id}'s functions with no C are translated from")
+  set(asm_source "${game_source}")
+  set(asm_args "")
+  if(OPENRAC_${ID}_ASM_SOURCE)
+    set(asm_source "${OPENRAC_${ID}_ASM_SOURCE}")
+    set(asm_args --asm-source "${asm_source}")
+  endif()
   set(gen "${CMAKE_CURRENT_BINARY_DIR}/games/${id}/gen")
 
   if(NOT EXISTS "${game_source}")
@@ -104,6 +115,42 @@ function(openrac_add_game config)
       endif()
     endforeach()
   endif()
+  # The assembly the game's setup wrote (hostgen.json "asm", when enabled): functions with no C are
+  # translated from it (asmc.py), so hostgen runs again when it changes. Missing directories (no
+  # disc set up, as in CI) add nothing.
+  string(JSON asm_enabled ERROR_VARIABLE no_asm GET "${json}" asm enabled)
+  if(NOT no_asm AND asm_enabled)
+    string(JSON asm_dirs LENGTH "${json}" asm dirs)
+    if(asm_dirs GREATER 0)
+      math(EXPR last "${asm_dirs} - 1")
+      foreach(i RANGE ${last})
+        string(JSON asm_dir GET "${json}" asm dirs ${i})
+        if(IS_DIRECTORY "${asm_source}/${asm_dir}")
+          file(GLOB_RECURSE asm_files CONFIGURE_DEPENDS "${asm_source}/${asm_dir}/*.s")
+          list(APPEND inputs ${asm_files})
+        endif()
+      endforeach()
+    endif()
+    # The retail program itself (retail.py): the player's disc image (OPENRAC_<ID>_RETAIL_IMAGE,
+    # which tools/build_port.py --disc sets), else the executable and level dumps the
+    # decompilation's setup placed ("asm" "retail"). Where none is there, only the assembly counts.
+    if(OPENRAC_${ID}_RETAIL_IMAGE)
+      list(APPEND asm_args --retail-image "${OPENRAC_${ID}_RETAIL_IMAGE}")
+      if(EXISTS "${OPENRAC_${ID}_RETAIL_IMAGE}")
+        list(APPEND inputs "${OPENRAC_${ID}_RETAIL_IMAGE}")
+      endif()
+    else()
+      string(JSON retail_exe ERROR_VARIABLE no_retail GET "${json}" asm retail exe)
+      if(NOT no_retail AND EXISTS "${asm_source}/${retail_exe}")
+        list(APPEND inputs "${asm_source}/${retail_exe}")
+      endif()
+      string(JSON retail_dump ERROR_VARIABLE no_retail GET "${json}" asm retail dump)
+      if(NOT no_retail AND IS_DIRECTORY "${asm_source}/${retail_dump}")
+        file(GLOB retail_manifests CONFIGURE_DEPENDS "${asm_source}/${retail_dump}/level_*/manifest.json")
+        list(APPEND inputs ${retail_manifests})
+      endif()
+    endif()
+  endif()
   # hostgen's own code (in a function, CMAKE_CURRENT_LIST_DIR is the caller's directory, so the
   # tool's is taken from OPENRAC_HOSTGEN, set where this file was read), and the headers it reads
   # the decompilation with.
@@ -118,7 +165,7 @@ function(openrac_add_game config)
     OUTPUT "${gen}/hostgen.stamp"
     BYPRODUCTS ${outputs}
     COMMAND "${Python3_EXECUTABLE}" "${OPENRAC_HOSTGEN}" --game "${config}"
-            --source "${game_source}" --out "${gen}" --quiet
+            --source "${game_source}" --out "${gen}" --quiet ${asm_args}
     COMMAND "${CMAKE_COMMAND}" -E touch "${gen}/hostgen.stamp"
     DEPENDS ${inputs} ${tool} ${tables}
     COMMENT "hostgen: ${id} from ${game_source}"
@@ -128,8 +175,23 @@ function(openrac_add_game config)
 
   # The game: generated C, and the game's own host C if it has any.
   file(GLOB host CONFIGURE_DEPENDS "${config_dir}/host/*.c")
+  # Host C one game shares between its versions ("host_shared": directories relative to the game's,
+  # rac1's ../rac1/host): compiled into each version's program on its own, finding that version's
+  # names and addresses in the version's host/ (rac1_version.h).
+  set(shared_includes "")
+  string(JSON shared_count ERROR_VARIABLE no_shared LENGTH "${json}" host_shared)
+  if(NOT no_shared AND shared_count GREATER 0)
+    math(EXPR last "${shared_count} - 1")
+    foreach(i RANGE ${last})
+      string(JSON shared_dir GET "${json}" host_shared ${i})
+      file(GLOB shared_host CONFIGURE_DEPENDS "${config_dir}/${shared_dir}/*.c")
+      list(APPEND host ${shared_host})
+      list(APPEND shared_includes "${config_dir}/${shared_dir}")
+    endforeach()
+  endif()
   add_library(openrac_${target_id}_game STATIC ${sources} ${host})
   target_include_directories(openrac_${target_id}_game PUBLIC "${gen}")
+  target_include_directories(openrac_${target_id}_game PRIVATE "${config_dir}/host" ${shared_includes})
   target_link_libraries(openrac_${target_id}_game PUBLIC openrac_game_common)
   if(UNIX)
     target_link_libraries(openrac_${target_id}_game PUBLIC m)  # host maths the games call (fabsf...)
@@ -160,6 +222,27 @@ function(openrac_add_game config)
     # The window's icon: the game's own or the launcher's, embedded as PNG bytes.
     openrac_window_icon("${config_dir}" "${target_id}" icon_c)
     target_sources(openrac-${id} PRIVATE "${icon_c}")
+    # The game's name as players see it, in the window's title and on macOS its bundle's name
+    # (cmake/MacApp.cmake): the title in its catalogue entry (games/<game>/game.json) and the
+    # version's video standard, "Ratchet & Clank (PAL)", "Ratchet & Clank (NTSC)".
+    string(JSON game GET "${json}" game)
+    string(REGEX REPLACE "^${game}-" "" version "${id}")
+    cmake_path(SET catalogue NORMALIZE "${OPENRAC_REPO_DIR}/games/${game}/game.json")
+    file(READ "${catalogue}" catalogue_json)
+    string(JSON title GET "${catalogue_json}" title)
+    string(JSON video ERROR_VARIABLE no_video GET "${catalogue_json}" versions "${version}" disc video)
+    if(NOT no_video)
+      set(title "${title} (${video})")
+    endif()
+    set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${catalogue}")
+    target_compile_definitions(openrac-${id} PRIVATE "OPENRAC_GAME_TITLE=\"${title}\"")
+    if(APPLE)
+      set(icon "${config_dir}/icon-macos.png")
+      if(NOT EXISTS "${icon}")
+        set(icon "${PROJECT_SOURCE_DIR}/../launcher/src-tauri/icons/icon.icns")
+      endif()
+      openrac_macos_app(openrac-${id} NAME "${title}" ID "dev.openrac.${id}" ICON "${icon}")
+    endif()
     if(TARGET openrac_media)
       target_link_libraries(openrac-${id} PRIVATE openrac_media)
       target_compile_definitions(openrac-${id} PRIVATE OPENRAC_MOVIES=1)
@@ -169,9 +252,14 @@ function(openrac_add_game config)
 endfunction()
 
 # The window's icon as a C array (openrac_icon_png, openrac_icon_png_size): the game's icon if
-# present in port/game/<id>/icon.png, or OpenRAC's launcher icon as a fallback.
+# present in port/game/<id>/icon.png, or OpenRAC's launcher icon as a fallback. On macOS the
+# window's icon is the Dock's, which macOS draws as given, so there it is icon-macos.png: the same
+# picture in Apple's shape (launcher/src-tauri/icons/make_macos_icon.py --picture).
 function(openrac_window_icon game_dir target_id out)
   set(png "${game_dir}/icon.png")
+  if(APPLE AND EXISTS "${game_dir}/icon-macos.png")
+    set(png "${game_dir}/icon-macos.png")
+  endif()
   if(NOT EXISTS "${png}")
     set(png "${PROJECT_SOURCE_DIR}/../launcher/src-tauri/icons/128x128.png")
   endif()

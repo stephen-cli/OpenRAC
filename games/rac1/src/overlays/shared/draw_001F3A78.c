@@ -10,12 +10,12 @@ extern u8 D_L00_0016A140[];
 void func_L00_001F3AF0(s32, s32, s32, s32);
 
 /* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/overlays/shared/rendering_debug_001f36f8.c, FUN_L00_001f36f8. */
-void func_L00_001F3A78(void) {
+void FlushDebugLines(void) {
     s32 i;
     E001f36f8 *p;
 
     for (i = 0; i < (*(s32 *)&D_L00_0015F0C4); i++) {
-        func_L00_001F3AF0(D_L00_0016A940[i].a, D_L00_0016A940[i].b, D_L00_0016A940[i].c, D_L00_0016A940[i].d);
+        DrawGlyphLine(D_L00_0016A940[i].a, D_L00_0016A940[i].b, D_L00_0016A940[i].c, D_L00_0016A940[i].d);
     }
     (*(s32 *)&D_L00_0015F0C4) = 0;
     (*(void * *)&D_L00_0015F0C0) = D_L00_0016A140;
@@ -28,7 +28,7 @@ extern int D_L00_00169C00[];
 extern int D_0013E600[];
 
 /* Appends a line of font glyph quads at (x, y) in COLOR to the packet buffer and patches the packet tags. */
-void func_L00_001F3AF0(int x, int y, int color, int s_) {
+void DrawGlyphLine(int x, int y, int color, int s_) {
     unsigned char *str = (unsigned char *)s_;
     int n = 0;
     int qw;
@@ -41,8 +41,8 @@ void func_L00_001F3AF0(int x, int y, int color, int s_) {
     long *q;
     int hd;
 
-    func_00234C98(0x42, 0x8000000044L);
-    func_00234C98(0x47, 0x5360B);
+    VU1_addGSregister(0x42, 0x8000000044L);
+    VU1_addGSregister(0x47, 0x5360B);
     base = D_L00_00161280;
     D_L00_00161280 = base + 4;
     p = (long *)D_L00_00161280;
@@ -148,7 +148,7 @@ extern void func_L00_002E80A8_1F3E20(void *) __asm__("func_L00_002E80A8");
 /* Free-camera controls (debug camera): pad buttons move the camera (in the free-look matrix when the hero's
    camera mode is 2, else on the ground plane), turn it about three axes with eased speeds, and when the camera
    mode is 2 copy the result into the view object. */
-void func_L00_001F3E20(void) {
+void DebugFreeCameraUpdate(void) {
     float s[0x34] __attribute__((aligned(16)));
     int moved = 0;
     int k;
@@ -384,9 +384,9 @@ extern char D_L00_00166D80[];
 extern char D_0013E633[];
 
 /* places the camera-follow vector from the angle and offsets, then copies it into the object */
-void func_L00_001F4810(void) {
-    char *g = D_L00_00166D80;
-    char *c = D_L00_0016C158;
+void Hero_PlaceOnOrbit(void) {
+    char *g = gCameraLvl;
+    char *c = gDebugFreeCamLvl;
     char *b;
     float t = FastAddRots(*(float *)(g + 0x158), *(float *)(c + 0x88));
     char *m;
@@ -520,7 +520,7 @@ static __inline__ int flag_offset60(int flags) {
 /* Draws the debug menu: the mode and toggle rows, the camera, display and occlusion modes, the mission line
  * (via the table at D_0014171B + 0xAA35), then the weapon and ammo counters. Waits on the flag at D_L00_00161260
  * before the last section. */
-void func_L00_001F5C60(void) {
+void DebugMenuRender(void) {
     char buf[16];
     int stride;
     char *fmt;
@@ -529,196 +529,196 @@ void func_L00_001F5C60(void) {
 
     framebuf_appendLargeSetup();
     if (D_L00_0015F6BC == 0) {
-        func_001F0FF8(0x100, 0x10, 0x80C0C000, D_L00_0015F108);
-        func_001F0FF8(0x100, 0x18, 0x80C0C000, D_L00_0015F110);
-        func_001F0F78(0xC, 0x2C, 0x8000C000, D_L00_0015F120);
-        func_001F0F78(0xC, 0x32, 0x8000C000, D_L00_0015F128);
-        func_001F0F78(0x14, 0x40, 0x8000C0C0, D_L00_0015F130);
-        func_001F0F78(0x6C, 0x40, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 1)));
-        func_001F0F78(0x14, 0x4F, 0x8000C0C0, D_L00_0015F140);
-        func_001F0F78(0x6C, 0x4F, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 2)));
-        func_001F0F78(0x14, 0x5E, 0x8000C0C0, D_L00_0015F148);
-        func_001F0F78(0x6C, 0x5E, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 4)));
-        func_001F0F78(0x14, 0x6D, 0x8000C0C0, D_L00_0015F150);
-        func_001F0F78(0x6C, 0x6D, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 8)));
-        func_001F0F78(0x14, 0x7C, 0x8000C0C0, D_L00_0015F158);
-        func_001F0F78(0x6C, 0x7C, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 0x10)));
+        Text_QueueCentered(0x100, 0x10, 0x80C0C000, D_L00_0015F108);
+        Text_QueueCentered(0x100, 0x18, 0x80C0C000, D_L00_0015F110);
+        Text_Queue(0xC, 0x2C, 0x8000C000, D_L00_0015F120);
+        Text_Queue(0xC, 0x32, 0x8000C000, D_L00_0015F128);
+        Text_Queue(0x14, 0x40, 0x8000C0C0, D_L00_0015F130);
+        Text_Queue(0x6C, 0x40, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 1)));
+        Text_Queue(0x14, 0x4F, 0x8000C0C0, D_L00_0015F140);
+        Text_Queue(0x6C, 0x4F, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 2)));
+        Text_Queue(0x14, 0x5E, 0x8000C0C0, D_L00_0015F148);
+        Text_Queue(0x6C, 0x5E, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 4)));
+        Text_Queue(0x14, 0x6D, 0x8000C0C0, D_L00_0015F150);
+        Text_Queue(0x6C, 0x6D, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 8)));
+        Text_Queue(0x14, 0x7C, 0x8000C0C0, D_L00_0015F158);
+        Text_Queue(0x6C, 0x7C, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.draw_bits & 0x10)));
         if (debug_menu60.group == 0) {
-            func_001F0F78(9, (debug_menu60.item * 0xF) + 0x40, 0x800000C0, D_L00_0015F160);
+            Text_Queue(9, (debug_menu60.item * 0xF) + 0x40, 0x800000C0, D_L00_0015F160);
         }
-        func_001F0F78(0xA8, 0x2C, 0x8000C000, D_L00_0015F168);
-        func_001F0F78(0xA8, 0x32, 0x8000C000, D_L00_0015F170);
-        func_001F0F78(0xB0, 0x40, 0x8000C0C0, D_L00_0015F178);
-        func_001F0F78(0x108, 0x40, 0x80F0F0F0, D_L00_00160D00[debug_menu60.camera_mode]);
-        func_001F0F78(0xB0, 0x4F, 0x8000C0C0, D_L00_0015F180);
-        func_001F0F78(0x108, 0x4F, 0x80F0F0F0, D_L00_001C4128[debug_menu60.display_mode]);
-        func_001F0F78(0xB0, 0x5E, 0x8000C0C0, D_L00_0015F188);
-        func_001F0F78(0x108, 0x5E, 0x80F0F0F0, D_L00_00160DC8[debug_menu60.occl_mode]);
-        func_001F0F78(0xB0, 0x6D, 0x8000C0C0, D_L00_0015F190);
-        func_001F0F78(0x108, 0x6D, 0x80F0F0F0, D_L00_00160CD8[(debug_menu60.f20 != 0) ? 0 : 1]);
-        func_001F0F78(0xB0, 0x7C, 0x8000C0C0, D_L00_0015F1A0);
-        func_001F0F78(0x108, 0x7C, 0x80F0F0F0, D_L00_00160CD8[debug_menu60.f24]);
-        func_001F0F78(0xB0, 0x8B, 0x8000C0C0, D_L00_0015F1A8);
-        func_001F0F78(0x108, 0x8B, 0x80F0F0F0, D_L00_00160D68[debug_menu60.f28]);
-        func_001F0F78(0xB0, 0x9A, 0x8000C0C0, D_L00_0015F1B8);
-        func_001F0F78(0x108, 0x9A, 0x80F0F0F0, D_L00_00160D80[debug_menu60.f2C]);
-        func_001F0F78(0xB0, 0xA9, 0x8000C0C0, D_L00_0015F1C0);
-        func_001F0F78(0x108, 0xA9, 0x80F0F0F0, D_L00_00160DA0[debug_menu60.f30]);
-        func_001F0F78(0xB0, 0xB8, 0x8000C0C0, D_L00_0015F1C8);
-        func_001F0F78(0x108, 0xB8, 0x80F0F0F0, D_L00_00160DB0[debug_menu60.f34]);
-        func_001F0F78(0xB0, 0xC7, 0x8000C0C0, D_L00_0015F1D0);
+        Text_Queue(0xA8, 0x2C, 0x8000C000, D_L00_0015F168);
+        Text_Queue(0xA8, 0x32, 0x8000C000, D_L00_0015F170);
+        Text_Queue(0xB0, 0x40, 0x8000C0C0, D_L00_0015F178);
+        Text_Queue(0x108, 0x40, 0x80F0F0F0, D_L00_00160D00[debug_menu60.camera_mode]);
+        Text_Queue(0xB0, 0x4F, 0x8000C0C0, D_L00_0015F180);
+        Text_Queue(0x108, 0x4F, 0x80F0F0F0, D_L00_001C4128[debug_menu60.display_mode]);
+        Text_Queue(0xB0, 0x5E, 0x8000C0C0, D_L00_0015F188);
+        Text_Queue(0x108, 0x5E, 0x80F0F0F0, D_L00_00160DC8[debug_menu60.occl_mode]);
+        Text_Queue(0xB0, 0x6D, 0x8000C0C0, D_L00_0015F190);
+        Text_Queue(0x108, 0x6D, 0x80F0F0F0, D_L00_00160CD8[(debug_menu60.f20 != 0) ? 0 : 1]);
+        Text_Queue(0xB0, 0x7C, 0x8000C0C0, D_L00_0015F1A0);
+        Text_Queue(0x108, 0x7C, 0x80F0F0F0, D_L00_00160CD8[debug_menu60.f24]);
+        Text_Queue(0xB0, 0x8B, 0x8000C0C0, D_L00_0015F1A8);
+        Text_Queue(0x108, 0x8B, 0x80F0F0F0, D_L00_00160D68[debug_menu60.f28]);
+        Text_Queue(0xB0, 0x9A, 0x8000C0C0, D_L00_0015F1B8);
+        Text_Queue(0x108, 0x9A, 0x80F0F0F0, D_L00_00160D80[debug_menu60.f2C]);
+        Text_Queue(0xB0, 0xA9, 0x8000C0C0, D_L00_0015F1C0);
+        Text_Queue(0x108, 0xA9, 0x80F0F0F0, D_L00_00160DA0[debug_menu60.f30]);
+        Text_Queue(0xB0, 0xB8, 0x8000C0C0, D_L00_0015F1C8);
+        Text_Queue(0x108, 0xB8, 0x80F0F0F0, D_L00_00160DB0[debug_menu60.f34]);
+        Text_Queue(0xB0, 0xC7, 0x8000C0C0, D_L00_0015F1D0);
         if (debug_menu60.selection >= 0) {
             func_00116248(buf, D_L00_0015F1D8, debug_menu60.selection);
-            func_001F0F78(0x108, 0xC7, 0x80F0F0F0, buf);
+            Text_Queue(0x108, 0xC7, 0x80F0F0F0, buf);
         } else {
-            func_001F0F78(0x108, 0xC7, 0x80F0F0F0, D_L00_0015F1E0);
+            Text_Queue(0x108, 0xC7, 0x80F0F0F0, D_L00_0015F1E0);
         }
         stride = 16;
-        func_001F0F78(0xB0, 0xD6, 0x8000C0C0, D_L00_0015F1E8);
+        Text_Queue(0xB0, 0xD6, 0x8000C0C0, D_L00_0015F1E8);
         {
             int mission = debug_menu60.mission;
             func_00116248(buf, D_L00_0015F1F0, mission, (D_0014171B + 0xAA35)[mission + D_0015EE84 * stride]);
         }
-        func_001F0F78(0x108, 0xD6, 0x80F0F0F0, buf);
+        Text_Queue(0x108, 0xD6, 0x80F0F0F0, buf);
         if (debug_menu60.group == 1) {
-            func_001F0F78(0xA5, (debug_menu60.item * 0xF) + 0x40, 0x800000C0, D_L00_0015F160);
+            Text_Queue(0xA5, (debug_menu60.item * 0xF) + 0x40, 0x800000C0, D_L00_0015F160);
         }
-        func_001F0F78(0x158, 0x2C, 0x8000C000, D_L00_0015F1F8);
-        func_001F0F78(0x158, 0x32, 0x8000C000, D_L00_0015F170);
-        func_001F0F78(0x160, 0x40, 0x8000C0C0, D_L00_0015F200);
-        func_001F0F78(0x1CC, 0x40, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 1)));
-        func_001F0F78(0x160, 0x4F, 0x8000C0C0, D_L00_0015F208);
-        func_001F0F78(0x1CC, 0x4F, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 2)));
-        func_001F0F78(0x160, 0x5E, 0x8000C0C0, D_L00_0015F218);
-        func_001F0F78(0x1CC, 0x5E, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 4)));
-        func_001F0F78(0x160, 0x6D, 0x8000C0C0, D_L00_0015F228);
-        func_001F0F78(0x1CC, 0x6D, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 8)));
-        func_001F0F78(0x160, 0x7C, 0x8000C0C0, D_L00_0015F238);
-        func_001F0F78(0x1CC, 0x7C, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x10)));
-        func_001F0F78(0x160, 0x8B, 0x8000C0C0, D_L00_0015F248);
-        func_001F0F78(0x1CC, 0x8B, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x20)));
-        func_001F0F78(0x160, 0x9A, 0x8000C0C0, D_L00_0015F250);
-        func_001F0F78(0x1CC, 0x9A, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x40)));
-        func_001F0F78(0x160, 0xA9, 0x8000C0C0, D_L00_0015F258);
-        func_001F0F78(0x1CC, 0xA9, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x80)));
-        func_001F0F78(0x160, 0xB8, 0x8000C0C0, D_L00_0015F260);
-        func_001F0F78(0x1CC, 0xB8, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x100)));
+        Text_Queue(0x158, 0x2C, 0x8000C000, D_L00_0015F1F8);
+        Text_Queue(0x158, 0x32, 0x8000C000, D_L00_0015F170);
+        Text_Queue(0x160, 0x40, 0x8000C0C0, D_L00_0015F200);
+        Text_Queue(0x1CC, 0x40, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 1)));
+        Text_Queue(0x160, 0x4F, 0x8000C0C0, D_L00_0015F208);
+        Text_Queue(0x1CC, 0x4F, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 2)));
+        Text_Queue(0x160, 0x5E, 0x8000C0C0, D_L00_0015F218);
+        Text_Queue(0x1CC, 0x5E, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 4)));
+        Text_Queue(0x160, 0x6D, 0x8000C0C0, D_L00_0015F228);
+        Text_Queue(0x1CC, 0x6D, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 8)));
+        Text_Queue(0x160, 0x7C, 0x8000C0C0, D_L00_0015F238);
+        Text_Queue(0x1CC, 0x7C, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x10)));
+        Text_Queue(0x160, 0x8B, 0x8000C0C0, D_L00_0015F248);
+        Text_Queue(0x1CC, 0x8B, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x20)));
+        Text_Queue(0x160, 0x9A, 0x8000C0C0, D_L00_0015F250);
+        Text_Queue(0x1CC, 0x9A, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x40)));
+        Text_Queue(0x160, 0xA9, 0x8000C0C0, D_L00_0015F258);
+        Text_Queue(0x1CC, 0xA9, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x80)));
+        Text_Queue(0x160, 0xB8, 0x8000C0C0, D_L00_0015F260);
+        Text_Queue(0x1CC, 0xB8, 0x80F0F0F0, *(char **)((char *)D_L00_00160CD8 + flag_offset60(debug_menu60.bits & 0x100)));
         if (debug_menu60.group == 2) {
-            func_001F0F78(0x155, (debug_menu60.item * 0xF) + 0x3E, 0x800000C0, D_L00_0015F160);
+            Text_Queue(0x155, (debug_menu60.item * 0xF) + 0x3E, 0x800000C0, D_L00_0015F160);
         }
-        func_001F0F78(0xC, 0xA6, 0x8000C000, D_L00_0015F268);
-        func_001F0F78(0xC, 0xAC, 0x8000C000, D_L00_0015F170);
+        Text_Queue(0xC, 0xA6, 0x8000C000, D_L00_0015F268);
+        Text_Queue(0xC, 0xAC, 0x8000C000, D_L00_0015F170);
         if (debug_menu60.group == 3) {
-            func_001F0F78(9, (debug_menu60.item * 0xF) + 0xB8, 0x800000C0, D_L00_0015F160);
+            Text_Queue(9, (debug_menu60.item * 0xF) + 0xB8, 0x800000C0, D_L00_0015F160);
         }
-        func_001F0F78(0x14, 0xBA, 0x8000C0C0, D_L00_0015F270);
+        Text_Queue(0x14, 0xBA, 0x8000C0C0, D_L00_0015F270);
         weapon_order = (u8 *)D_0013E15A + 0x4C6;
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0x9]);
-        func_001F0F78(0x7A, 0xBA, 0x80406080, buf);
-        func_001F0F78(0x14, 0xC9, 0x8000C0C0, D_L00_0015F280);
+        Text_Queue(0x7A, 0xBA, 0x80406080, buf);
+        Text_Queue(0x14, 0xC9, 0x8000C0C0, D_L00_0015F280);
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0x15]);
-        func_001F0F78(0x7A, 0xC9, 0x80406080, buf);
-        func_001F0F78(0x14, 0xD8, 0x8000C0C0, D_L00_0015F290);
+        Text_Queue(0x7A, 0xC9, 0x80406080, buf);
+        Text_Queue(0x14, 0xD8, 0x8000C0C0, D_L00_0015F290);
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0x19]);
-        func_001F0F78(0x7A, 0xD8, 0x80406080, buf);
-        func_001F0F78(0x14, 0xE7, 0x8000C0C0, D_L00_0015F2A0);
+        Text_Queue(0x7A, 0xD8, 0x80406080, buf);
+        Text_Queue(0x14, 0xE7, 0x8000C0C0, D_L00_0015F2A0);
         ammo = (AmmoDisplay60 *)(D_0013D50F + 0x21);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo5C);
-        func_001F0F78(0x8C, 0xE7, 0x80F0F0F0, buf);
-        func_001F0F78(0x14, 0xF6, 0x8000C0C0, D_L00_0015F2B0);
+        Text_Queue(0x8C, 0xE7, 0x80F0F0F0, buf);
+        Text_Queue(0x14, 0xF6, 0x8000C0C0, D_L00_0015F2B0);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo60);
-        func_001F0F78(0x8C, 0xF6, 0x80F0F0F0, buf);
-        func_001F0F78(0x14, 0x105, 0x8000C0C0, D_L00_0015F2C0);
+        Text_Queue(0x8C, 0xF6, 0x80F0F0F0, buf);
+        Text_Queue(0x14, 0x105, 0x8000C0C0, D_L00_0015F2C0);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo28);
-        func_001F0F78(0x8C, 0x105, 0x80F0F0F0, buf);
+        Text_Queue(0x8C, 0x105, 0x80F0F0F0, buf);
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0xA]);
-        func_001F0F78(0x7A, 0x105, 0x80406080, buf);
-        func_001F0F78(0x14, 0x114, 0x8000C0C0, D_L00_0015F2C8);
+        Text_Queue(0x7A, 0x105, 0x80406080, buf);
+        Text_Queue(0x14, 0x114, 0x8000C0C0, D_L00_0015F2C8);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo2C);
-        func_001F0F78(0x8C, 0x114, 0x80F0F0F0, buf);
+        Text_Queue(0x8C, 0x114, 0x80F0F0F0, buf);
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0xB]);
-        func_001F0F78(0x7A, 0x114, 0x80406080, buf);
-        func_001F0F78(0x14, 0x123, 0x8000C0C0, D_L00_0015F2D8);
+        Text_Queue(0x7A, 0x114, 0x80406080, buf);
+        Text_Queue(0x14, 0x123, 0x8000C0C0, D_L00_0015F2D8);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo34);
-        func_001F0F78(0x8C, 0x123, 0x80F0F0F0, buf);
-        func_001F0F78(0x14, 0x132, 0x8000C0C0, D_L00_0015F2E8);
+        Text_Queue(0x8C, 0x123, 0x80F0F0F0, buf);
+        Text_Queue(0x14, 0x132, 0x8000C0C0, D_L00_0015F2E8);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo50);
-        func_001F0F78(0x8C, 0x132, 0x80F0F0F0, buf);
+        Text_Queue(0x8C, 0x132, 0x80F0F0F0, buf);
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0x14]);
-        func_001F0F78(0x7A, 0x132, 0x80406080, buf);
-        func_001F0F78(0x14, 0x141, 0x8000C0C0, D_L00_0015F2F0);
+        Text_Queue(0x7A, 0x132, 0x80406080, buf);
+        Text_Queue(0x14, 0x141, 0x8000C0C0, D_L00_0015F2F0);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo40);
-        func_001F0F78(0x8C, 0x141, 0x80F0F0F0, buf);
+        Text_Queue(0x8C, 0x141, 0x80F0F0F0, buf);
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0x10]);
-        func_001F0F78(0x7A, 0x141, 0x80406080, buf);
-        func_001F0F78(0x14, 0x150, 0x8000C0C0, D_L00_0015F300);
+        Text_Queue(0x7A, 0x141, 0x80406080, buf);
+        Text_Queue(0x14, 0x150, 0x8000C0C0, D_L00_0015F300);
         func_00116248(buf, D_L00_0015F1D8, ammo->ammo4C);
-        func_001F0F78(0x8C, 0x150, 0x80F0F0F0, buf);
+        Text_Queue(0x8C, 0x150, 0x80F0F0F0, buf);
         func_00116248(buf, D_L00_0015F1D8, (s32) weapon_order[0x13]);
-        func_001F0F78(0x7A, 0x150, 0x80406080, buf);
-        func_001F0F78(0x14, 0x15F, 0x8000C0C0, D_L00_0015F310);
+        Text_Queue(0x7A, 0x150, 0x80406080, buf);
+        Text_Queue(0x14, 0x15F, 0x8000C0C0, D_L00_0015F310);
         func_00116248(buf, fmt = D_L00_0015F1D8, ammo->ammo44);
-        func_001F0F78(0x8C, 0x15F, 0x80F0F0F0, buf);
+        Text_Queue(0x8C, 0x15F, 0x80F0F0F0, buf);
         func_00116248(buf, fmt, (s32) weapon_order[0x11]);
-        func_001F0F78(0x7A, 0x15F, 0x80406080, buf);
-        func_001F0F78(0x14, 0x16E, 0x8000C0C0, D_L00_0015F320);
+        Text_Queue(0x7A, 0x15F, 0x80406080, buf);
+        Text_Queue(0x14, 0x16E, 0x8000C0C0, D_L00_0015F320);
         func_00116248(buf, fmt, ammo->ammo3C);
-        func_001F0F78(0x8C, 0x16E, 0x80F0F0F0, buf);
+        Text_Queue(0x8C, 0x16E, 0x80F0F0F0, buf);
         func_00116248(buf, fmt, (s32) weapon_order[0xF]);
-        func_001F0F78(0x7A, 0x16E, 0x80406080, buf);
-        func_001F0F78(0x14, 0x17D, 0x8000C0C0, D_L00_0015F328);
+        Text_Queue(0x7A, 0x16E, 0x80406080, buf);
+        Text_Queue(0x14, 0x17D, 0x8000C0C0, D_L00_0015F328);
         func_00116248(buf, fmt, gBolts);
-        func_001F0F78(0x8C, 0x17D, 0x80F0F0F0, buf);
-        func_001F0F78(0xBC, 0x100, 0x8000C000, D_L00_0015F330);
-        func_001F0F78(0xBC, 0x106, 0x8000C000, D_L00_0015F338);
+        Text_Queue(0x8C, 0x17D, 0x80F0F0F0, buf);
+        Text_Queue(0xBC, 0x100, 0x8000C000, D_L00_0015F330);
+        Text_Queue(0xBC, 0x106, 0x8000C000, D_L00_0015F338);
         if (debug_menu60.group == 4) {
-            func_001F0F78(0xB9, (debug_menu60.item * 0xF) + 0x112, 0x800000C0, D_L00_0015F160);
+            Text_Queue(0xB9, (debug_menu60.item * 0xF) + 0x112, 0x800000C0, D_L00_0015F160);
         }
-        func_001F0F78(0xC4, 0x114, 0x8000C0C0, D_L00_0015F340);
+        Text_Queue(0xC4, 0x114, 0x8000C0C0, D_L00_0015F340);
         func_00116248(buf, D_L00_0015F348, promote_float60(D_L00_0015F548 * 0.0009765625f));
-        func_001F0F78(0x11C, 0x114, 0x80F0F0F0, buf);
-        func_001F0F78(0xC4, 0x123, 0x8000C0C0, D_L00_0015F350);
+        Text_Queue(0x11C, 0x114, 0x80F0F0F0, buf);
+        Text_Queue(0xC4, 0x123, 0x8000C0C0, D_L00_0015F350);
         func_00116248(buf, D_L00_0015F348, promote_float60(100.0f - (D_L00_0015F550 / 2.55f)));
-        func_001F0F78(0x11C, 0x123, 0x80F0F0F0, buf);
-        func_001F0F78(0xC4, 0x132, 0x8000C0C0, D_L00_0015F358);
+        Text_Queue(0x11C, 0x123, 0x80F0F0F0, buf);
+        Text_Queue(0xC4, 0x132, 0x8000C0C0, D_L00_0015F358);
         func_00116248(buf, D_L00_0015F348, promote_float60(D_L00_0015F54C * 0.0009765625f));
-        func_001F0F78(0x11C, 0x132, 0x80F0F0F0, buf);
-        func_001F0F78(0xC4, 0x141, 0x8000C0C0, D_L00_0015F360);
+        Text_Queue(0x11C, 0x132, 0x80F0F0F0, buf);
+        Text_Queue(0xC4, 0x141, 0x8000C0C0, D_L00_0015F360);
         func_00116248(buf, D_L00_0015F348, promote_float60(100.0f - (D_L00_0015F554 / 2.55f)));
-        func_001F0F78(0x11C, 0x141, 0x80F0F0F0, buf);
-        func_001F0F78(0xC4, 0x150, 0x8000C0C0, D_L00_0015F368);
+        Text_Queue(0x11C, 0x141, 0x80F0F0F0, buf);
+        Text_Queue(0xC4, 0x150, 0x8000C0C0, D_L00_0015F368);
         func_00116248(buf, fmt, (s32) D_L00_0015F544[0]);
-        func_001F0F78(0x11C, 0x150, 0x80F0F0F0, buf);
-        func_001F0F78(0xC4, 0x15F, 0x8000C0C0, D_L00_0015F370);
+        Text_Queue(0x11C, 0x150, 0x80F0F0F0, buf);
+        Text_Queue(0xC4, 0x15F, 0x8000C0C0, D_L00_0015F370);
         func_00116248(buf, fmt, (s32) D_L00_0015F545[0]);
-        func_001F0F78(0x11C, 0x15F, 0x80F0F0F0, buf);
-        func_001F0F78(0xC4, 0x16E, 0x8000C0C0, D_L00_0015F378);
+        Text_Queue(0x11C, 0x15F, 0x80F0F0F0, buf);
+        Text_Queue(0xC4, 0x16E, 0x8000C0C0, D_L00_0015F378);
         func_00116248(buf, fmt, (s32) D_L00_0015F546[0]);
-        func_001F0F78(0x11C, 0x16E, 0x80F0F0F0, buf);
-        func_001F0F78(0x160, 0x100, 0x8000C000, D_L00_0015F380);
-        func_001F0F78(0x160, 0x106, 0x8000C000, D_L00_0015F170);
+        Text_Queue(0x11C, 0x16E, 0x80F0F0F0, buf);
+        Text_Queue(0x160, 0x100, 0x8000C000, D_L00_0015F380);
+        Text_Queue(0x160, 0x106, 0x8000C000, D_L00_0015F170);
         if (debug_menu60.group == 5) {
-            func_001F0F78(0x15D, (debug_menu60.item * 0xF) + 0x112, 0x800000C0, D_L00_0015F160);
+            Text_Queue(0x15D, (debug_menu60.item * 0xF) + 0x112, 0x800000C0, D_L00_0015F160);
         }
-        func_001F0F78(0x168, 0x114, 0x8000C0C0, D_L00_0015F388);
-        func_001F0F78(0x1CA, 0x114, 0x80F0F0F0, D_L00_00160CD8[(debug_menu60.fF0 != 0) ? 0 : 1]);
-        func_001F0F78(0x168, 0x123, 0x8000C0C0, D_L00_0015F398);
-        func_001F0F78(0x1CA, 0x123, 0x80F0F0F0, D_L00_00160CD8[debug_menu60.fF4]);
-        func_001F0F78(0x168, 0x132, 0x8000C0C0, D_L00_0015F3A8);
+        Text_Queue(0x168, 0x114, 0x8000C0C0, D_L00_0015F388);
+        Text_Queue(0x1CA, 0x114, 0x80F0F0F0, D_L00_00160CD8[(debug_menu60.fF0 != 0) ? 0 : 1]);
+        Text_Queue(0x168, 0x123, 0x8000C0C0, D_L00_0015F398);
+        Text_Queue(0x1CA, 0x123, 0x80F0F0F0, D_L00_00160CD8[debug_menu60.fF4]);
+        Text_Queue(0x168, 0x132, 0x8000C0C0, D_L00_0015F3A8);
         buf[1] = 0;
         buf[0] = debug_menu60.point_timer;
-        func_001F0F78(0x1CA, 0x132, 0x80F0F0F0, buf);
-        func_001F0F78(0x168, 0x141, 0x8000C0C0, D_L00_0015F3B8);
+        Text_Queue(0x1CA, 0x132, 0x80F0F0F0, buf);
+        Text_Queue(0x168, 0x141, 0x8000C0C0, D_L00_0015F3B8);
         buf[1] = 0;
         buf[0] = debug_menu60.saved_timer;
-        func_001F0F78(0x1CA, 0x141, 0x80F0F0F0, buf);
-        func_L00_001F3A78();
+        Text_Queue(0x1CA, 0x141, 0x80F0F0F0, buf);
+        FlushDebugLines();
         while (D_L00_00161260 & 1) {}
     }
 }
 extern char D_L00_00169D80[];
 // Moves a word to its neighbour slot and clears two fields.
-void func_L00_001F70F0(void) {
+void Frame_RollCounter(void) {
     char *p = D_L00_00169D80;
     int t = *(int *)(p + 0x364);
     *(int *)(p + 0x364) = 0;
@@ -733,7 +733,7 @@ void func_L00_001F70F0(void) {
    (func_001E97C8, 8 bytes) are one C function (config/overlays/joined.tsv). */
 extern char *D_L00_0015F6E0 MACRO_ADDR;
 
-int func_L00_001F75F8(int x, int y, int z) {
+int OcclGrid_Lookup(int x, int y, int z) {
     char *grid = D_L00_0015F6E0;
     char *base = grid + *(int *)grid;
     unsigned short *l = (unsigned short *)(grid + 4);
@@ -774,7 +774,7 @@ extern int D_0015F40C_F8750 SDATA(D_L00_0015F40C);
 extern int D_0015F420_F8750 SDATA(D_L00_0015F420);
 extern int D_0015F430_F8750 SDATA(D_L00_0015F430);
 
-void func_L00_001F8750(void) {
+void Level_ResetGameplayGlobals(void) {
     D_L00_0015F524 = 0;
     D_L00_0015F52C = 0;
     D_L00_0015F530 = 0;
@@ -798,7 +798,7 @@ extern int D_L00_0015F6A8 MACRO_ADDR;
 extern int D_L00_0015F4F4 MACRO_ADDR;
 extern unsigned char D_001414F5[] NOT_SDA;
 extern void func_001F3D78(void);
-void func_L00_001F91B0(void) {
+void GameplayRender(void) {
     if (D_L00_0015F6BC == 0 && D_001414F5[0xC] == 0) {
         D_L00_0015F4F4 = 0x100FF;
         if (D_L00_0015F6A8 == 3) D_L00_0015F4F4 = 0x7F;
@@ -809,19 +809,19 @@ extern int func_L00_002016D0(void);
 extern void func_L00_002781D8(int);
 extern void func_001FBE80(void);
 
-void func_L00_001F9248(void) {
+void DebugProfilerRender(void) {
     if (D_L00_0015F6BC == 0) {
-        if (func_L00_002016D0() == 0) {
+        if (GetDebugOverlayMode() == 0) {
             framebuf_appendLargeSetup();
             D_L00_0015F4F4 = 0x100FF;
             DrawDebugProfiler();
         } else {
-            if (func_L00_002016D0() == 3) func_L00_002781D8(1);
+            if (GetDebugOverlayMode() == 3) PauseMenu_DrawPages(1);
         }
         func_001FBE80();
     }
 }
-void func_L00_001F92C0(void) { if (D_L00_0015F6BC == 0) func_L00_002781D8(0); }
+void PageMenuModeRender(void) { if (D_L00_0015F6BC == 0) PauseMenu_DrawPages(0); }
 typedef struct {
     int key;
     int pad[3];
@@ -837,20 +837,20 @@ extern void func_001F4630(int);
 extern void func_L00_001FCC50(void *, int);
 extern void func_001F4748(void);
 
-void func_L00_001F92E8(void) {
+void FadeOverlayRender(void) {
     DbgRec_1F92E8 *p;
     DbgRec_1F92E8 *q;
 
     if (D_L00_0015F6BC == 0) {
-        func_001F7680(D_L00_0015F700[2]);
-        if (0.0f < D_L00_0015F4FC) {
-            if (1.0f < D_L00_0015F4FC) {
-                D_L00_0015F4FC = 1.0f;
+        UploadToGs(D_L00_0015F700[2]);
+        if (0.0f < gFadeLvl) {
+            if (1.0f < gFadeLvl) {
+                gFadeLvl = 1.0f;
             }
-            func_001F55C0(0, 0, 0, func_001FA898(D_L00_0015F4FC * 128.0f));
+            emit_rgba_draw_packet(0, 0, 0, truncate_float_to_s32(gFadeLvl * 128.0f));
         }
-        func_001F3C10();
-        ((int (*)(int))func_001F4630)(0);
+        ResetGsRegisters();
+        ((int (*)(int))SetupGifPaging)(0);
         p = D_L00_00173180;
         if (p->key >= 0) {
             q = p;
@@ -860,7 +860,7 @@ void func_L00_001F92E8(void) {
                 q++;
             } while (p->key >= 0);
         }
-        func_001F4748();
+        DoGifPaging();
     }
 }
 extern int D_L00_0015F4F8 MACRO_ADDR;
@@ -869,19 +869,19 @@ extern void func_00234AC8(int);
 extern int func_00122598(int);
 extern void func_002348E8(void);
 extern void func_L00_002A21A8(void *, int, int);
-void func_L00_001F9D40(void *a) {
+void FrameSnapshot_Grab(void *a) {
     VU1_syncChain(1);
     func_00122598(0);
     D_L00_0015F4F8 = D_L00_0015F4F8 + 1;
     VU1_initChain();
-    func_L00_002A21A8(a, D_0015EF84, *(int *)((char *)D_0013E15A + 0x4AA) << 11);
+    DownloadFrameBuffer(a, D_0015EF84, *(int *)((char *)D_0013E15A + 0x4AA) << 11);
 }
 extern int func_001F4868(int);
 extern void func_001F6668(void *, void *, void *, void *, void *, int, unsigned char *);
 extern unsigned char D_L00_001C3C10[];
 
 // Draws font text with effect texture 3 and the level 0 font table.
-void func_L00_001FB7F8(void *a, void *b, void *c, void *d, void *e) {
+void DebugFontPrint(void *a, void *b, void *c, void *d, void *e) {
     int mode = GetEffectTex(3);
 
     FontPrint(a, b, c, d, e, mode, D_L00_001C3C10);
@@ -894,9 +894,9 @@ extern void func_001F68E8_c(int, int, long, void *, int) __asm__("func_001F68E8"
 extern void func_001F6598(void);
 
 /* draw a two-layer shadowed text label at x,y with alignment mode */
-void func_L00_001FCAD8(int x, int y, int mode, unsigned char *p, float scale, float alpha) {
+void DrawShadowedLabel(int x, int y, int mode, unsigned char *p, float scale, float alpha) {
     int off, l, r, c, d;
-    off = (int)((float)func_001F6600(p, -1) * scale);
+    off = (int)((float)MeasureTextWidthRegular(p, -1) * scale);
     l = x;
     r = l;
     switch (mode) {
@@ -912,11 +912,85 @@ void func_L00_001FCAD8(int x, int y, int mode, unsigned char *p, float scale, fl
         break;
     }
     draw_stretchable_ui_frame(l - 0x20, y - 0xE, r - l + 0x40, 0x1C, func_001FA898_r(scale * 112.0f));
-    func_001F65A8();
+    Font_DisableColorCodes();
     c = (int)(alpha * 128.0f) << 24;
     d = c + 0xE0E0E0;
     func_001F68E8_c(l + 1, y - 7, (unsigned int)c, p, -1);
     func_001F68E8_c(l, y - 8, d, p, -1);
-    func_001F6598();
+    Font_EnableColorCodes();
 }
-INCLUDE_ASM("asm/overlays", func_L00_001FCC50);
+typedef void (*LabelFn)(int, int, int, float, float, unsigned char *);
+extern unsigned char *func_001FE540(int);
+
+/* Draws a line-wrapped text entry with fade-in/out at its scroll edges (newline codes become " - " or start a new row). */
+void func_L00_001FCC50(void *rv, int t) {
+    char *r = rv;
+    int x8 = *(short *)(r + 8);
+    int end = x8 + *(short *)(r + 0xA);
+    float f21, f20;
+    unsigned char *p;
+    char buf[256];
+    char *d;
+    int y;
+    int k;
+
+    if (t < x8) return;
+    if (end < t) return;
+    f21 = 1.0f;
+    if (t < x8 + 0x10) f21 = (float)(t - x8) * 0.0625f;
+    if (end - 8 < t) f21 = (float)(end - t) * 0.125f;
+    f20 = 1.0f;
+    if (t < x8 + 0x20) {
+        k = t - 0x10;
+        f20 = (float)(k - x8) * 0.0625f;
+        if (f20 < 0.0f) f20 = 0.0f;
+    }
+    if (end - 0x10 < t) {
+        k = t + 8;
+        f20 = (float)(end - k) * 0.125f;
+        if (f20 < 0.0f) f20 = 0.0f;
+    }
+    p = func_001FE540(*(int *)r);
+    if (*(short *)(r + 0xE) == 1) {
+        d = buf;
+    again:
+        while (*p != 0) {
+            if (*p == 1) {
+                *d++ = 0x20;
+                *d++ = 0x2D;
+                *d++ = 0x20;
+                while (*p == 1) p++;
+                if (*p != 0) goto again;
+                d -= 3;
+            } else {
+                *d++ = *p++;
+            }
+        }
+        {
+            int x = *(short *)(r + 4);
+            int yy = *(short *)(r + 6);
+            int m = *(short *)(r + 0xC);
+            *d = 0;
+            ((LabelFn)DrawShadowedLabel)(x, yy, m, f21, f20, (unsigned char *)buf);
+        }
+    } else {
+        d = buf;
+        y = *(short *)(r + 6);
+        while (*p != 0) {
+            if (*p == 1) {
+                *d = 0;
+                ((LabelFn)DrawShadowedLabel)(*(short *)(r + 4), y, *(short *)(r + 0xC), f21, f20, (unsigned char *)buf);
+                y += 0x1A;
+                d = buf;
+                while (*p == 1) p++;
+                if (*p == 0) break;
+            } else {
+                *d++ = *p++;
+            }
+        }
+        if (d > buf) {
+            *d = 0;
+            ((LabelFn)DrawShadowedLabel)(*(short *)(r + 4), y, *(short *)(r + 0xC), f21, f20, (unsigned char *)buf);
+        }
+    }
+}

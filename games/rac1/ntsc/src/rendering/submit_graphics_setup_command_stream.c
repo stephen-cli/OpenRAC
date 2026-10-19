@@ -23,11 +23,11 @@ struct VideoModeState {
 extern struct VideoModeState pal_mode __asm__("D_0015ED80");
 extern s32 graphics_setup_word __asm__("D_001603A0");
 extern void append_fullscreen_setup_strips(void) __asm__("func_002271D0");
-extern void func_00226FB8(f32 *, f32);
+extern void prepare_scaled_direction_and_perpendicular(f32 *, f32) __asm__("func_00226FB8");
 extern u8 *parse_typed_resource_record(u8 *) __asm__("func_002270E8");
 extern void func_00228520(f32 *, f32 *);
 extern void func_00227A08(u32, s32, s32);
-extern void func_00227140(s32, s32, s32);
+extern void emit_selected_graphics_dma_packets(s32, s32, s32) __asm__("func_00227140");
 extern void emit_gs_register_write(s32, s64) __asm__("func_00233980");
 extern void append_fullscreen_clear_strips(s64) __asm__("func_00227378");
 void submit_graphics_setup_command_stream(u8 *command_stream) __asm__("FUN_00227548");
@@ -52,15 +52,15 @@ void submit_graphics_setup_command_stream(u8 *command_stream) {
     while (record->command_count != 0) {
         command_stream += 0x20;
         *(u128 *)direction = record->direction;
-        func_00226FB8(direction, 1000.0f);
+        prepare_scaled_direction_and_perpendicular(direction, 1000.0f);
         first_vector[2] = record->first_depth;
         second_vector[2] = record->second_depth;
         for (command_index = 0; command_index < record->command_count; command_index++) {
             command_stream = parse_typed_resource_record(command_stream);
             func_00228520(first_vector, second_vector);
             func_00227A08(0x70000000, graphics_setup_word, record->command_flags);
-            func_00227140(2, 1, 2);
-            func_00227140(1, 0, 2);
+            emit_selected_graphics_dma_packets(2, 1, 2);
+            emit_selected_graphics_dma_packets(1, 0, 2);
         }
         record = (struct GraphicsSetupRecord *)command_stream;
     }

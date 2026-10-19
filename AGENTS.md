@@ -42,6 +42,7 @@ to play a game. Start with [docs/LAYOUT.md](docs/LAYOUT.md).
 | rac2 | [games/rac2/ntsc/AGENTS.md](games/rac2/ntsc/AGENTS.md), [docs/AGENT_WORKFLOW.md](games/rac2/ntsc/docs/AGENT_WORKFLOW.md), [docs/BUILDING.md](games/rac2/ntsc/docs/BUILDING.md), [CONTRIBUTING.md](games/rac2/ntsc/CONTRIBUTING.md) |
 | rac3 | [games/rac3/ntsc/CONTRIBUTING.md](games/rac3/ntsc/CONTRIBUTING.md), [docs/targets.md](games/rac3/ntsc/docs/targets.md), [docs/wiki/Workflow.md](games/rac3/ntsc/docs/wiki/Workflow.md), [docs/wiki/Matching-Patterns.md](games/rac3/ntsc/docs/wiki/Matching-Patterns.md) |
 | rac4 | [games/rac4/README.md](games/rac4/README.md), [ntsc/CONTRIBUTING.md](games/rac4/ntsc/CONTRIBUTING.md), [ntsc/LEGAL.md](games/rac4/ntsc/LEGAL.md), [ntsc/docs/RESEARCH.md](games/rac4/ntsc/docs/RESEARCH.md) |
+| rac5 | [games/rac5/README.md](games/rac5/README.md), [ntsc/AGENTS.md](games/rac5/ntsc/AGENTS.md), [ntsc/CONTRIBUTING.md](games/rac5/ntsc/CONTRIBUTING.md), [ntsc/LEGAL.md](games/rac5/ntsc/LEGAL.md), [ntsc/docs/ROADMAP.md](games/rac5/ntsc/docs/ROADMAP.md) |
 | The editor | [editor/README.md](editor/README.md), [editor/GDSCRIPT_CONVENTIONS.md](editor/GDSCRIPT_CONVENTIONS.md) |
 | The native port | [port/README.md](port/README.md), [docs/port/README.md](docs/port/README.md), [DESIGN.md](docs/port/DESIGN.md), [ROADMAP.md](docs/port/ROADMAP.md), [hostgen](port/tools/hostgen/README.md) |
 | The launcher | [launcher/README.md](launcher/README.md), [docs/INTEGRATION.md](launcher/docs/INTEGRATION.md), [docs/ARCHITECTURE.md](launcher/docs/ARCHITECTURE.md), [docs/STYLE.md](launcher/docs/STYLE.md) |
@@ -104,6 +105,12 @@ to play a game. Start with [docs/LAYOUT.md](docs/LAYOUT.md).
    copy together (`tools/shared.py sync`) and verify each game that has it.
 10. **Verify before you say it is done.** Run the checks for what you
     touched and report the results as they are, failures included.
+    Builds, unit tests and log checks need no permission. **Ask before
+    automated game tests**: scripted runs of a game, screenshots, contact
+    sheets and test sweeps. Say what you would run, why, and about how
+    many images it takes, and offer that the person tries it themselves;
+    reading images uses a lot of context, and the runs open windows on
+    their screen. Brief subagents the same way.
 11. **Do not settle open questions alone.** If a task depends on one
     ([docs/policy/OPEN_QUESTIONS.md](docs/policy/OPEN_QUESTIONS.md)), say so
     and ask.

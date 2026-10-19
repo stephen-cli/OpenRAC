@@ -33,6 +33,8 @@ pub struct SaveSlotInfo {
     /// ISO-8601 formatted timestamp if decoded from in-game save metadata or file mtime.
     pub timestamp: Option<String>,
     pub modified_millis: Option<u64>,
+    /// The save editor can open it (a game in it, and a game whose saves it knows).
+    pub editable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,10 @@ pub struct SaveSlotInfo {
 pub struct SaveBackupInfo {
     pub name: String,
     pub path: String,
+    /// What the backup is called, for people: the note it was taken with ("before the last boss",
+    /// "Before editing slot 2"); None when it was taken without one. See [`backup_note`].
+    #[serde(default)]
+    pub note: Option<String>,
     pub created_millis: u64,
     pub total_size: u64,
 }
@@ -239,6 +245,7 @@ pub fn inspect_saves(serial: &str) -> GameSaveStatus {
                         .unwrap_or(0);
 
                     backups.push(SaveBackupInfo {
+                        note: backup_note(&file_name),
                         name: file_name,
                         path: path.to_string_lossy().to_string(),
                         created_millis: mtime,
@@ -306,6 +313,7 @@ pub fn inspect_saves(serial: &str) -> GameSaveStatus {
                     planet_name,
                     timestamp,
                     modified_millis: mtime,
+                    editable: exists && !is_empty && crate::save_edit::edits_serial(serial),
                 });
             }
         }
@@ -330,22 +338,52 @@ pub fn backup_saves(serial: &str, note: Option<&str>) -> Result<SaveBackupInfo, 
     if !card_dir.is_dir() {
         return Err(format!("no save directory for {serial}"));
     }
+    backup_card(&card_dir, note)
+}
 
+/// The game's own folder on a card (`BESCES-50916RATCHET`): the first folder that is not a backup.
+pub fn find_game_folder(card_dir: &Path) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = fs::read_dir(card_dir)
+        .ok()?
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
+/// Backs up everything on the card in `card_dir` into `.backup_<seconds>[_<note>]` beside it. A
+/// second backup in the same second gets `-2`, `-3` ... so it never overwrites the first.
+pub fn backup_card(card_dir: &Path, note: Option<&str>) -> Result<SaveBackupInfo, String> {
     let timestamp =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
 
-    let backup_name = match note {
+    let base_name = match note {
         Some(n) if !n.trim().is_empty() => {
-            let clean: String = n.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+            // Spaces become underscores, so the note can be read back from the name (backup_note).
+            let clean: String = n
+                .trim()
+                .chars()
+                .map(|c| if c.is_whitespace() { '_' } else { c })
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
             format!(".backup_{timestamp}_{clean}")
         }
         _ => format!(".backup_{timestamp}"),
     };
+    let mut backup_name = base_name.clone();
+    let mut n = 2;
+    while card_dir.join(&backup_name).exists() {
+        backup_name = format!("{base_name}-{n}");
+        n += 1;
+    }
 
     let backup_path = card_dir.join(&backup_name);
     fs::create_dir_all(&backup_path).map_err(|e| e.to_string())?;
 
-    for entry in fs::read_dir(&card_dir).map_err(|e| e.to_string())?.flatten() {
+    for entry in fs::read_dir(card_dir).map_err(|e| e.to_string())?.flatten() {
         let p = entry.path();
         let fname = entry.file_name().to_string_lossy().to_string();
         if p.is_dir() && !fname.starts_with(".backup_") {
@@ -363,11 +401,26 @@ pub fn backup_saves(serial: &str, note: Option<&str>) -> Result<SaveBackupInfo, 
         .unwrap_or(0);
 
     Ok(SaveBackupInfo {
+        note: backup_note(&backup_name),
         name: backup_name,
         path: backup_path.to_string_lossy().to_string(),
         created_millis: mtime,
         total_size,
     })
+}
+
+/// The note a backup folder was named with (`.backup_<seconds>_<note>`), in words: underscores are
+/// spaces, and the save editor's `before_edit_slotN` reads "Before editing slot N". None without one.
+pub fn backup_note(name: &str) -> Option<String> {
+    let rest = name.strip_prefix(".backup_")?;
+    let note = rest.trim_start_matches(|c: char| c.is_ascii_digit()).strip_prefix('_')?;
+    if let Some(slot) =
+        note.strip_prefix("before_edit_slot").filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    {
+        return Some(format!("Before editing slot {slot}"));
+    }
+    let words = note.replace('_', " ").trim().to_string();
+    (!words.is_empty()).then_some(words)
 }
 
 /// Restores a snapshot backup, replacing current saves.
@@ -510,6 +563,37 @@ mod tests {
         let g = parse_save_gameplay_info(&data);
         assert!(g.empty);
         assert_eq!(g.timestamp, None);
+    }
+
+    #[test]
+    fn backups_in_the_same_second_get_their_own_folder() {
+        let card = tempfile::tempdir().unwrap();
+        fs::create_dir_all(card.path().join("BESCES-50916RATCHET")).unwrap();
+        fs::write(card.path().join("BESCES-50916RATCHET/save0.bin"), b"one").unwrap();
+        let a = backup_card(card.path(), Some("x")).unwrap();
+        fs::write(card.path().join("BESCES-50916RATCHET/save0.bin"), b"two").unwrap();
+        let b = backup_card(card.path(), Some("x")).unwrap();
+        assert_ne!(a.name, b.name);
+        assert_eq!(fs::read(Path::new(&a.path).join("BESCES-50916RATCHET/save0.bin")).unwrap(), b"one");
+        assert_eq!(find_game_folder(card.path()), Some(card.path().join("BESCES-50916RATCHET")));
+    }
+
+    #[test]
+    fn a_backup_is_called_by_its_note() {
+        assert_eq!(backup_note(".backup_1791560000_checkpoint").as_deref(), Some("checkpoint"));
+        assert_eq!(backup_note(".backup_1791560000_before_the_last_boss").as_deref(), Some("before the last boss"));
+        assert_eq!(backup_note(".backup_1791560000_before_edit_slot2").as_deref(), Some("Before editing slot 2"));
+        assert_eq!(backup_note(".backup_1791560000"), None);
+        assert_eq!(backup_note(".backup_1791560000-2"), None);
+        assert_eq!(backup_note("BESCES-50916RATCHET"), None);
+    }
+
+    #[test]
+    fn a_note_keeps_its_words() {
+        let card = tempfile::tempdir().unwrap();
+        fs::create_dir_all(card.path().join("BESCES-50916RATCHET")).unwrap();
+        let b = backup_card(card.path(), Some(" before the last boss! ")).unwrap();
+        assert_eq!(b.note.as_deref(), Some("before the last boss"));
     }
 
     #[test]

@@ -23,6 +23,7 @@ void transpose_rotation_matrix(Mtx *, void *) __asm__("FUN_001fa2d8");
 void subtract_vector_xyz(Vec4 *, void *, void *) __asm__("FUN_001f9a28");
 void transform_vector(Vec4 *, Vec4 *, Mtx *) __asm__("FUN_001f9d20");
 void fast_vec_scale(Vec4 *, Vec4 *, float) __asm__("FUN_001f9a68");
+void FUN_L00_0024eed8(char *p, int idx, void *v, float a, float b);
 void FUN_L00_0024eed8(char *p, int idx, void *v, float a, float b) {
     Mtx m;
     Vec4 t;
@@ -43,6 +44,7 @@ void FUN_L00_0024eed8(char *p, int idx, void *v, float a, float b) {
 /* Ported from rac1-decomp (src/overlays/shared/mobyfunc_0024FD50.c: func_L00_0024FFE8), where it is exact; names translated to the US level program. */
 
 /* Offsets the point pairs of each of the a[4] + a[5] entries by dx, dy. */
+void FUN_L00_0024efb0(unsigned char *a, int dx, int dy);
 void FUN_L00_0024efb0(unsigned char *a, int dx, int dy) {
     int i;
     int n = a[4] + a[5];
@@ -242,16 +244,17 @@ typedef struct {
     u8 b51, b52, b53;
 } A;
 /* Fills a1 from a0's bytes, a2/a3 and a 1/a4 step; calls FUN_L00_0024f190 when a5 is set. */
-void FUN_L00_0024f3e0(A *a0, S *a1, s32 a2, s32 a3, s32 a4, s32 a5) {
-    a1->b22 = a0->b53;
-    a1->b20 = a0->b51;
-    a1->b23 = a2;
-    a1->b21 = a3;
-    a1->f28 = 1.0f;
-    a1->f2c = 1.0f / (f32)a4;
-    a1->i24 = 0;
-    if (a5)
-        FUN_L00_0024f190();
+void FUN_L00_0024f190_0024f3e0(void *, void *) __asm__("FUN_L00_0024f190");
+void FUN_L00_0024f3e0(A *source, S *destination, s32 target_animation_index, s32 target_frame_index, s32 step_divisor, s32 update_immediately) {
+    destination->b22 = source->b53;
+    destination->b20 = source->b51;
+    destination->b23 = target_animation_index;
+    destination->b21 = target_frame_index;
+    destination->f28 = 1.0f;
+    destination->f2c = 1.0f / (f32)step_divisor;
+    destination->i24 = 0;
+    if (update_immediately)
+        FUN_L00_0024f190_0024f3e0(source, destination);
 }
 /* FUN_L00_0024f440: builds an animation frame packet in out from frame
  * (table i, frame j) of the moby's animation set: header halfwords, the

@@ -36,6 +36,22 @@ export interface FoundDisc {
   region: string;
 }
 
+/** core/src/disc_choice.rs: a game with more than one of its discs found, for a developer. */
+export interface DiscChoice {
+  game: string;
+  /** The versions found (`rac1/pal`, `rac1/ntsc`). */
+  versions: string[];
+  /** The one the game's page plays. */
+  chosen: string;
+}
+
+/** The games folder looked through (scan_discs). */
+export interface DiscScan {
+  found: FoundDisc[];
+  /** Only with developer tools on: the games whose disc can be switched. */
+  choices: DiscChoice[];
+}
+
 /** core/src/config.rs */
 export interface Config {
   root: string | null;
@@ -48,12 +64,41 @@ export interface Config {
   discsDir: string | null;
   /** Show what contributors use (builds, checks, progress); off, a player's three steps. */
   developer: boolean;
+  /** The save editor shows every field of a save, raw bytes included (for debugging). */
+  saveEditorAdvanced: boolean;
   setupComplete: boolean;
   lastVersion: string | null;
   discordRpc: boolean;
+  /** Look for a new launcher at start (Settings). */
+  checkUpdates: boolean;
   discordClientId: string | null;
   /** "compact", or "classic": the original design (src/layouts/compact.css). */
   layout: "compact" | "classic";
+  /** The game writes a detailed log (OPENRAC_LOG=verbose); off keeps logs small. */
+  detailedGameLog: boolean;
+  /** Per game, the time (seconds since 1970) of the newest crash report the player dismissed. */
+  crashesSeen: Record<string, number>;
+  /** Developers only: the version each game with two discs found plays (`rac1` -> `rac1/ntsc`). */
+  discChoice: Record<string, string>;
+}
+
+/** One of a game's logs or crash reports (core/src/reports.rs). */
+export interface ReportEntry {
+  kind: "crash" | "session";
+  /** Its path in the game's data folder: `crashes/crash-....txt`, `openrac-rac1-pal.log`. */
+  file: string;
+  program: string | null;
+  /** When it happened (a crash) or began (a session), seconds since 1970. */
+  time: number;
+  /** How long the session ran, in seconds. */
+  duration: number | null;
+  /** A crash's reason, in the port's words: for the Details. */
+  reason: string | null;
+  level: number | null;
+  planet: string | null;
+  crashed: boolean;
+  session: string | null;
+  size: number;
 }
 
 export type DiscordStatus =
@@ -272,11 +317,110 @@ export interface SaveSlotInfo {
   planetName: string | null;
   timestamp: string | null;
   modifiedMillis: number | null;
+  /** The save editor can open it. */
+  editable: boolean;
+}
+
+// ---- the save editor (core/src/save_edit.rs) ---------------------------------------
+
+export type Nanotech = "standard" | "premium" | "ultra";
+
+export interface ItemState {
+  id: number;
+  owned: boolean;
+  /** Ammo, for an item that has it. */
+  ammo: number | null;
+  /** The gold version, for an item that has one. */
+  gold: boolean | null;
+}
+
+export interface PlanetState {
+  id: number;
+  unlocked: boolean;
+  /** One per gold bolt on the planet. */
+  goldBolts: boolean[];
+}
+
+/** What the editor changes; sent back whole. */
+export interface SaveFields {
+  /** The planet the save loads on, a level number. */
+  planet: number;
+  bolts: number;
+  nanotech: Nanotech;
+  items: ItemState[];
+  planets: PlanetState[];
+  skillPoints: boolean[];
+}
+
+export interface ItemInfo {
+  id: number;
+  name: string;
+  kind: "weapon" | "gadget";
+  maxAmmo: number | null;
+  hasGold: boolean;
+}
+
+export interface PlanetInfo {
+  id: number;
+  name: string;
+  location: string;
+  /** A ship destination the player may lock or unlock. */
+  canUnlock: boolean;
+  /** The save can be moved there in the default mode. */
+  canLand: boolean;
+}
+
+/** One chunk of the file, for the advanced editor. */
+export interface ChunkView {
+  /** `null`: the global section; else the planet's level number. */
+  section: number | null;
+  id: number;
+  size: number;
+  name: string;
+  /** Its meaning is decoded; otherwise raw bytes only. */
+  known: boolean;
+  hex: string;
+}
+
+export interface RawPatch {
+  section: number | null;
+  id: number;
+  hex: string;
+}
+
+/** What a write changes: the default mode's fields, or raw chunks (advanced mode). */
+export type SaveChange = { kind: "fields"; fields: SaveFields } | { kind: "raw"; chunks: RawPatch[] };
+
+export interface SaveView {
+  serial: string;
+  slot: number;
+  /** The file as read; a write is refused if it changed since. */
+  fingerprint: string;
+  planetName: string | null;
+  savedAt: string | null;
+  fields: SaveFields;
+  items: ItemInfo[];
+  planets: PlanetInfo[];
+  /** Every level, 0..18. */
+  levels: PlanetInfo[];
+  maxBolts: number;
+  chunks: ChunkView[];
+  /** Time played as the game counts it, in seconds. */
+  playedSeconds: number;
+  /** The 30 skill points' names from the game's text, in save order; empty when not readable. */
+  skillNames: string[];
+}
+
+export interface WriteResult {
+  backup: SaveBackupInfo;
+  view: SaveView;
 }
 
 export interface SaveBackupInfo {
   name: string;
   path: string;
+  /** What it is called, for people ("before the last boss"); null when taken without a note. */
+  note: string | null;
   createdMillis: number;
   totalSize: number;
 }
@@ -307,6 +451,8 @@ export const api = {
   detect: () => call<Detected>("detect"),
   checkRoot: (path: string) => call<Check>("check_root", { path }),
   checkTool: (tool: Tool, path: string) => call<Check>("check_tool", { tool, path }),
+  /** Takes a Godot that works when none is set or the one set is gone; the config as it is then. */
+  adoptGodot: () => call<Config>("adopt_godot"),
   library: () => call<Library>("library"),
   /** `inputs`: which level a per-level action is for (the level editor's projects, one each), a
    *  file or folder the player chose (`{path}`), one of the action's options (`{option}`). */
@@ -326,8 +472,10 @@ export const api = {
   installGame: (game: string, image: string) => call<Started>("install_game", { game, image }),
   /** Removes what setting a game up made (not the disc image, not the saves). */
   uninstallGame: (game: string) => call<null>("uninstall_game", { game }),
-  /** The games OpenRAC knows among the images in the games folder. */
-  scanDiscs: () => call<FoundDisc[]>("scan_discs"),
+  /** The games OpenRAC knows among the images in the games folder, and a developer's disc choices. */
+  scanDiscs: () => call<DiscScan>("scan_discs"),
+  /** Developers only: plays this version's disc of its game; the other's set-up is kept aside. */
+  chooseDisc: (version: string) => call<Config>("choose_disc", { version }),
   syncProgressFromWeb: () => call<Library>("sync_progress_from_web"),
   applyProgressJson: (json: string) => call<Library>("apply_progress_json", { json }),
   setDiscordStatus: (status: DiscordStatus) => call<null>("set_discord_status", { status }),
@@ -335,6 +483,25 @@ export const api = {
   backupSaves: (serial: string, note?: string) => call<SaveBackupInfo>("backup_saves", { serial, note }),
   restoreBackup: (serial: string, backupName: string) => call<null>("restore_backup", { serial, backupName }),
   openSavesFolder: (serial: string) => call<null>("open_saves_folder", { serial }),
+  /** A game's session logs and crash reports, the newest first. */
+  reportsList: (game: string) => call<ReportEntry[]>("reports_list", { game }),
+  /** The newest crash report written since `since` (seconds since 1970). */
+  latestCrash: (game: string, since: number) => call<ReportEntry | null>("latest_crash", { game, since }),
+  /** The short text to paste in an issue or on Discord (home folder as ~). */
+  reportText: (game: string, file: string) => call<string>("report_text", { game, file }),
+  /** Saves the report's .zip in Downloads and shows it; returns where (home folder as ~). */
+  reportSave: (game: string, file: string) => call<string>("report_save", { game, file }),
+  /** Deletes one log or crash report from the game's data folder (core refuses any other file). */
+  reportDelete: (game: string, file: string) => call<null>("report_delete", { game, file }),
+  /** Deletes every log and crash report of the game; returns how many files went. */
+  reportsDeleteAll: (game: string) => call<number>("reports_delete_all", { game }),
+  /** Opens the folder of a game's logs, or of its crash reports. */
+  openReportsFolder: (game: string, crashes: boolean) => call<null>("open_reports_folder", { game, crashes }),
+  /** One slot for the save editor. */
+  readSave: (serial: string, slot: number) => call<SaveView>("read_save", { serial, slot }),
+  /** Writes the editor's change: refused while the game runs with the card; backs the card up first. */
+  writeSave: (serial: string, slot: number, fingerprint: string, change: SaveChange) =>
+    call<WriteResult>("write_save", { serial, slot, fingerprint, change }),
   /** A game's overrides packs (core/src/overrides.rs), in the order they apply. */
   overridesList: (game: string) => call<PackView[]>("overrides_list", { game }),
   overridesSetEnabled: (game: string, id: string, enabled: boolean) =>

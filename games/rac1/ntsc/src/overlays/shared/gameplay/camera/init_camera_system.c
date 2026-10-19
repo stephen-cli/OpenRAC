@@ -32,7 +32,8 @@ s32 FUN_L00_001eb1f8(s32 id) {
 float FUN_001fa5c8_001eb328(float, float) __asm__("FUN_001fa5c8");
 float FUN_001f99c0_001eb328(float) __asm__("FUN_001f99c0");
 float FUN_001fa580_001eb328(float, float) __asm__("FUN_001fa580");
-float FUN_L00_001eb328(float *p, float a, float b, float c, float d, float lim) {
+float rope_spring_turn(float *p, float a, float b, float c, float d, float lim) __asm__("FUN_L00_001eb328");
+float rope_spring_turn(float *p, float a, float b, float c, float d, float lim) {
     float t = FUN_001fa5c8_001eb328(b, a);
     *p = *p + (c * t - d * *p);
     if (lim != 0.0f) {
@@ -99,7 +100,7 @@ typedef struct {
 extern S_u D_L00_00166C80_c __asm__("D_L00_00166C80");
 extern char *FUN_L00_001eb1f8_u(int) __asm__("FUN_L00_001eb1f8");
 extern char D_L00_00169110[];
-extern void FUN_001ed470(void);
+extern void update_camera_tracking_state(void) __asm__("FUN_001ed470");
 void backup_current_cam(void) __asm__("FUN_001ebc90");
 void camera_run_setup_to_new_cam(struct Moby *cam) __asm__("FUN_001ebec8");
 
@@ -117,7 +118,7 @@ void init_camera_system(void) {
     *(short *)(*(char **)(g + 0x180) + 0x8E) = 1;
     *(char **)(*(char **)(g + 0x180) + 0x70) = D_L00_00169110;
     *(short *)(g + 0x270) = 0;
-    FUN_001ed470();
+    update_camera_tracking_state();
     camera_run_setup_to_new_cam(*(char **)(g + 0x180));
     backup_current_cam();
     a = *(char **)(g + 0x180);
@@ -172,8 +173,8 @@ extern Elem D_L00_00167150[];
 extern S D_L00_00166C80;
 extern int D_L00_0015EF4C;
 extern int D_L00_00169890[];
-extern void clear_vector(void *);
-extern void normalize_vector_xyz(void *, void *, float);
+extern void clear_vector(void *) __asm__("func_001F99F8");
+extern void normalize_vector_xyz(void *, void *, float) __asm__("FUN_001f9bf8");
 s32 FUN_L00_001ed230(s32 id);
 void init_camera_system(void) __asm__("FUN_L00_001ed280");
 
@@ -292,14 +293,15 @@ typedef float W[4] __attribute__((aligned(16)));
 extern float fast_vec_length(float *) __asm__("FUN_001f9af0");
 extern float vector_length_xy(float *) __asm__("FUN_001f9b20");
 extern float fast_arc_tan(float, float) __asm__("FUN_001f9e90");
-extern void subtract_vector_xyz(float *) __asm__("FUN_001f9a28");
+extern void subtract_vector_xyz(float *, float *, float *) __asm__("FUN_001f9a28");
 extern void fast_subtract_rotations(float, float) __asm__("FUN_001fa5c8");
 
-/* Fills a from a subtract_vector_xyz result: two fast_arc_tan angles and its length. */
-int FUN_L00_001ed630(float *a) {
+/* Fills a from subtract_vector_xyz(b, c): two fast_arc_tan angles and its length. b and c stay in
+   a1 and a2 for the subtraction (every caller passes them). */
+int FUN_L00_001ed630(float *a, float *b, float *c) {
     W v;
     float t;
-    subtract_vector_xyz(v);
+    subtract_vector_xyz(v, b, c);
     a[1] = fast_arc_tan(vector_length_xy(v), v[2]);
     t = fast_arc_tan(v[0], v[1]);
     fast_subtract_rotations(t, a[0]);

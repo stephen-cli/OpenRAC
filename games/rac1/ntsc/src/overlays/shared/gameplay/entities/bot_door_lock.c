@@ -148,9 +148,9 @@ void FUN_L06_00307578(char *moby) {
 /* state transitions of a moby depending on its id at 0xA6 */
 /* Ported from rac1-decomp (src/overlays/shared/vendor_002FF000.c: func_L06_00309088), where it is exact; names translated to the US level program. */
 
-extern int FUN_L00_0028dc90(int i, int a1, int v, int k);
+extern int trooper_play_sound(int i, int a1, int v, int k) __asm__("FUN_L00_0028dc90");
 extern void allocate_voice_for_target_entry(int, int, int) __asm__("FUN_0022da68");
-extern void FUN_L00_002502a0(int idx);
+extern void jet_clear_persistent(int idx) __asm__("FUN_L00_002502a0");
 
 void FUN_L06_00307c48(unsigned char *a, unsigned char *m) {
     switch (*(short *)(m + 0xA6)) {
@@ -167,9 +167,9 @@ void FUN_L06_00307c48(unsigned char *a, unsigned char *m) {
         break;
     case 0x542:
         m[0x20] = 2;
-        FUN_L00_0028dc90(0, 0, (int)m, 0x434);
+        trooper_play_sound(0, 0, (int)m, 0x434);
         m[0x30] = 0xFF;
-        FUN_L00_002502a0(a[0xB0]);
+        jet_clear_persistent(a[0xB0]);
         break;
     }
 }
@@ -195,7 +195,8 @@ extern void add_vectors(void *, void *, void *) __asm__("FUN_L00_001ff290");
 extern void draw_number(void *, void *, int, unsigned int, int, int, int, float) __asm__("FUN_L01_00285768");
 
 extern int D_L06_0015FFD8_gp __asm__("D_L06_0015FFD8") __attribute__((sda));
-void FUN_L06_00307d30(char *moby) {
+void bot_door_lock_update(char *moby) __asm__("FUN_L06_00307d30");
+void bot_door_lock_update(char *moby) {
     float *data = *(float **)(moby + 0x78);
     int *idata = (int *)data;
     float pos[4];
@@ -391,7 +392,7 @@ extern char *mk_b(int) __asm__("FUN_0020c4f8");
 extern float convert_integer_to_float(int) __asm__("FUN_001fa6c0");
 
 
-void FUN_L06_0030bef8(char *src, int a1, int a2, int a3) {
+void FUN_L06_0030bef8(char *src, int duration_updates, int start_color, int end_color) {
     OvlQuad v;
     char *vp = (char *)&v;
     unsigned char *m;
@@ -401,9 +402,9 @@ void FUN_L06_0030bef8(char *src, int a1, int a2, int a3) {
         char *e = *(char **)(m + 0x78);
         float f;
         qcopy(m + 0x10, vp);
-        f = convert_integer_to_float(a1);
-        *(int *)(e + 0xC) = a3;
-        *(int *)(e + 0x8) = a2;
+        f = convert_integer_to_float(duration_updates);
+        *(int *)(e + 0xC) = end_color;
+        *(int *)(e + 0x8) = start_color;
         *(float *)(e + 0x4) = 2.0f / f;
         m[0x30] = 0xFF;
         m[0x20] = 1;
@@ -489,3 +490,6 @@ void FUN_L06_00316330(char *moby) {
         *(int *)(*(char **)(D_L06_0015EF50 + *(short *)(moby + 0x84) * 32 + 0x1C) + 0x50) = 1;
     }
 }
+
+s32 D_L06_001FE9D0[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001DA210[1] __attribute__((section(".data"))) = {0};

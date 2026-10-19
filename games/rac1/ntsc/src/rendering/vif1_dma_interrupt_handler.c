@@ -7,9 +7,15 @@ extern volatile s32 vif_chain_flags __asm__("D_00160EE0") __attribute__((sda));
 /* VIF1 DMA interrupt handler: clears the busy bit of the chain part whose tag
    ID raised the interrupt, all of them at the end of the chain, then resumes
    the channel. */
-s32 vif1_dma_interrupt_handler(s32 cause) __asm__("FUN_00233e00");
+s32 vif1_dma_interrupt_handler(s32 cause) __asm__("func_00233E00");
 
 s32 vif1_dma_interrupt_handler(s32 cause) {
+    enum {
+        VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_1 = 0x02010000,
+        VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_2 = 0x02020000,
+        VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_3 = 0x02040000,
+        VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_4 = 0x02080000
+    };
     u32 chcr = *(volatile u32 *)0x10009000;
     u32 tag = chcr & 0x03ff0000;
 
@@ -19,16 +25,16 @@ s32 vif1_dma_interrupt_handler(s32 cause) {
         } else {
             if (tag & 0x02000000) {
                 switch (tag) {
-                case 0x02010000:
+                case VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_1:
                     vif_chain_flags &= ~0x2;
                     break;
-                case 0x02020000:
+                case VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_2:
                     vif_chain_flags &= ~0x4;
                     break;
-                case 0x02040000:
+                case VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_3:
                     vif_chain_flags &= ~0x8;
                     break;
-                case 0x02080000:
+                case VIF1_TAG_CLEAR_CHAIN_BUSY_BIT_4:
                     vif_chain_flags &= ~0x10;
                     break;
                 }

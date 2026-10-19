@@ -29,7 +29,9 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <span>
 #include <string>
 #include <vector>
@@ -179,10 +181,22 @@ public:
     // context the packets before it set up.
     void set_ui_quads(std::span<const UiQuad> quads) { m_ui_quads = quads; }
     static constexpr std::uint64_t kUiQuadMarker = 0x4E55;
+    // The target the frame is drawn into (RenderTarget): the picture's width as a part of it, and
+    // whether a scissor of the screen's whole width is cut at the target's sides instead
+    // (wide_2d). Says which of the chip's pixel columns a draw in the frame can reach
+    // (covers_no_pixel).
+    void set_picture(float picture_scale_x, bool wide_2d) {
+        m_picture_scale_x = picture_scale_x;
+        m_wide_2d = wide_2d;
+    }
     // Mobys the game drew while rendering to a texture: a marker of the same form, kMobyMarker in
     // the top 16 bits, the mobys' count in bits 32-39 and the first's address in the low 32,
     // becomes a draw of no vertices (DirectDraw::mobys) in the target being drawn.
     static constexpr std::uint64_t kMobyMarker = 0x4D42;
+    // Where the world is drawn: a marker of the same form, kWorldMarker in the top 16 bits, put by
+    // the game's terrain pass (rac1/host/render_native.c). The frontend splits the 2D path there
+    // (FrameInput::direct_before_world); drawing passes over it.
+    static constexpr std::uint64_t kWorldMarker = 0x574C;
 
     // A VIF1 stream carrying GIF data in DIRECT and DIRECTHL commands, with
     // the bookkeeping codes around them (NOP, FLUSH, STCYCL...). A command
@@ -235,6 +249,13 @@ private:
     void emit_triangle(
         const GsVertex& a, const GsVertex& b, const GsVertex& c, const GsVertex& colour_from
     );
+    // Whether a primitive whose corners are these covers no pixel of the chip: no pixel's sample
+    // point (its integer coordinates) inside the corners' box, on either axis, within the scissor.
+    // The chip then draws nothing; scaled up, GL would still fill the window pixels between two
+    // samples that the box overlaps (a sprite slid to just past the screen's last column).
+    bool covers_no_pixel(std::initializer_list<const GsVertex*> corners) const;
+    float m_picture_scale_x = 1.0f;
+    bool m_wide_2d = false;
     void emit_sprite(const GsVertex& a, const GsVertex& b);
     void emit_line(const GsVertex& a, const GsVertex& b);
     void emit_point(const GsVertex& a);
@@ -364,6 +385,8 @@ private:
     const Offscreen& offscreen(std::uint32_t block);
     std::size_t m_vbo_bytes = 0;
     std::string m_last_error;
+    std::array<unsigned, 16> m_samplers{};
+    unsigned m_bound_sampler = 0xFFFFFFFF;
 
     struct Uniforms {
         int textured, tcc, tfx, tex_alpha_scale, fog_enable, fog_colour, alpha_test, alpha_ref,

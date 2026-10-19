@@ -458,6 +458,10 @@ impl Action {
         if self.kind == Kind::Play && ctx.config.developer {
             env.push(("OPENRAC_DEVELOPER".to_string(), "1".to_string()));
         }
+        // Settings, "Detailed game logs": the port's verbose log (port/common/log.h).
+        if self.kind == Kind::Play && ctx.config.detailed_game_log {
+            env.push(("OPENRAC_LOG".to_string(), "verbose".to_string()));
+        }
         Ok(Plan { title, program, args, cwd, detached: self.detached, env })
     }
 }
@@ -469,7 +473,8 @@ impl Action {
         let filled = fill(artifact, ctx, None)?;
         let full_path = abs(ctx.root, &filled);
         if !cfg!(windows) && filled.ends_with(".exe") {
-            let without_exe = abs(ctx.root, &filled[..filled.len() - 4]);
+            // A program built here: without .exe, and on macOS in its application bundle.
+            let without_exe = crate::program_path(abs(ctx.root, &filled[..filled.len() - 4]));
             if without_exe.exists() || !full_path.exists() {
                 return Ok(without_exe);
             }
@@ -654,6 +659,11 @@ mod tests {
         let plan = play.plan(&ctx(&installed)).unwrap();
         let data = Path::new("/games").join("active").join("rac1").join("data");
         assert_eq!(plan.args[1], data.display().to_string());
+        assert!(!plan.env.iter().any(|(k, _)| k == "OPENRAC_LOG"));
+        // Settings, "Detailed game logs": the game's verbose log.
+        let detailed = Config { detailed_game_log: true, ..installed.clone() };
+        let plan = play.plan(&ctx(&detailed)).unwrap();
+        assert!(plan.env.contains(&("OPENRAC_LOG".to_string(), "verbose".to_string())), "{:?}", plan.env);
     }
 
     /// `{path}` is a chosen file or folder that is there; `{option}` one of the action's options.

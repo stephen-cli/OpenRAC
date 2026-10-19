@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Extract Ratchet & Clank (PAL, SCES_509.16 v2.00) levels from your own disc.
+"""Extract Ratchet & Clank levels from your own disc: PAL (SCES_509.16 v2.00) or NTSC-U
+(SCUS_971.99 v1.00), told apart by the executable on it (disc.VERSIONS).
 
   extract.py survey ISO                       disc layout and references, as JSON
   extract.py godot ISO OUT [--level N ...]    a Godot 4 project of editable levels
@@ -45,6 +46,38 @@ def output_path(path: Path, anywhere: bool = False, replace: bool = False) -> Pa
     return resolved
 
 
+def adopt_flat_export(out: Path, version: str, kind: str = "port") -> bool:
+    """What was written before each version had a folder of its own sat straight in OUT's parent:
+    the port's levels (assets/port/rac1, <data>/port), the Godot projects (assets/levels/rac1) and
+    the level packer's output (assets/packed/rac1). When OUT does not exist yet and the parent holds
+    that of VERSION, its level folders and the files beside them move into OUT, so the new layout
+    starts from them (a Godot project keeps its edits) instead of leaving them beside it. Only PAL
+    had the flat layout; the port's levels also say their version in their manifests. KIND is
+    "port", "godot" or "packed". True when something moved."""
+    parent = out.parent
+    if out.exists() or not parent.is_dir():
+        return False
+    marker = {"port": "manifest.json", "godot": "project.godot", "packed": "gameplay_pal.wad"}[kind]
+    levels = [d for d in sorted(parent.glob("level_*")) if d.is_dir() and (d / marker).is_file()]
+    if not levels:
+        return False
+    if kind == "port":
+        try:
+            found = json.loads((levels[-1] / marker).read_text()).get("version", "pal")
+        except (OSError, ValueError):
+            return False
+    else:
+        found = "pal"
+    if found != version:
+        return False
+    out.mkdir(parents=True)
+    files = ("verified", "patches.tsv", "packed.json", "changes.txt")
+    for item in sorted(parent.iterdir()):
+        if (item.is_dir() and item.name.startswith("level_")) or (item.is_file() and item.name.startswith(files)):
+            item.rename(out / item.name)
+    return True
+
+
 def publish(path: Path, build, anywhere: bool = False, replace: bool = False) -> Path:
     """Run build(directory) in a temporary sibling, then rename it to path. REPLACE: a directory
     already there gives way to the new one once that is whole (never before: a failed run leaves
@@ -73,15 +106,16 @@ def export_level(iso: Path, info: dict, out: Path, lod: int) -> dict:
         return LevelWriter(out, load_level(disc, info)).write(lod)
 
 
-def godot(iso: Path, survey: dict, levels: list[int], lod: int, jobs: int, out: Path, split: bool = False) -> None:
+def godot(iso: Path, survey: dict, levels: list[int], lod: int, jobs: int, out: Path, split: bool = False,
+          region: str = "PAL") -> None:
     """Levels are independent, so they are written in parallel. SPLIT: a project per level,
     OUT/level_NN, each with only its own level to import and open."""
     where = {i: out / f"level_{i:02}" if split else out for i in levels}
     if split:
         for i in levels:
-            write_project(where[i], [i])
+            write_project(where[i], [i], region)
     else:
-        write_project(out, levels)
+        write_project(out, levels, region)
     with ProcessPoolExecutor(min(jobs, len(levels))) as pool:
         running = [pool.submit(export_level, iso, survey["levels"][i], where[i], lod) for i in levels]
         try:
@@ -94,24 +128,29 @@ def godot(iso: Path, survey: dict, levels: list[int], lod: int, jobs: int, out: 
             raise
 
 
+def normals(disc: Disc) -> list[tuple[int, int]]:
+    """The executable's (cos, sin) table, where the disc's version keeps it (lighting.py)."""
+    return normal_table(disc.executable(), disc.version.normal_table)
+
+
 def export_port_level(iso: Path, info: dict, out: Path, lod: int) -> dict:
     """One level for the port's viewer; runs in its own process."""
     with Disc(iso) as disc:
         level = load_level(disc, info)
         level.extra_moby_classes = add_spaceships(disc, disc.survey(), level)
-        return PortLevelWriter(out, level, normal_table(disc.executable())).write(lod)
+        return PortLevelWriter(out, level, normals(disc)).write(lod)
 
 
 def export_port_title(iso: Path, survey: dict, out: Path, lod: int) -> dict:
     """The title world as level 99 for the port's viewer (level.load_title)."""
     with Disc(iso) as disc:
-        return PortLevelWriter(out, load_title(disc, survey), normal_table(disc.executable())).write(lod)
+        return PortLevelWriter(out, load_title(disc, survey), normals(disc)).write(lod)
 
 
 def export_port_flight(iso: Path, survey: dict, out: Path, lod: int) -> dict:
     """The flight between planets' sky as level 98 for the port's viewer (level.load_flight)."""
     with Disc(iso) as disc:
-        return PortLevelWriter(out, load_flight(disc, survey), normal_table(disc.executable())).write(lod)
+        return PortLevelWriter(out, load_flight(disc, survey), normals(disc)).write(lod)
 
 
 def port(iso: Path, survey: dict, levels: list[int], lod: int, jobs: int, out: Path) -> None:
@@ -134,7 +173,7 @@ def port(iso: Path, survey: dict, levels: list[int], lod: int, jobs: int, out: P
 def raw(disc: Disc, survey: dict, level_id: int, out: Path) -> None:
     level = load_level(disc, survey["levels"][level_id])
     files = {"level_header.bin": level.header, "core_index.bin": level.index,
-             "core_data.bin": level.core, "gameplay_pal.bin": level.gameplay}
+             "core_data.bin": level.core, f"{disc.version.gameplay}.bin": level.gameplay}
     files.update({f"stored/{name}.bin": data for name, data in level.stored.items()})
     manifest = {"schema": 1, "level": survey["levels"][level_id], "overlay": level.overlay, "files": []}
     for name, data in files.items():
@@ -190,11 +229,18 @@ def main() -> None:
                 print()
             elif args.command == "godot":
                 levels = sorted(set(args.level or range(LEVEL_COUNT)))
+                if adopt_flat_export(args.out.resolve(), disc.version.key, "godot"):
+                    # Projects made before the per-version folders, edits and all: kept, not
+                    # written over.
+                    print(f"moved the Godot projects made before into {args.out.resolve()}")
+                    return
                 dest = publish(args.out, lambda out: godot(args.iso, survey, levels, args.terrain_lod, max(1, args.jobs), out,
-                                                           args.split))
+                                                           args.split, disc.version.region))
                 print(f"Godot project{'s, one per level' if args.split else ''}: {dest}")
             elif args.command == "port":
                 levels = sorted(set(args.level or range(LEVEL_COUNT)))
+                if args.replace and adopt_flat_export(args.out.resolve(), disc.version.key):
+                    print(f"moved the levels extracted before into {args.out.resolve()}")
                 dest = publish(args.out, lambda out: port(args.iso, survey, levels, args.terrain_lod, max(1, args.jobs), out),
                                args.anywhere, args.replace)
                 print(f"Levels for the port's viewer: {dest}")
@@ -202,6 +248,10 @@ def main() -> None:
                 # Its own output, written again after each edit: the one command that may write
                 # into a directory that exists.
                 dest = args.out.resolve()
+                if adopt_flat_export(args.project.resolve(), disc.version.key, "godot"):
+                    print(f"moved the Godot projects made before into {args.project.resolve()}")
+                if adopt_flat_export(dest, disc.version.key, "packed"):
+                    print(f"moved the packed levels made before into {dest}")
                 if not any(root in dest.parents for root in (ROOT / "assets", ROOT / "build")):
                     raise FormatError("output must be a directory under this repository's assets/ or build/")
                 if not (args.project / "project.godot").is_file() and not list(args.project.glob("level_*/project.godot")):

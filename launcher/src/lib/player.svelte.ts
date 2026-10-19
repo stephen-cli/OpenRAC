@@ -4,6 +4,8 @@ import type { ActionView, GameView, VersionView } from "./api";
 import type { IconName } from "$components/Icon.svelte";
 import { pickFolder } from "./api";
 import { app, cancel, installGame, jobs, refresh, run, runChain, saveConfig, toast } from "./app.svelte";
+import { choiceFor, pickVersion } from "./discChoice";
+import { phaseLabel } from "./progress";
 import type { Job } from "./queue";
 
 export type PlayerKind =
@@ -23,7 +25,8 @@ export interface PlayerState {
   /** The main button's words. */
   label: string;
   icon: IconName;
-  /** One line under the button: what it will do, or why it cannot. */
+  /** One line under the button: what it will do, or why it cannot. While a job runs, its step in plain
+   *  words (progress.ts); the page shows that with the job's progress instead (JobProgress.svelte). */
   hint: string;
   /** The button is the page's main action (orange), not a stop or a dead end. */
   primary: boolean;
@@ -44,12 +47,19 @@ function jobOf(v: VersionView, ids: string[]): Job | null {
   );
 }
 
+/** The launcher is running V's game, which writes its memory card too. */
+export function isPlaying(v: VersionView): boolean {
+  return jobOf(v, ["play"]) !== null;
+}
+
 const action = (v: VersionView, id: string): ActionView | null =>
   v.actions.find((a) => a.id === id && a.thisPlatform) ?? null;
 
-/** The image of GAME in the player's games folder, if it holds one. */
+/** The image of GAME in the player's games folder, if it holds one: a developer's chosen one
+ *  when the folder holds more than one of its discs. */
 export function foundDisc(game: string) {
-  return app.discs.find((d) => d.game === game) ?? null;
+  const chosen = choiceFor(app.discChoices, game)?.chosen;
+  return app.discs.find((d) => d.game === game && (!chosen || d.version === chosen)) ?? null;
 }
 
 const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
@@ -88,32 +98,26 @@ export async function chooseGamesFolder(): Promise<number | null> {
     const version = game?.versions.find((x) => x.key === disc.version);
     const play = version ? action(version, "play") : null;
     if (game && !game.install?.extracted && play && play.state !== "planned") {
-      await setUp(disc.game, disc.title, disc.path);
+      // The game's disc a developer chose, when the folder holds two (for a player, this one).
+      await setUp(disc.game, disc.title, foundDisc(disc.game)?.path ?? disc.path);
     }
   }
   return found.length;
 }
 
-/** "PAL (Europe)" -> "Europe": a region in a player's words. */
-export function regionWords(v: VersionView): string {
-  return /\(([^)]+)\)/.exec(v.region)?.[1] ?? v.region;
-}
-
 /** The version a player means by "this game": the one their set-up disc is, else the first one
- *  whose disc image was found, else the first one that can be played. */
+ *  whose disc image was found, else the first one that can be played. With developer tools on
+ *  and two of its discs found, the one chosen on the game's page (discChoice.ts). */
 export function playerVersion(game: GameView): VersionView | null {
-  const own = game.install?.extracted?.version;
-  const found = app.discs.filter((d) => d.game === game.id).map((d) => d.version);
-  return (
-    game.versions.find((v) => v.key === own) ??
-    game.versions.find((v) => found.includes(v.key)) ??
-    game.versions.find((v) => {
+  return pickVersion(game.versions, {
+    chosen: choiceFor(app.discChoices, game.id)?.chosen,
+    own: game.install?.extracted?.version,
+    found: app.discs.filter((d) => d.game === game.id).map((d) => d.version),
+    playable: (v) => {
       const play = action(v, "play");
-      return play && play.state !== "planned";
-    }) ??
-    game.versions.at(0) ??
-    null
-  );
+      return !!play && play.state !== "planned";
+    },
+  });
 }
 
 /** The game is built for this computer. */
@@ -137,7 +141,7 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       kind: "installing",
       label: installing.state === "queued" ? "Waiting…" : "Stop",
       icon: "x",
-      hint: installing.lines.at(-1)?.line ?? "Reading your disc…",
+      hint: phaseLabel(installing),
       job: installing,
       status: "Setting up…",
       tone: "warn",
@@ -179,9 +183,11 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       kind: "other-disc",
       label: "Play",
       icon: "play",
-      hint: `Your disc is the ${regionWords(other)} version. Switch to it to play.`,
+      // Only a developer view shows another version than the disc's (playerVersion picks the
+      // disc's): no region words, which a player never needs.
+      hint: "This is set up from another disc. Set up from this one to play it.",
       disabled: true,
-      status: `Your disc is ${regionWords(other)}`,
+      status: "Set up from another disc",
       tone: "info",
     };
   }
@@ -192,7 +198,7 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       kind: "playing",
       label: playing.state === "queued" ? "Waiting…" : "Stop the game",
       icon: "x",
-      hint: playing.lines.at(-1)?.line ?? "Starting the game…",
+      hint: phaseLabel(playing),
       job: playing,
       status: "Running",
       tone: "ok",
@@ -205,11 +211,7 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       kind: "building",
       label: building.state === "queued" ? "Waiting…" : "Stop",
       icon: "x",
-      hint:
-        building.lines.at(-1)?.line ??
-        (building.actionId === "port-levels"
-          ? "Reading the levels from your disc…"
-          : "Building the game for this computer…"),
+      hint: phaseLabel(building),
       job: building,
       status: building.actionId === "port-build" ? "Building…" : "Getting ready…",
       tone: "warn",
@@ -279,14 +281,16 @@ const freshVersion = (v: VersionView) =>
   app.library?.games.flatMap((g) => g.versions).find((x) => x.key === v.key) ?? v;
 
 /**
- * Everything playing still needs, in order: the game built for this computer when it is not (the
- * levels' check runs the game, so it comes first), then the levels read and checked
- * (prepareLevels). True when the game can be played.
+ * Everything playing still needs, in order: the game built for this computer as its sources are
+ * now, then the levels read and checked (prepareLevels). The build comes first even when a game is
+ * already built (only what changed is redone): the levels' check runs the game, and a game older
+ * than its sources refuses levels of a newer format, so they would be read again for nothing and
+ * fail the same check again. True when the game can be played.
  */
 export async function prepare(v: VersionView): Promise<boolean> {
   const scope = { kind: "version" as const, key: v.key };
   const build = action(v, "port-build");
-  if (!action(v, "play")?.done && build?.runnable) {
+  if (build?.runnable) {
     if (!(await runChain(scope, [build]))) return false;
     await refresh();
   }

@@ -178,7 +178,7 @@ extern void parse_space_scene_chunk(s32) __asm__("FUN_002049f0");
 extern ResidentRenderObject *create_moby(s32) __asm__("func_0020C4F8");
 extern void mark_moby_for_removal(ResidentRenderObject *) __asm__("func_0020C828");
 extern void update_moby_animation_state(ResidentRenderObject *) __asm__("func_0020C880");
-extern void func_0020CFD0(void);
+extern void update_resident_packed_direction(void) __asm__("func_0020CFD0");
 extern void refresh_resident_object_spatial_bounds(ResidentRenderObject *) __asm__("func_0020DEF8");
 extern void update_visible_resident_objects(void) __asm__("func_00212E28");
 extern void update_moby_shadow_range(ResidentRenderObject *) __asm__("func_00213700");
@@ -201,6 +201,10 @@ void update_resident_gameplay_state(void) __asm__("FUN_0022f778");
 
 extern f32 frame_time_sq_gp __asm__("D_0015ED70") __attribute__((sda));
 void update_resident_gameplay_state(void) {
+    enum {
+        LEVEL_RENDER_STATE_SCRIPTED_CAMERA_AND_PATH = 3,
+        LEVEL_RENDER_STATE_GAMEPLAY = 4
+    };
     Vector4 scratch_vectors[4];
     s32 keyframe_flags;
     s32 ticks_per_bank;
@@ -531,11 +535,11 @@ void update_resident_gameplay_state(void) {
         }
         sound_update();
         update_all_point_lights();
-        func_0020CFD0();
+        update_resident_packed_direction();
         noop_callback_h();
         break;
 
-    case 3:
+    case LEVEL_RENDER_STATE_SCRIPTED_CAMERA_AND_PATH:
         noop_callback_i();
         update_visible_resident_objects();
         enqueue_voice_request();
@@ -773,11 +777,11 @@ void update_resident_gameplay_state(void) {
         update_camera();
         sound_update();
         update_all_point_lights();
-        func_0020CFD0();
+        update_resident_packed_direction();
         noop_callback_h();
         break;
 
-    case 4:
+    case LEVEL_RENDER_STATE_GAMEPLAY:
         update_level_gameplay_frame();
         break;
     case 1:

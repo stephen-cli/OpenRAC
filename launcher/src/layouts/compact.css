@@ -6,7 +6,7 @@
 /* ---- The game page: the title and Play on one band ---- */
 
 :root[data-layout="compact"] .page:has(> .hero) {
-  max-width: 1040px;
+  max-width: 1080px;
   gap: 16px;
 }
 :root[data-layout="compact"] .hero {
@@ -45,6 +45,11 @@
   grid-area: steps;
   justify-self: stretch;
   margin: 4px 0 0;
+}
+:root[data-layout="compact"] .hero > .job {
+  /* The running job's strip: its own row under the steps, the card's full width. */
+  grid-column: 1 / -1;
+  justify-self: stretch;
 }
 :root[data-layout="compact"] .page-ambient-bg {
   height: 360px;

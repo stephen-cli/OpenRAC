@@ -42,12 +42,6 @@ void FUN_L00_001f36f8(void) {
     D_L00_0015EFC4 = 0;
     D_L00_0015EFC0 = D_L00_0016A040;
 }
-/* Pending C: keep the oracle until the placed overlay bytes match. */
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_001f3770.s", FUN_L00_001f3770);
-#else
-#include "types.h"
-
 typedef struct {
     s32 width;
     s32 height;
@@ -57,9 +51,20 @@ typedef struct {
     s32 top;
 } DebugViewport;
 
+typedef struct {
+    u64 *cursor;
+} PacketBuffer;
+
+typedef struct {
+    u64 tex0;
+} DebugFontTexture;
+
 extern DebugViewport D_0013E500;
 extern s32 D_L00_00169980[];
 extern s32 D_L00_00169B00[];
+/* Struct views of the two globals: retail reads them after the packet stores. */
+#define debug_packet (*(PacketBuffer *)&D_L00_001611C0)
+#define debug_font_texture (*(DebugFontTexture *)&debug_font_pif_header)
 extern void vu1_add_g_sregister(s32, u64) __asm__("FUN_00233980");
 
 void FUN_L00_001f3770(s32 x, s32 y, s32 color, s32 text_address) {
@@ -68,64 +73,55 @@ void FUN_L00_001f3770(s32 x, s32 y, s32 color, s32 text_address) {
     u32 quadwords;
     u32 glyph;
     s32 texture_coordinates;
-    s32 left;
-    s32 top;
     u64 *packet;
-    volatile u64 *tags;
     u64 *glyph_tag;
     u64 *cursor;
-    u64 texture_state;
 
     vu1_add_g_sregister(0x42, 0x8000000044ULL);
     vu1_add_g_sregister(0x47, 0x5360B);
-    packet = D_L00_001611C0;
-    D_L00_001611C0 = packet + 2;
+    packet = debug_packet.cursor;
+    debug_packet.cursor = packet + 2;
     packet[2] = 0x10AB400000000001ULL;
-    tags = packet + 2;
-    tags[1] = 0xE;
-    tags[3] = 0x14;
-    tags[2] = 1;
-    tags[4] = 0x2400000000000001ULL;
-    tags[5] = 0x61;
-    ((u64 *)tags)[6] = color & 0xFFFFFFFFULL;
-    texture_state = debug_font_pif_header;
-    tags[9] = 0x5353;
-    tags[7] = texture_state;
-    tags[8] = 0x4400000000008003ULL;
+    cursor = packet + 2;
+    cursor[1] = 0xE;
+    cursor[2] = 1;
+    cursor[3] = 0x14;
+    cursor[4] = 0x2400000000000001ULL;
+    cursor[5] = 0x61;
+    cursor[6] = color & 0xFFFFFFFFULL;
+    cursor[7] = debug_font_texture.tex0;
+    cursor[8] = 0x4400000000008003ULL;
+    cursor[9] = 0x5353;
     glyph_tag = packet + 10;
-    D_L00_001611C0 = D_L00_001611C0 + 10;
+    debug_packet.cursor = debug_packet.cursor + 10;
     quadwords = 5;
     while (*text != 0) {
-        cursor = D_L00_001611C0;
+        cursor = debug_packet.cursor;
         glyph = (u8)(*text - 0x20);
         if (glyph >= 0x60)
             glyph = 0x20;
-        glyph *= 4;
-        texture_coordinates = *(s32 *)((u8 *)D_L00_00169980 + glyph);
+        texture_coordinates = D_L00_00169980[glyph];
         text++;
         if (texture_coordinates != -1) {
             cursor[0] = (s64)texture_coordinates;
-            top = D_0013E500.top;
-            left = D_0013E500.left;
-            glyph_count++;
+            cursor[1] = (s64)((x * 16) + D_0013E500.left - 8) |
+                        ((u64)(s64)((y * 16) + D_0013E500.top - 8) << 16) | 0xFFFFF300000000ULL;
             cursor[2] = (s64)(texture_coordinates + 0xC000A0);
-            cursor[1] = (s64)((x * 16) + left - 8) |
-                        ((u64)(s64)((y * 16) + top - 8) << 16) | 0xFFFFF300000000ULL;
+            glyph_count++;
             quadwords += 2;
-            ((volatile u64 *)cursor)[3] = (s64)(((x + 10) * 16) + D_0013E500.left - 8) |
+            cursor[3] = (s64)(((x + 10) * 16) + D_0013E500.left - 8) |
                         ((u64)(s64)(((y + 12) * 16) + D_0013E500.top - 8) << 16) |
                         0xFFFFF300000000ULL;
-            D_L00_001611C0 = D_L00_001611C0 + 4;
+            debug_packet.cursor = debug_packet.cursor + 4;
         }
-        x += *(s32 *)((u8 *)D_L00_00169B00 + glyph);
+        x += D_L00_00169B00[glyph];
     }
     ((u32 *)packet)[0] = quadwords | 0x10000000;
-    ((u32 *)packet)[3] = quadwords | 0x50000000;
-    ((u32 *)packet)[2] = 0;
     ((u32 *)packet)[1] = 0;
+    ((u32 *)packet)[2] = 0;
+    ((u32 *)packet)[3] = quadwords | 0x50000000;
     *glyph_tag = (s64)(glyph_count | 0x8000) | 0x4400000000000000ULL;
 }
-#endif /* NON_MATCHING */
 #include "types.h"
 #include "qcopy.h"
 #include "sda.h"
@@ -475,7 +471,7 @@ extern u8 item_defs[] __asm__("D_L00_00179AC0") NOT_SDA;
 #define D_L00_001C40BE ((u16 *)((u8 *)D_L00_001C40B0 + 0xE))
 extern s32 weapon_ammo_counts[] __asm__("D_0013D428");
 extern int D_0013E520[];
-extern u8 D_0014C050[];
+#include "rnc/gameplay/state/game_globals.h"
 extern const char D_L00_0015EFE0[] __attribute__((sda));
 extern const char D_L00_0015EFF0[];
 extern const char D_L00_0015EFF8[];
@@ -742,7 +738,7 @@ void FUN_L00_001f4598(void) {
                 if ((D_0013C940.buttons.w.pressed & 0x20) != 0) {
                     index = g_debug_menu.segment_index;
                     player_setting =
-                        (u8 *)(g_debug_menu.segment_index + D_0015ED84 * 0x10 + D_0014C050);
+                        (u8 *)(g_debug_menu.segment_index + D_0015ED84 * 0x10 + visited52);
                     new_count = 0;
                     if (*player_setting == 0)
                         new_count = 255;
@@ -1102,7 +1098,7 @@ extern int fptodp(float) __asm__("FUN_00120478");
 extern int print_debug_text_centered(int,int,int,char*) __asm__("FUN_001f0c50");
 extern char D_L00_0015F0F0[];
 extern s32 sprintf(char *, const char *, ...);
-extern u8 D_0014C050[];
+#include "rnc/gameplay/state/game_globals.h"
 extern u8 D_L00_0015F444;
 extern u8 D_L00_0015F445;
 extern u8 D_L00_0015F446;
@@ -1174,7 +1170,7 @@ void FUN_L00_001f58e0(void) {
         print_debug_text(0xB0, 0xD6, 0x8000C0C0, D_L00_0015F0E8);
         {
             int mission = debug_menu60.mission;
-            sprintf(buf, D_L00_0015F0F0, mission, (D_0014C050)[mission + D_0015ED84 * stride]);
+            sprintf(buf, D_L00_0015F0F0, mission, (visited52)[mission + D_0015ED84 * stride]);
         }
         print_debug_text(0x108, 0xD6, 0x80F0F0F0, buf);
         if (debug_menu60.group == 1) {
@@ -1314,3 +1310,31 @@ void FUN_L00_001f58e0(void) {
     }
 }
 
+s32 D_L06_0016C7E4[1] __attribute__((section(".data"))) = {0};
+f32 D_L06_0016C860[1] __attribute__((section(".data"))) = {0};
+f32 D_L06_0016C864[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_0016C86C[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_0016C870[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_0016C874[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_0016C864[1] __attribute__((section(".data"))) = {0};
+f32 D_L08_0016C8E0[1] __attribute__((section(".data"))) = {0};
+f32 D_L08_0016C8E4[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_0016C8EC[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_0016C8F0[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_0016C8F4[1] __attribute__((section(".data"))) = {0};
+f32 D_L11_0016CAE0[1] __attribute__((section(".data"))) = {0};
+f32 D_L11_0016CAE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_0016CAEC[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_0016CAF0[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_0016CAF4[1] __attribute__((section(".data"))) = {0};
+f32 D_L14_0016C7E0[1] __attribute__((section(".data"))) = {0};
+f32 D_L14_0016C7E4[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_0016C7EC[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_0016C7F0[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_0016C7F4[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_0016C964[1] __attribute__((section(".data"))) = {0};
+f32 D_L18_0016CAE0[1] __attribute__((section(".data"))) = {0};
+f32 D_L18_0016CAE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_0016CAEC[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_0016CAF0[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_0016CAF4[1] __attribute__((section(".data"))) = {0};

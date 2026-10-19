@@ -34,26 +34,26 @@ typedef struct {
     u8 pad40[0x40];
 } VendorBeamFrame;
 
-extern float FUN_001f9b80(void *, void *);
+extern float vector_distance(void *, void *) __asm__("FUN_001f9b80");
 extern float vector_length_xyz(void *);
 extern VendorBeamFrame *D_L14_001600EC;
 extern int D_L14_001620C8;   /* no foreign declaration */
 extern int D_L14_001620D8_t; /* no foreign declaration */
-extern int FUN_001f9770(void *);
-extern int FUN_001fa728(void *, float);
+extern int fast_dec_timer_s16(void *) __asm__("FUN_001f9770");
+extern int fast_bsphere_check(void *, float) __asm__("FUN_001fa728");
 extern int scale_game_frames(int) __asm__("FUN_001f96f8");
 extern void FUN_L14_003017f8(char *);
 extern void FUN_L14_00301de8(char *);
 extern void FUN_L14_00301fa8(char *);
 extern void FUN_L14_00302538(char *);
 extern void enqueue_callback_list_1(void (*)(void), void *) __asm__("FUN_001f4600");
-extern short D_L14_0016219C_s __asm__("D_L14_001620CC") __attribute__((sda));
-extern short D_L14_00162188_s __asm__("D_L14_001620B8") __attribute__((sda));
-extern short D_L14_001621A0_s __asm__("D_L14_001620D0") __attribute__((sda));
+extern int D_L14_0016219C_s __asm__("D_L14_001620CC") __attribute__((sda));
+extern int D_L14_00162188_s __asm__("D_L14_001620B8") __attribute__((sda));
+extern int D_L14_001621A0_s __asm__("D_L14_001620D0") __attribute__((sda));
 extern s32 D_L14_001620C8_gp __asm__("D_L14_001620C8") __attribute__((sda));
-extern short D_L14_001621A4_s __asm__("D_L14_001620D4") __attribute__((sda));
+extern int D_L14_001621A4_s __asm__("D_L14_001620D4") __attribute__((sda));
 
-extern short D_L14_001620D8 __attribute__((sda));
+extern int D_L14_001620D8 __attribute__((sda));
 void FUN_L14_003015d0(unsigned char *m) {
     D1224 *d = *(D1224 **)(m + 0x78);
     float v[4] __attribute__((aligned(16)));
@@ -62,11 +62,11 @@ void FUN_L14_003015d0(unsigned char *m) {
     if (m[0x20] != 0) {
         qcopy(v, m + 0x10);
         v[3] = d->f624;
-        if (FUN_001fa728(v, 52.0f) < 0) {
+        if (fast_bsphere_check(v, 52.0f) < 0) {
             return;
         }
     }
-    if (*(int *)&D_L14_0016219C_s != 0) {
+    if (D_L14_0016219C_s != 0) {
         return;
     }
     s = m[0x20];
@@ -80,22 +80,22 @@ void FUN_L14_003015d0(unsigned char *m) {
         d->sA = 1;
         break;
     case 1:
-        if (*(int *)&D_L14_00162188_s != 0) {
+        if (D_L14_00162188_s != 0) {
             if (d->s12 == 0) {
-                *(int *)&D_L14_00162188_s = *(int *)&D_L14_00162188_s - 1;
+                D_L14_00162188_s = D_L14_00162188_s - 1;
                 FUN_L14_003017f8((char *)m);
             }
         }
         break;
     case 2:
-        if (FUN_001f9770(&d->s10) != 0) {
+        if (fast_dec_timer_s16(&d->s10) != 0) {
             m[0x20] = 3;
             d->s10 = scale_game_frames(d->s4);
             FUN_L14_003017f8((char *)m);
         }
         break;
     case 3:
-        if (FUN_001f9770(&d->s10) != 0) {
+        if (fast_dec_timer_s16(&d->s10) != 0) {
             if (d->s6 != 0) {
                 m[0x20] = 2;
                 arg = d->s6;
@@ -108,17 +108,17 @@ void FUN_L14_003015d0(unsigned char *m) {
         }
         break;
     }
-    if (*(int *)&D_L14_001620D8 == 0) {
-        if (FUN_001f9b80(m + 0x10, &hero.motion.pos) < 10.0f) {
+    if (D_L14_001620D8 == 0) {
+        if (vector_distance(m + 0x10, &hero.motion.pos) < 10.0f) {
             FUN_L14_00302538((char *)m);
         }
     }
     if (d->s12 != 0) {
-        if (*(int *)&D_L14_001621A0_s == 0) {
+        if (D_L14_001621A0_s == 0) {
             FUN_L14_00301de8((char *)m);
         }
         if (*(int *)&D_L14_001620C8_gp < d->s12) {
-            if (*(int *)&D_L14_001621A4_s != 0) {
+            if (D_L14_001621A4_s != 0) {
                 return;
             }
             enqueue_callback_list_1(FUN_L14_00301fa8, m);
@@ -138,9 +138,9 @@ extern void add_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a10");
 extern void scale_vector_xyz(void *, void *, float) __asm__("FUN_001f9a68");
 extern void set_vector_xyz(void *, float, float) __asm__("FUN_L00_00257d78");
 extern void transform_vector(void *, void *, void *) __asm__("FUN_001f9d20");
-extern float FUN_001f9b80(void *, void *);
-extern void FUN_001fa050(void *, void *) __asm__("FUN_001fa050");
-extern void spawn_spark(void *, void *, void *, int, int, int, int, int, int) __asm__("FUN_00218888");
+extern float vector_distance(void *, void *) __asm__("FUN_001f9b80");
+extern void euler_rotation_matrix(void *, void *) __asm__("FUN_001fa050");
+extern void *spawn_spark(void *, void *, void *, int, int, int, int, int, int) __asm__("FUN_00218888");
 extern float D_0015ED6C;
 extern int D_L14_001620BC __attribute__((sda));
 extern int D_L14_001620C0 __attribute__((sda));
@@ -243,8 +243,8 @@ void FUN_L14_003017f8(char *m) {
             }
         }
     }
-    if (FUN_001f9b80(&D_L14_001600EC[*(int *)d].origin, D_L14_001674C0) >= 4.0f) {
-        FUN_001fa050(matrix, &D_L14_001600EC[*(int *)d].pad40[0x30]);
+    if (vector_distance(&D_L14_001600EC[*(int *)d].origin, D_L14_001674C0) >= 4.0f) {
+        euler_rotation_matrix(matrix, &D_L14_001600EC[*(int *)d].pad40[0x30]);
         qcopy(origin, &D_L14_001600EC[*(int *)d].origin);
         {
             int i;
@@ -276,9 +276,6 @@ void FUN_L14_003017f8(char *m) {
     }
 }
 #endif
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L14_00301de8.s", FUN_L14_00301de8);
-#else
 extern int D_L14_001620C4 __attribute__((sda));
 extern int D_L14_001620F0 __attribute__((sda));
 extern int D_L14_001620F4 __attribute__((sda));
@@ -286,19 +283,18 @@ extern int D_L14_001620F8 __attribute__((sda));
 extern float convert_integer_to_float(int) __asm__("FUN_001fa6c0");
 extern int fast_tween_color(int, int, float) __asm__("FUN_001fa6e0");
 extern void add_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a10");
-void FUN_L14_00301de8(char *m) {
-    char *d = *(char **)(m + 0x78);
+void FUN_L14_00301de8(char *moby) {
+    char *vars = *(char **)(moby + 0x78);
     char *dst, *src;
     u8 *indices;
     int i, j, k, copy_i, next_i;
-    int offset;
-    float t;
+    float fraction;
 
-    if (*(s16 *)(d + 0x12) != 0) {
-        *(s16 *)(d + 0x12) = *(u16 *)(d + 0x12) - 1;
-        indices = (u8 *)(d + 0x18);
-        src = d + 0x260;
-        dst = d + 0x60;
+    if (*(s16 *)(vars + 0x12) != 0) {
+        *(s16 *)(vars + 0x12) = *(u16 *)(vars + 0x12) - 1;
+        indices = (u8 *)(vars + 0x18);
+        src = vars + 0x260;
+        dst = vars + 0x60;
         for (j = 22; j >= 0; j--) {
             add_vector_xyz(dst, dst, src);
             dst += 0x10;
@@ -307,14 +303,9 @@ void FUN_L14_00301de8(char *m) {
         i = 0;
         do {
             next_i = i + 1;
-            src = (char *)((i << 4) + (int)d);
-            offset = (int)src;
-            src += 0x560;
-            dst = (char *)offset + 0x460;
             for (k = 2; k >= 0; k--) {
-                add_vector_xyz(dst, dst, src);
-                dst += 0x40;
-                src += 0x40;
+                char *row = vars + (i << 4) + (2 - k) * 0x40;
+                add_vector_xyz(row + 0x460, row + 0x460, row + 0x560);
             }
             i = next_i;
         } while ((float)i < 4.0f);
@@ -323,24 +314,23 @@ void FUN_L14_00301de8(char *m) {
             indices = 0; /* End the saved index-base lifetime after the transfer. */
             copy_i = 0;
             do {
-                qcopy(d + 0x420 + (copy_i << 4), (char *)(((u8)src[copy_i] << 4) + (int)d) + 0x20);
+                qcopy(vars + 0x420 + (copy_i << 4), (char *)(((u8)src[copy_i] << 4) + (int)vars) + 0x20);
                 copy_i++;
             } while (copy_i < 4);
         }
     }
-    if (*(s16 *)(d + 0x12) > D_L14_001620C4) {
-        t = convert_integer_to_float(*(s16 *)(d + 0x12) - D_L14_001620C4) /
-            convert_integer_to_float(*(int *)(d + 0x620) - D_L14_001620C4);
-        *(int *)(d + 0x14) = fast_tween_color(D_L14_001620F4, D_L14_001620F0, t);
-    } else if (*(s16 *)(d + 0x12) > D_L14_001620C8) {
-        t = convert_integer_to_float(*(s16 *)(d + 0x12) - D_L14_001620C8) /
+    if (*(s16 *)(vars + 0x12) > D_L14_001620C4) {
+        fraction = convert_integer_to_float(*(s16 *)(vars + 0x12) - D_L14_001620C4) /
+            convert_integer_to_float(*(int *)(vars + 0x620) - D_L14_001620C4);
+        *(int *)(vars + 0x14) = fast_tween_color(D_L14_001620F4, D_L14_001620F0, fraction);
+    } else if (*(s16 *)(vars + 0x12) > D_L14_001620C8) {
+        fraction = convert_integer_to_float(*(s16 *)(vars + 0x12) - D_L14_001620C8) /
             convert_integer_to_float(D_L14_001620C4 - D_L14_001620C8);
-        *(int *)(d + 0x14) = fast_tween_color(D_L14_001620F8, D_L14_001620F4, t);
+        *(int *)(vars + 0x14) = fast_tween_color(D_L14_001620F8, D_L14_001620F4, fraction);
     } else {
-        *(int *)(d + 0x14) = 0;
+        *(int *)(vars + 0x14) = 0;
     }
 }
-#endif
 #ifndef NON_MATCHING
 INCLUDE_ASM("config/us/overlays/asm/FUN_L14_00301fa8.s", FUN_L14_00301fa8);
 #else
@@ -354,8 +344,8 @@ typedef struct {
     u64 gs_state;
 } VendorBeamStripPacket;
 
-extern void FUN_001fa050(void *, void *) __asm__("FUN_001fa050");
-extern void FUN_001fa2d8(void *, void *) __asm__("FUN_001fa2d8");
+extern void euler_rotation_matrix(void *, void *) __asm__("FUN_001fa050");
+extern void transpose_rotation_matrix(void *, void *) __asm__("FUN_001fa2d8");
 extern void transform_vector_xyz(void *, void *, void *) __asm__("FUN_001f9cf8");
 extern void subtract_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a28");
 extern void add_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a10");
@@ -396,8 +386,8 @@ void FUN_L14_00301fa8(char *m) {
     int next;
     int branch_next;
 
-    FUN_001fa050(base, &frame->pad40[0x30]);
-    FUN_001fa2d8(matrix, base);
+    euler_rotation_matrix(base, &frame->pad40[0x30]);
+    transpose_rotation_matrix(matrix, base);
     frame = &D_L14_001600EC[*(int *)d];
     qcopy(base + 12, &frame->origin);
     subtract_vector_xyz(direction, D_L14_001674C0, &frame->origin);
@@ -533,7 +523,7 @@ extern void subtract_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a28");
 extern void scale_vector_xyz(void *, void *, f32) __asm__("FUN_001f9a68");
 extern void normalize_vector_xyz(void *, void *, f32) __asm__("FUN_001f9bf8");
 extern f32 dot_vectors_xyz(void *, void *) __asm__("FUN_001f9ab0");
-extern int FUN_001efa68(void *, void *, int, void *, void *);
+extern int collision_line(void *, void *, int, void *, void *) __asm__("FUN_001efa68");
 
 /* Sweeps the beam's two end lines; anything they cross takes damage pushed away from the beam. */
 void FUN_L14_00302538(char *self) {
@@ -570,7 +560,7 @@ void FUN_L14_00302538(char *self) {
     qcopy_nc(&base, &D_L14_001600EC[d->w0].origin);
     if (d->s8) {
         add_vector_xyz(&end_a, &base, &D_L14_001600EC[d->w0].axis[1]);
-        if (FUN_001efa68(&base, &end_a, 0, m, 0)) {
+        if (collision_line(&base, &end_a, 0, m, 0)) {
             subtract_vector_xyz(&from, D_L14_00174560, &base);
             len = vector_length_xyz(&from);
             scale_vector_xyz(&from, &from, len * 0.98f / len);
@@ -582,7 +572,7 @@ void FUN_L14_00302538(char *self) {
     }
     if (d->sA) {
         subtract_vector_xyz(&end_b, &base, &D_L14_001600EC[d->w0].axis[1]);
-        if (FUN_001efa68(&base, &end_b, 0, m, 0)) {
+        if (collision_line(&base, &end_b, 0, m, 0)) {
             subtract_vector_xyz(&from, D_L14_00174560, &base);
             len = vector_length_xyz(&from);
             scale_vector_xyz(&from, &from, len * 0.98f / len);
@@ -597,17 +587,17 @@ void FUN_L14_00302538(char *self) {
     normalize_vector_xyz(&off, &D_L14_001600EC[d->w0].axis[0], d->radius);
     add_vector_xyz(&from, &end_a, &off);
     add_vector_xyz(&to, &end_b, &off);
-    FUN_001efa68(&from, &to, 1, m, &req);
+    collision_line(&from, &to, 1, m, &req);
     subtract_vector_xyz(&from, &end_a, &off);
     subtract_vector_xyz(&to, &end_b, &off);
-    FUN_001efa68(&from, &to, 1, m, &req);
+    collision_line(&from, &to, 1, m, &req);
     normalize_vector_xyz(&off, &D_L14_001600EC[d->w0].axis[2], d->radius);
     add_vector_xyz(&from, &end_a, &off);
     add_vector_xyz(&to, &end_b, &off);
-    FUN_001efa68(&from, &to, 1, m, &req);
+    collision_line(&from, &to, 1, m, &req);
     subtract_vector_xyz(&from, &end_a, &off);
     subtract_vector_xyz(&to, &end_b, &off);
-    FUN_001efa68(&from, &to, 1, m, &req);
+    collision_line(&from, &to, 1, m, &req);
 }
 #include "sda.h"
 

@@ -115,7 +115,6 @@ ROUTE_EXCEPTIONS = {
     # fun_00208030: expand a 4bpp coverage map through the 16-entry weight table
     # into a 1bpp threshold mask (4 source rows per output row)
     "ui/map/downsample_map_coverage": "cc_sn",
-    "ui/menus/update_menu_cycle_selection": "cc_sn",
     # Game code still built by SN cc1 plus the SN assembler Ps2EeAs (the padless route).
     "rendering/packets/emit_rgba_draw_packet": "cc_sn_padless",
     # parse_particle_textures: The a1/a3 induction-pointer swap was the ORDER OF
@@ -346,7 +345,9 @@ OVERLAY_SN_UNITS = {
     "shared/gameplay/state/0024eec0.c",
     "shared/gameplay/state/0024f190.c",
     "shared/gameplay/state/0027b268.c",
+    "shared/gameplay/state/00284e50.c",
     "shared/gameplay/state/unlock_planet.c",
+    "shared/gameplay/vendor/0029ead8.c",
     "shared/gameplay/vendor/002e3de8.c",
     "shared/gameplay/vendor/003015d0.c",
     "shared/gameplay/vendor/00316f48.c",
@@ -361,9 +362,11 @@ OVERLAY_SN_UNITS = {
     "shared/rendering/002712b8.c",
     "shared/rendering/0027f660.c",
     "shared/rendering/commands/0020bc88.c",
+    "shared/rendering/sky/sky_particle_effects.c",
     "shared/rendering/sky/update_sky_shells_animated.c",
     "shared/runtime/dma/002b7a48.c",
     "shared/ui/help/001fe778.c",
+    "shared/ui/help/001ff938.c",
     "shared/ui/help/00204c60.c",
     "shared/ui/help/00215340.c",
     "shared/ui/help/0021d0a0.c",
@@ -417,7 +420,7 @@ RODATA_OVERLAYS = {
     "fun_00216c48": (0x1E86A0, 0xE9620, 24),  # retail switch table (jtbl_001E86A0)
     "draw_sky_shells": (0x1E8910, 0xE9890, 24),  # switch table
     "fun_002223f0": (0x1E8810, 0xE9790, 80),  # switch table
-    "fun_00237ed0": (0x1E8A90, 0xE9A10, 52),  # switch table
+    "gameplay/vendor/update_resident_dialogue_animation_state": (0x1E8A90, 0xE9A10, 52),  # switch table
     "update_help_state": (0x1E7A40, 0xE89C0, 36),  # switch table
     "memcard_update_state": (0x1E8200, 0xE9180, 348),  # switch table
     "init_once": (0x1E7B30, 0xE8AB0, 20),  # switch table
@@ -442,6 +445,7 @@ RODATA_OVERLAYS = {
     "sdk/callbacks/report_mpeg_picture_spatial_scalable_unsupported": (0x153B90, 0x54B10, 50),
     "sdk/callbacks/report_mpeg_picture_temporal_scalable_unsupported": (0x153BC8, 0x54B48, 51),
     "sdk/library/GetRomName": (0x153C00, 0x54B80, 12),
+    "draw_scrolling_sky_shells": (0x1E88F0, 0xE9870, 20),  # switch table
 }
 
 # Recovered C units that define the small-data variables their original
@@ -475,13 +479,13 @@ DATA_OVERLAYS = {
     "runtime/data/get_core_data_table": (0x132D40, 0x33CC0, 16),
     "sdk/video/ipu/send_ipu_command": (0x132E70, 0x33DF0, 64),
     "sdk/debug/sce_scf_get_language": (0x1330D4, 0x34054, 1),
-    "assembly/textbin/video/display/set_pal_mode": (0x13D100, 0x3E080, 8),
+    "video/display/set_pal_mode": (0x13D100, 0x3E080, 8),
     "rendering/texture/append_palette_transfer_packet": (0x151B60, 0x52AE0, 656),
     "textbin/render_queued_rotated_sprites": (0x189300, 0x8A280, 196),
     "gameplay/camera/backup_current_cam": (0x1893D0, 0x8A350, 1920),
     "textbin/append_billboard_batch": (0x18ED00, 0x8FC80, 512),
     "ui/map/map_filters": (0x1A03B0, 0xA1330, 4),
-    "textbin/initialize_level_runtime": (0x1CAAC0, 0xCBA40, 4096),
+    "textbin/gameplay/state/initialize_level_runtime": (0x1CAAC0, 0xCBA40, 4096),
     "textbin/world/data/select_world_object_resource_tables": (0x1CBBE0, 0xCCB60, 1152),
     "ui/menus/render_level_effects_and_screen_sprites": (0x1CE2C0, 0xCF240, 56),
     "textbin/gameplay/gadgets/load_hand_gadget": (0x1D52E8, 0xD6268, 1776),
@@ -500,7 +504,7 @@ DATA_OVERLAYS = {
     "rendering/view/update_view_context": (0x18CFC0, 0x8DF40, 64),
     "input/pad/init_pads": (0x1CD760, 0xCE6E0, 16),
     "ui/menus/fun_002223f0": (0x1D5298, 0xD6218, 3),
-    "gameplay/vendor/fun_00237ed0": (0x1E63FC, 0xE737C, 4),
+    "gameplay/vendor/update_resident_dialogue_animation_state": (0x1E63FC, 0xE737C, 4),
     "rendering/draw_dialog_text": (0x1E78F0, 0xE8870, 48),
 }
 
@@ -1676,6 +1680,33 @@ def fix_gp_rel_stores(asm_root: Path) -> int:
         fixed += 1
     return fixed
 
+def fix_mirror_symbols(asm_root: Path) -> int:
+    """Write splat's ``%lo(D_2xxxxxxx)`` / ``%hi(...)`` operands as immediates.
+
+    Code that ORs 0x20000000 into a RAM address (the uncached mirror) gets the
+    sum paired into a symbol, e.g. ``addiu $10, $10, %lo(D_20000020)`` for a
+    plain pointer step of 0x20.  No symbol lives there; the relocation only
+    makes objdiff reject a compiler object that emits the bare immediate.
+    The same words are written the way splat spells its other immediates.
+    """
+    pattern = re.compile(r"%(?P<op>lo|hi)\(D_(?P<addr>[23][0-9A-F]{7})\)")
+
+    def rewrite(match: re.Match[str]) -> str:
+        if int(match.group("addr"), 16) & 0x8000:
+            return match.group(0)  # a negative %lo: leave the pair to splat
+        if match.group("op") == "lo":
+            return f"(0x{match.group('addr')} & 0xFFFF)"
+        return f"(0x{match.group('addr')} >> 16)"
+
+    fixed = 0
+    for asm_file in asm_root.rglob("*.s"):
+        text = asm_file.read_text()
+        updated = pattern.sub(rewrite, text)
+        if updated != text:
+            asm_file.write_text(updated)
+            fixed += 1
+    return fixed
+
 def make_asm(config_path: Path, config: dict[str, Any]):
     with tempfile.TemporaryDirectory(dir=config_path, prefix="tmp_") as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -1739,6 +1770,9 @@ def make_asm(config_path: Path, config: dict[str, Any]):
         rewritten = fix_gp_rel_stores(dst_path)
         if rewritten:
             print(f"normalized gp-relative stores in {rewritten} expected asm files")
+        rewritten = fix_mirror_symbols(dst_path)
+        if rewritten:
+            print(f"unpaired uncached-mirror immediates in {rewritten} expected asm files")
 
         print(f"expected asm extracted to '{dst_path}'")
 
@@ -1759,6 +1793,7 @@ def make_asm(config_path: Path, config: dict[str, Any]):
             split.main([yaml_path], modes=["all"], verbose=False)
 
         rename_locals(asm_path)
+        fix_mirror_symbols(tmp_path / "asm")
 
         dst_path = dst_path.parent / "obj"
         tmp_obj_path = tmp_path / "obj"
@@ -2250,6 +2285,7 @@ def main():
         clean(config_dir)
 
     split.main([args.YAML_FILE], modes=["all"], verbose=False)
+    fix_mirror_symbols(config_dir / "asm")
 
     fix_assets(config_dir, config)
 

@@ -44,18 +44,45 @@ include(FastBuild)
 
 enable_testing()
 
-# ---- common: the log and small helpers, no dependencies ----
+# ---- common: the log, crash reports and small helpers, no dependencies ----
+# OpenRAC's version and the checkout's commit (common/build_info.h), written at every build and
+# replaced only when they change (cmake/BuildInfo.cmake).
+set(OPENRAC_BUILD_INFO "${CMAKE_BINARY_DIR}/generated/build_info.cpp")
+add_custom_target(openrac_build_info
+  COMMAND "${CMAKE_COMMAND}" "-DREPO=${PROJECT_SOURCE_DIR}/.." "-DOUT=${OPENRAC_BUILD_INFO}"
+          -P "${PROJECT_SOURCE_DIR}/cmake/BuildInfo.cmake"
+  BYPRODUCTS "${OPENRAC_BUILD_INFO}"
+  COMMENT "OpenRAC's version and commit"
+  VERBATIM)
 add_library(openrac_common STATIC
+  common/crash.cpp
   common/log.cpp
   common/process.cpp
   common/stats.cpp
+  common/system_info.cpp
+  "${OPENRAC_BUILD_INFO}"
 )
+add_dependencies(openrac_common openrac_build_info)
 target_include_directories(openrac_common PUBLIC .)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(openrac_common PUBLIC ${CMAKE_DL_LIBS})  # dladdr, for the crash report
+endif()
 openrac_warnings(openrac_common)
+
+add_executable(log_test tests/log_test.cpp)
+target_link_libraries(log_test PRIVATE openrac_common)
+openrac_warnings(log_test)
+add_test(NAME log COMMAND log_test)
+
+add_executable(pause_options_test tests/pause_options_test.cpp)
+target_include_directories(pause_options_test PRIVATE .)
+openrac_warnings(pause_options_test)
+add_test(NAME pause_options COMMAND pause_options_test)
 
 # ---- runtime: game memory, the guest contract, the executable loader ----
 add_library(openrac_runtime STATIC
   runtime/crash.cpp
+  runtime/ee.cpp
   runtime/elf.cpp
   runtime/guest.cpp
   runtime/memory.cpp
@@ -143,7 +170,7 @@ openrac_warnings(vendor_draw_test)
 add_test(NAME vendor_draw COMMAND vendor_draw_test)
 
 add_executable(effect_quad_test tests/effect_quad_test.c)
-target_include_directories(effect_quad_test PRIVATE game/common/include runtime/include)
+target_include_directories(effect_quad_test PRIVATE game/common/include runtime/include game/rac1-pal/host)
 target_compile_options(effect_quad_test PRIVATE -fno-strict-aliasing -ffp-contract=off)
 openrac_warnings(effect_quad_test)
 add_test(NAME effect_quad COMMAND effect_quad_test)
@@ -181,6 +208,14 @@ if(UNIX)
 endif()
 openrac_warnings(hero_heading_test)
 add_test(NAME hero_heading COMMAND hero_heading_test)
+
+add_executable(hero_strafe_test tests/hero_strafe_test.c)
+target_compile_options(hero_strafe_test PRIVATE -ffp-contract=off)
+if(UNIX)
+  target_link_libraries(hero_strafe_test PRIVATE m)
+endif()
+openrac_warnings(hero_strafe_test)
+add_test(NAME hero_strafe COMMAND hero_strafe_test)
 
 add_executable(hero_contact_test tests/hero_contact_test.c)
 target_compile_options(hero_contact_test PRIVATE -fno-strict-aliasing -ffp-contract=off)
@@ -230,4 +265,24 @@ endif()
 if(OPENRAC_PORT_GAMES)
   include(Games)
   openrac_add_games()
+  # Each rac1 version's table names every function and address the shared host C uses, and nothing
+  # else (port/game/rac1/README.md); no disc needed.
+  foreach(version rac1-pal rac1-ntsc)
+    add_test(NAME ${version}_host_table
+             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/versionmap/hostnames.py" check
+                     "${PROJECT_SOURCE_DIR}/game/${version}")
+  endforeach()
+  # NTSC-U's own C (hand.tsv's rows) against the US code: every call and global the C reaches is
+  # one the retail function reaches, or allow.tsv says why not (port/game/rac1-ntsc/README.md).
+  # Skipped (77) without the retail program the decompilation's setup places.
+  set(xcheck_args "")
+  if(OPENRAC_RAC1_NTSC_ASM_SOURCE)
+    set(xcheck_args --asm-source "${OPENRAC_RAC1_NTSC_ASM_SOURCE}")
+  endif()
+  add_test(NAME rac1-ntsc_hand_xcheck
+           COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/versionmap/xcheck.py" check
+                   "${PROJECT_SOURCE_DIR}/game/rac1-ntsc" --gen "${CMAKE_BINARY_DIR}/games/rac1-ntsc/gen" ${xcheck_args})
+  set_tests_properties(rac1-ntsc_hand_xcheck PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(NAME xcheck_tool
+           COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/versionmap/test_xcheck.py")
 endif()

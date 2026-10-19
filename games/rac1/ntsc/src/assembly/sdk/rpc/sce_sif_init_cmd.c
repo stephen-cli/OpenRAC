@@ -28,8 +28,8 @@ struct M2c_var_3_42 {
     void *unk4;
 };
 
-extern void FUN_0011a428();
-extern void FUN_0011a448();
+extern void handle_sif_set_system_register() __asm__("FUN_0011a428");
+extern void handle_sif_initialize_command() __asm__("FUN_0011a448");
 extern u8 D_0012FC04[];
 extern u8 D_00154D80[];
 extern u8 D_00154E00[];
@@ -41,7 +41,7 @@ extern s32 LookupTable[32] __asm__("D_00154F80");
 extern s32 AddDmacHandler();
 extern s32 DIntr();
 extern s32 EnableInterrupts();
-extern s32 FlushCache();
+extern void FlushCache(s32);
 extern s32 enable_dmac() __asm__("func_00119160");
 extern s32 sceSifGetReg();
 extern s32 sceSifSetDChain();
@@ -92,8 +92,8 @@ block_3:
         LookupTable[ipval] = 0;
         ipval -= 1;
     } while (ipval >= 0);
-    D_00154E80[0].unk0 = FUN_0011a448;
-    D_00154E80[1].unk0 = FUN_0011a428;
+    D_00154E80[0].unk0 = handle_sif_initialize_command;
+    D_00154E80[1].unk0 = handle_sif_set_system_register;
     D_00154E80[0].unk4 = &D_00154E58;
     D_00154E80[1].unk4 = &D_00154E58;
     ipval = 0x20;

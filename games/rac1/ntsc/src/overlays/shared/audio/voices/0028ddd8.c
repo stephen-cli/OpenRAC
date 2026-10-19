@@ -13,7 +13,8 @@
 
 extern int allocate_voice_slot(void *, int, int, int, int) __asm__("FUN_0022d7f0");
 
-int FUN_L00_0028ddd8(int a, int b, int c, int d) {
+int play_voice(int a, int b, int c, int d) __asm__("FUN_L00_0028ddd8");
+int play_voice(int a, int b, int c, int d) {
     int r;
     if (a >= D_L00_0015F5F0)
         return -1;
@@ -32,23 +33,23 @@ extern char D_0013E550_c[] __asm__("D_0013E550");
 extern unsigned char D_L00_001BD820[];
 extern int D_L00_0015F574;
 
-int FUN_L00_0028de68(int a0, int a1, int a2, int a3, int a4) {
+int FUN_L00_0028de68(int voice_group_index, int voice_pair_index, int voice_index_offset, int voice_flags, int voice_moby) {
     int idx;
     int h;
     int t;
 
-    t = D_L00_001BD820[current_level_index] + a0 * 4;
-    t += a1 * 2;
-    t += a2;
+    t = D_L00_001BD820[current_level_index] + voice_group_index * 4;
+    t += voice_pair_index * 2;
+    t += voice_index_offset;
     idx = t + D_L00_0015F574;
 
     if (idx >= D_L00_0015F5F0) {
         return -1;
     }
-    h = allocate_voice_slot(D_L00_0015F5F4 + idx * 32, a3, a4, 0, 0x400);
+    h = allocate_voice_slot(D_L00_0015F5F4 + idx * 32, voice_flags, voice_moby, 0, 0x400);
     if (h >= 0) {
         char *rec = D_0013E550_c + h * 0x70;
-        *(int *)(rec + 0x88) = a4;
+        *(int *)(rec + 0x88) = voice_moby;
         *(short *)(rec + 0x7E) = idx;
     }
     return h;
@@ -58,7 +59,8 @@ typedef struct {
 } E0028df38;
 extern E0028df38 D_0013E550[];
 /* Sets word 0x21 of voice entry i to v; returns 1. */
-s32 FUN_L00_0028df38(s32 i, s32 v) {
+s32 engine_voice_set_pitch(s32 i, s32 v) __asm__("FUN_L00_0028df38");
+s32 engine_voice_set_pitch(s32 i, s32 v) {
     E0028df38 *p = &D_0013E550[i];
     p->w[0x21] = v;
     return 1;

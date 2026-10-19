@@ -54,11 +54,15 @@ extern s32 sprintf(char *, const char *, ...);
 extern void copy_text_to_shared_buffer(char *) __asm__("func_001FF658");
 extern s32 compute_clamped_count_difference(void) __asm__("FUN_00215248");
 
-void func_00216C48(void *arg0, Menu *menu, s32 arg2) __asm__("func_00216C48");
-
 #define SCRATCH ((char *)0x70000000)
 
-void FUN_00216c48(void *arg0, Menu *menu, s32 arg2) {
+void FUN_00216c48(void *arg0, Menu *menu, s32 follow_entry_link) {
+    enum {
+        MENU_CONDITION_PURCHASE_PRICE_MET = 1,
+        MENU_CONDITION_ITEM_AVAILABLE = 2,
+        MENU_CONDITION_ITEM_AVAILABLE_NOT_ACQUIRED = 3,
+        MENU_CONDITION_ALTERNATE_ITEM_AVAILABLE = 4
+    };
     char buf[0x100];
     Suffixes sfx;
     char num[0x20];
@@ -75,7 +79,7 @@ void FUN_00216c48(void *arg0, Menu *menu, s32 arg2) {
     if (menu->unk3C == 0) {
         return;
     }
-    if (arg2 != 0) {
+    if (follow_entry_link != 0) {
         menu->unk4 = menu->unk36;
         menu->unk38 = world_update_time;
         n = e->unk6;
@@ -126,19 +130,19 @@ void FUN_00216c48(void *arg0, Menu *menu, s32 arg2) {
     }
     ok = 0;
     switch (e->unk8) {
-    case 1:
+    case MENU_CONDITION_PURCHASE_PRICE_MET:
         ok = !(current_bolt_count < D_001DFFB0[e->unkA].unk0);
         break;
-    case 2:
+    case MENU_CONDITION_ITEM_AVAILABLE:
         ok = item_available[e->unkA] != 0;
         break;
-    case 3:
+    case MENU_CONDITION_ITEM_AVAILABLE_NOT_ACQUIRED:
         ok = 0;
         if (item_available[e->unkA] != 0) {
             ok = items_acquired[e->unkA] == 0;
         }
         break;
-    case 4:
+    case MENU_CONDITION_ALTERNATE_ITEM_AVAILABLE:
         ok = alternate_item_available[e->unkA] != 0;
         break;
     case 5:
@@ -161,7 +165,7 @@ void FUN_00216c48(void *arg0, Menu *menu, s32 arg2) {
         menu->unk38 = world_update_time_macro;
         e = (MenuItem *)(menu->unk3C + next * 0x1C);
         menu->unk8 = *(u8 *)&e->unk10 & 1;
-        func_00216C48(arg0, menu, 0);
+        FUN_00216c48(arg0, menu, 0);
     }
 }
 

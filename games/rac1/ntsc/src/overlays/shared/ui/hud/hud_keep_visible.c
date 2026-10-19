@@ -46,7 +46,8 @@ void FUN_L00_00235878(void) {
 /* Ported from rac1-decomp (src/overlays/shared/hud_00235960.c: func_L00_00236400), where it is exact; names translated to the US level program. */
 
 /* Offsets x/y for the element's anchor flags (centre or right/bottom alignment). */
-int FUN_L00_00235a70(HudElem *rec, int *x, int *y) {
+int hud_screen_position(HudElem *rec, int *x, int *y) __asm__("FUN_L00_00235a70");
+int hud_screen_position(HudElem *rec, int *x, int *y) {
     int w = rec->w;
     int h = rec->h;
     int flags = rec->flags;
@@ -199,7 +200,7 @@ s32 hud_keep_visible(s32 key, s32 val) {
     }
     return 1;
 }
-extern float FUN_001fa6c0(int);
+extern float convert_integer_to_float(int) __asm__("FUN_001fa6c0");
 extern int FUN_001fa6d0(float);
 extern float square_root(float) __asm__("FUN_001f9988");
 extern void FUN_L00_0023aaa8(void *);
@@ -229,7 +230,7 @@ void FUN_L00_00235ea0(e) HudElem *e;
             int t = e->unk74 - e->unk78;
             d = t < 0 ? -t : t;
             if (d != 0) {
-                s = FUN_001fa6d0(square_root(FUN_001fa6c0(d) / 25.0f) * 5.0f);
+                s = FUN_001fa6d0(square_root(convert_integer_to_float(d) / 25.0f) * 5.0f);
                 s = s < d * scale_game_frames(2) / scale_game_frames(10)
                         ? d * scale_game_frames(2) / scale_game_frames(10)
                         : s;
@@ -316,59 +317,59 @@ void FUN_L00_00236128(HudElem *e) {
 extern float star_init_limit0_gp __asm__("D_L00_0015F750") __attribute__((sda));
 extern float star_init_limit1_gp __asm__("D_L00_0015F754") __attribute__((sda));
 extern float star_init_limit2_gp __asm__("D_L00_0015F758") __attribute__((sda));
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_00236268.s", FUN_L00_00236268);
-#else
-typedef struct { float x, y, z, w; } E_236268;
-extern E_236268 D_L00_0017E660_236268[] __asm__("D_L00_0017E660") __attribute__((section(".data")));
-extern int D_L00_0015F75C_236268 __asm__("D_L00_0015F75C") __attribute__((sda));
-void FUN_L00_00235d80_236268(void) __asm__("FUN_L00_00235d80");
-float FUN_002132a8_236268(float, float) __asm__("FUN_002132a8");
-void FUN_L00_00236268(void) {
-    int i;
-    FUN_L00_00235d80_236268();
-    for (i = 0; i < 100; i++) {
-        float margin, band, lo, hi;
-        int bands;
-        float *depth;
-        if (i < 10) margin = star_init_limit0_gp;
-        else if (i < 20) margin = star_init_limit1_gp;
-        else margin = star_init_limit2_gp;
-        bands = D_L00_0015F75C_236268;
-        band = 232.0f;
-        lo = 116.0f;
-        band = (band - (margin + margin)) / (float)bands;
-        lo = (margin - lo) + (float)(i % bands) * band;
-        hi = lo + band;
-        depth = &D_L00_0017E660_236268[i].z;
-        D_L00_0017E660_236268[i].x = FUN_002132a8_236268(margin - 17.0f, 17.0f - margin);
-        D_L00_0017E660_236268[i].y = FUN_002132a8_236268(lo, hi);
-        *depth = FUN_002132a8_236268(-0.4f, 0.4f);
-        D_L00_0017E660_236268[i].w = FUN_002132a8_236268(-0.6f, 0.6f);
-        *depth += FUN_002132a8_236268(-0.4f, 0.4f);
-        D_L00_0017E660_236268[i].w += FUN_002132a8_236268(-0.6f, 0.6f);
-        *depth += FUN_002132a8_236268(-0.4f, 0.4f);
-        D_L00_0017E660_236268[i].w += FUN_002132a8_236268(-0.6f, 0.6f);
-    }
-}
-#endif
+/* Fills the 100 hud stars with random positions and drift. */
+/* Ported from rac1-decomp (src/overlays/shared/hud_00235960.c: func_L00_00236BF8), where it is exact; names translated to the US level program. */
 
+extern f32 random_float_between(f32, f32) __asm__("FUN_002132a8");
 typedef struct {
     float x, y, vx, vy;
 } Star_236458;
 
-extern int D_L00_0015F3F8;
 extern Star_236458 D_L00_0017E660[];
+extern int D_L00_0015F75C_gp __asm__("D_L00_0015F75C") __attribute__((sda));
+
+void FUN_L00_00236268(HudElem *elem) {
+    int i;
+    float margin, lo, band, hi;
+    int bands;
+
+    FUN_L00_00235d80(elem);
+    for (i = 0; i < 100; i++) {
+        margin = star_init_limit0_gp;
+        if (i >= 10) {
+            margin = star_init_limit1_gp;
+            if (i >= 20) margin = star_init_limit2_gp;
+        }
+        bands = D_L00_0015F75C_gp;
+        band = (232.0f - (margin + margin)) / (float)bands;
+        lo = (margin - 116.0f) + (float)(i % bands) * band;
+        hi = lo + band;
+        D_L00_0017E660[i].x = random_float_between(margin - 17.0f, 17.0f - margin);
+        D_L00_0017E660[i].y = random_float_between(lo, hi);
+        D_L00_0017E660[i].vx = random_float_between(-0.4f, 0.4f);
+        D_L00_0017E660[i].vy = random_float_between(-0.6f, 0.6f);
+        D_L00_0017E660[i].vx += random_float_between(-0.4f, 0.4f);
+        D_L00_0017E660[i].vy += random_float_between(-0.6f, 0.6f);
+        D_L00_0017E660[i].vx += random_float_between(-0.4f, 0.4f);
+        D_L00_0017E660[i].vy += random_float_between(-0.6f, 0.6f);
+    }
+    /* Fakematch: keeping bands live past the loop gives retail's schedule of the loop body. */
+    bands++;
+    bands--;
+}
+
+
+extern int D_L00_0015F3F8;
 void FUN_L00_00235ea0();
 
 /* Moves every other star by its velocity and bounces it off a box whose size
  * depends on the star index. */
-void FUN_L00_00236458(void) {
+void FUN_L00_00236458(HudElem *e) {
     Star_236458 *p;
     int i;
     float lim, hx, hy, nhx, nhy;
 
-    FUN_L00_00235ea0();
+    FUN_L00_00235ea0(e);
     p = &D_L00_0017E660[D_L00_0015F3F8 % 2];
     i = D_L00_0015F3F8 % 2;
     for (; i < 100; i += 2, p += 2) {
@@ -436,7 +437,7 @@ int FUN_L00_002365a8(HudElem *e) {
 
     e->w = D_L00_0015F760;
     e->h = D_L00_0015F764;
-    FUN_L00_00235a70(e, &x, &y);
+    hud_screen_position(e, &x, &y);
     FUN_L00_00235ad8(e, &x, &y, e->unk6C, 0);
     w = D_L00_0015F760;
     h = D_L00_0015F764;
@@ -543,7 +544,7 @@ int FUN_L00_00236e50(HudElem *e) {
 
     e->w = D_L00_0015F760;
     e->h = D_L00_0015F764;
-    FUN_L00_00235a70(e, &x, &y);
+    hud_screen_position(e, &x, &y);
     FUN_L00_00235ad8(e, &x, &y, e->unk6C, 0);
     image = FUN_0023b208(*(int *)e, 0);
     FUN_L00_0023bac0(image, x + e->unk48, y + e->unk4A,
@@ -593,7 +594,8 @@ int FUN_L00_00236e50(HudElem *e) {
 #endif
 void FUN_L00_00235ea0();
 /* Calls FUN_L00_00235ea0. */
-void FUN_L00_002371e0(void) {
+void mine_blend_color(void) __asm__("FUN_L00_002371e0");
+void mine_blend_color(void) {
     FUN_L00_00235ea0();
 }
 #ifndef NON_MATCHING
@@ -657,14 +659,16 @@ int FUN_L00_00237200(HudElem *e) {
         D_L00_0017E530[i] = 0;
         width = FUN_001fb090((const char *)D_L00_0017E530, -1);
         left = 0xe0 - (width >> 1);
-        other_width = FUN_001fb090((const char *)&D_L00_0017E530[1] + i, -1);
-        other_left = 0xe0 - (other_width >> 1);
-        if (left >= other_left) {
-            width = other_width;
-        } else {
-            other_left = left;
+        {
+            int other_width = FUN_001fb090((const char *)&D_L00_0017E530[1] + i, -1);
+            other_left = 0xe0 - (other_width >> 1);
+            if (left >= other_left) {
+                width = other_width;
+            } else {
+                other_left = left;
+            }
+            left = other_left;
         }
-        left = other_left;
         other_left = left + 0x20;
         FUN_0023b4d8(FUN_0023b208(0x7580, 0), other_left, y, width, 0x36, alpha);
         other_left = color;
@@ -708,10 +712,11 @@ int FUN_L00_00237200(HudElem *e) {
                     const char *message;
                     interval = pal_mode != 0 ? 3000 : 3600;
                     seconds = elapsed / interval;
-                    other_width = interval / 60;
-                    remainder = elapsed - seconds * interval;
-                    other_left = remainder / other_width;
-                    remainder = (remainder - other_left * other_width) * 100 / other_width;
+                    other_width = interval;
+                    interval /= 60;
+                    remainder = elapsed - seconds * other_width;
+                    other_left = remainder / interval;
+                    remainder = (remainder - other_left * interval) * 100 / interval;
                     line = freeze_stats_time_format;
                     message = FUN_00203ad8(0x531b);
                     sprintf(text, line, message, seconds, other_left, remainder);

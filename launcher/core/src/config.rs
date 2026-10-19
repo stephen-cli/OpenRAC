@@ -2,6 +2,7 @@
 //! it runs are. Stored as `launcher.json` in the per-user config folder (the
 //! app decides where; see `src-tauri/src/lib.rs`), never in the checkout.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,9 @@ pub struct Config {
     /// Show what contributors use: builds, checks, toolchains, progress.
     /// Off, the launcher shows a player's three steps: set up from your disc, play, edit levels.
     pub developer: bool,
+    /// The save editor shows every field of a save, raw bytes included (for debugging). Off, the
+    /// player's safe set only.
+    pub save_editor_advanced: bool,
     /// Where games are set up from the player's discs (OpenGOAL's install
     /// directory); unset: the launcher's per-user data folder.
     pub install_dir: Option<PathBuf>,
@@ -33,10 +37,23 @@ pub struct Config {
     pub last_version: Option<String>,
     /// Discord Rich Presence enabled (default true).
     pub discord_rpc: bool,
+    /// Look for a new launcher when it starts (default true). Off, it looks only when asked
+    /// (Settings, "Check now"); an update is never installed without the player's click.
+    pub check_updates: bool,
     /// Custom Discord application ID (optional).
     pub discord_client_id: Option<String>,
     /// The page layout: "compact" (default) or "classic", the original design (src/layouts/).
     pub layout: String,
+    /// The game writes a detailed log (OPENRAC_LOG=verbose): level loads, controller changes,
+    /// what the port is missing. Off by default, so a log stays small.
+    pub detailed_game_log: bool,
+    /// For each game, the time (seconds since 1970) of the newest crash report the player has
+    /// dismissed: crashes up to then are seen, and no notice, button or mark is shown for them.
+    pub crashes_seen: BTreeMap<String, u64>,
+    /// For developers with more than one disc of a game in the games folder: the version each
+    /// game's page plays (`rac1` -> `rac1/ntsc`). Used only with developer tools on
+    /// (disc_choice.rs); without one, the disc set up, as for a player.
+    pub disc_choice: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -49,11 +66,16 @@ impl Default for Config {
             install_dir: None,
             discs_dir: None,
             developer: false,
+            save_editor_advanced: false,
             setup_complete: false,
             last_version: None,
             discord_rpc: true,
+            check_updates: true,
             discord_client_id: None,
             layout: "compact".into(),
+            detailed_game_log: false,
+            crashes_seen: BTreeMap::new(),
+            disc_choice: BTreeMap::new(),
         }
     }
 }
@@ -103,5 +125,17 @@ mod tests {
         assert!(text.contains("\"setupComplete\": true"), "{text}");
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(load(&path), Config::default());
+    }
+
+    /// A settings file from before the option looks for updates, and turning it off is kept.
+    #[test]
+    fn checks_for_updates_unless_turned_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("launcher.json");
+        std::fs::write(&path, r#"{"setupComplete": true}"#).unwrap();
+        assert!(load(&path).check_updates);
+        save(&path, &Config { check_updates: false, ..Config::default() }).unwrap();
+        assert!(!load(&path).check_updates);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"checkUpdates\": false"));
     }
 }

@@ -170,7 +170,7 @@ mod tests {
         let config = Config { root: Some(checkout()), ..Config::default() };
         let library = library(&config).unwrap();
         assert_eq!(library.actions_error, None);
-        assert_eq!(library.games.len(), 4);
+        assert_eq!(library.games.len(), 5);
         assert!(library.repository.iter().any(|a| a.id == "discs"));
         let json = serde_json::to_value(&library).unwrap();
         // The version's own fields sit next to status and actions.
@@ -220,10 +220,10 @@ mod tests {
         let scope = Scope::Version("rac1/pal".into());
         // Listed without a level, an action stands for level 00.
         let err = plan(&config, &scope, "editor-preview", &Inputs::default()).unwrap_err();
-        assert!(err.contains("assets/levels/rac1/level_00/project.godot"), "{err}");
+        assert!(err.contains("assets/levels/rac1/pal/level_00/project.godot"), "{err}");
 
         // Each level is a project of its own: the one asked for is the one opened.
-        let project = dir.path().join("assets/levels/rac1/level_07");
+        let project = dir.path().join("assets/levels/rac1/pal/level_07");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("project.godot"), "").unwrap();
         assert!(
@@ -233,7 +233,7 @@ mod tests {
         let plan = plan(&config, &scope, "editor-preview", &Inputs { level: Some(7), ..Inputs::default() }).unwrap();
         assert_eq!(plan.program, PathBuf::from("/usr/bin/godot"));
         assert!(plan.detached);
-        assert_eq!(plan.args, ["--path", "assets/levels/rac1/level_07", "res://levels/level_07/level_07.tscn"]);
+        assert_eq!(plan.args, ["--path", "assets/levels/rac1/pal/level_07", "res://levels/level_07/level_07.tscn"]);
     }
 
     /// The port is one program for Windows, Linux and macOS: building it and playing it are
@@ -271,6 +271,27 @@ mod tests {
         }
     }
 
+    /// NTSC-U's levels are read from its own disc into a folder of their own, checked by its own
+    /// program, never over PAL's: the two versions share the game's data folder.
+    #[test]
+    fn ntsc_levels_stay_apart_from_pals() {
+        let file = actions::load(&checkout()).unwrap();
+        let (pal, ntsc) = (Scope::Version("rac1/pal".into()), Scope::Version("rac1/ntsc".into()));
+        let made = |scope: &Scope| file.find(scope, "port-levels").and_then(|a| a.artifact.clone()).unwrap();
+        let (pal_made, ntsc_made) = (made(&pal), made(&ntsc));
+        let folder = |path: &str| path.rsplitn(3, '/').nth(2).unwrap().to_string();
+        assert_ne!(folder(&pal_made), folder(&ntsc_made));
+        assert!(!ntsc_made.starts_with(&format!("{}/", folder(&pal_made))), "{ntsc_made} is inside PAL's levels");
+        let check = file.find(&ntsc, "port-levels-check").expect("rac1/ntsc port-levels-check");
+        assert!(check.needs.iter().any(|n| n.path == ntsc_made));
+        assert!(check.makes.as_deref().is_some_and(|m| m.starts_with(&folder(&ntsc_made))), "{:?}", check.makes);
+        let at = check.args.iter().position(|a| a == "--levels").expect("the check names its levels");
+        assert_eq!(check.args[at + 1].trim_start_matches("{root}/"), folder(&ntsc_made));
+        assert!(check.artifact.as_deref().is_some_and(|a| a.contains("openrac-rac1-ntsc")));
+        let levels = file.find(&ntsc, "port-levels").unwrap();
+        assert!(levels.args.iter().any(|a| a == &folder(&ntsc_made)));
+    }
+
     /// The copy an installer carries (tools/bundle_standalone.py), when one was put together in
     /// build/standalone: its actions are valid, need no Python to play, and write nothing in it.
     #[test]
@@ -284,7 +305,7 @@ mod tests {
         assert_eq!(file.problems(&catalog), Vec::<String>::new());
         let scope = Scope::Version("rac1/pal".into());
         let levels = file.find(&scope, "port-levels").expect("port-levels");
-        assert!(levels.args.iter().any(|a| a == "{data}/port"), "{:?}", levels.args);
+        assert!(levels.args.iter().any(|a| a == "{data}/port/pal"), "{:?}", levels.args);
         let play = file.find(&scope, "play").expect("play");
         assert!(play.needs.iter().all(|n| n.path.starts_with("{data}/")), "{:?}", play.needs);
         let check = file.find(&scope, "port-levels-check").expect("port-levels-check");
@@ -332,7 +353,7 @@ mod tests {
                     if path.exists() {
                         true
                     } else if !cfg!(windows) && artifact.ends_with(".exe") {
-                        crate::under(&root, &artifact[..artifact.len() - 4]).exists()
+                        crate::program_path(crate::under(&root, &artifact[..artifact.len() - 4])).exists()
                     } else {
                         false
                     }

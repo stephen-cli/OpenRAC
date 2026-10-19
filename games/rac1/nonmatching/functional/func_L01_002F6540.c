@@ -1,4 +1,4 @@
-/* functional: medium. Same reads, writes, calls and arguments in the same order as retail (no COP2/VU0 code; the lq/sq pairs are plain 16-byte copies, the jump table is a switch); the two divisions by a record float are guarded so that a zero divisor gives FLT_MAX as on the PS2; differs otherwise only in compiler choices. */
+/* functional: medium. fcheck: unchecked (level/overlay function; fcheck runs boot-executable functions only; OpenRAC tools/fcheck_gate.py, 2026-10-18). Same reads, writes, calls and arguments in the same order as retail (no COP2/VU0 code; the lq/sq pairs are plain 16-byte copies, the jump table is a switch); the two divisions by a record float are guarded so that a zero divisor gives FLT_MAX as on the PS2; differs otherwise only in compiler choices. */
 /* Level 1 (Novalis) per-frame update of a moby that follows a path (a "rail" mover with a state record
  * rec = m[0x78]; its follower state is rec+0x60, "pf": pf[0] = current point, pf[4] direction, pf[5] mode,
  * pf[0x10] the point list (count then 16-byte points), pf[0x14] the path index into D_L01_001B0C30). Called from the
@@ -41,7 +41,7 @@ extern float func_001F9D10_2F6540(void *, void *) __asm__("func_001F9D10");
 extern int func_002140B0_2F6540(int) __asm__("func_002140B0");
 extern int func_L00_00258BC8_2F6540(int, int) __asm__("func_L00_00258BC8");
 extern int func_001FA898_2F6540(float) __asm__("func_001FA898");
-extern int func_001E9730_2F6540(char *, int, int) __asm__("func_001E9730");
+extern void func_001E9730_2F6540(char *, int, int) __asm__("func_001E9730");   /* STUB_printf: returns nothing */
 extern float func_002140F8_2F6540(float, float) __asm__("func_002140F8");
 extern float func_L00_001FF860_2F6540(float, float) __asm__("func_L00_001FF860");
 extern void func_L01_0028C1D8_2F6540(char *) __asm__("func_L01_0028C1D8");

@@ -1,3 +1,4 @@
+/* fcheck: unchecked (level/overlay function; fcheck runs boot-executable functions only; OpenRAC tools/fcheck_gate.py, 2026-10-18). */
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Native PAL bolt burst, func_L00_00261B00 (0x8CC bytes), which the decompilation
  * still has as assembly: the bolts a broken crate or a dead creature throws out,
@@ -10,7 +11,7 @@ extern void func_001F9BC0(void *);
 extern unsigned char *func_L00_0025D390(int);
 extern int func_002140B0(int);
 extern int func_001F9850(int);
-extern int func_001E9730();
+extern void func_001E9730();   /* STUB_printf: returns nothing (v0 is left as it was on entry); no caller here reads a result */
 extern float func_001FA888(int);
 extern int func_00120778(float);
 extern float func_00214158(void);

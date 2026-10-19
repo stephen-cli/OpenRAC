@@ -40,8 +40,13 @@
 
 #include <cfenv>
 #include <cmath>
+#include <csignal>
+#include <ctime>
 
+#include "common/build_info.h"
+#include "common/crash.h"
 #include "common/log.h"
+#include "common/system_info.h"
 #ifdef OPENRAC_HAS_DISC
 #include "assets/disc/disc.h"
 #endif
@@ -77,8 +82,12 @@ int openrac_game_no_card = 0;
 int openrac_game_start_level = -1;
 void (*openrac_game_on_frame)(unsigned frame) = nullptr;
 int (*openrac_game_bolts)(void) = nullptr;
-int (*openrac_game_in_cutscene)(void) = nullptr;
+int (*openrac_game_skip_buttons)(void) = nullptr;
 void (*openrac_game_skip)(void) = nullptr;
+int (*openrac_game_mode)(uint32_t* mode) = nullptr;
+int (*openrac_game_hero_position)(float xyz[3]) = nullptr;
+int (*openrac_game_hero)(float position[3], float rotation[3], int32_t* state) = nullptr;
+const openrac_front_end* openrac_game_front_end = nullptr;
 }
 
 namespace {
@@ -156,6 +165,35 @@ fs::path default_settings() {
     return data_home() / "settings" / (std::string(openrac_game.id) + ".ini");
 }
 
+// This program's version: "rac1-pal" -> pal.
+std::string game_version() {
+    const std::string id = openrac_game.id;
+    const auto dash = id.find('-');
+    return dash == std::string::npos ? id : id.substr(dash + 1);
+}
+
+// Each version's levels sit in a folder of their own (<data>/port/<version>, the checkout's
+// assets/port/<game>/<version>). PAL's levels extracted before that layout sit straight in the
+// folder above (the only version that had them) and are read there until extracted again, whether
+// the folder came from --levels or the default.
+fs::path levels_or_flat(const fs::path& own) {
+    std::error_code ec;
+    const fs::path flat = own.parent_path();
+    if (game_version() == "pal" && own.filename() == "pal" && !fs::exists(own / "level_99" / "manifest.json", ec) &&
+        fs::exists(flat / "level_99" / "manifest.json", ec)) {
+        log::warn("levels: reading the ones extracted before each version had a folder, in {} (extract again to "
+                   "move them into {})",
+                   flat.string(), own.string());
+        return flat;
+    }
+    return own;
+}
+
+// Where the levels are without --levels.
+fs::path default_levels(const fs::path& data) {
+    return levels_or_flat(data / "port" / game_version());
+}
+
 Options parse(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; i++) {
@@ -221,7 +259,120 @@ Options parse(int argc, char** argv) {
     return o;
 }
 
+// The command line as it was typed, quoted where needed, with the home folder as ~.
+std::string command_line(int argc, char** argv) {
+    std::string line;
+    for (int i = 0; i < argc; ++i) {
+        std::string a = i == 0 ? program_name() : std::string(argv[i]);
+        if (a.find_first_of(" \"'") != std::string::npos || a.empty()) {
+            a = "\"" + a + "\"";
+        }
+        line += (i == 0 ? "" : " ") + a;
+    }
+    return line;
+}
+
+// This run's log (common/log.h: the earlier runs' moved along) and its header; crash reports go
+// to <data>/crashes (common/crash.h).
+void open_session(int argc, char** argv) {
+    const long offset = crash::local_offset();
+    char started[40];
+    crash::format_time(static_cast<long long>(std::time(nullptr)), offset, started, sizeof(started));
+    if (!log::open_session(g_options.data, program_name(), 5)) {
+        log::warn("the log cannot be written in {}", g_options.data.string());
+    }
+    crash::configure(g_options.data / "crashes", program_name(), started);
+    const char* level = log::level() <= log::Level::Debug     ? "debug"
+                        : log::level() <= log::Level::Verbose ? "verbose"
+                                                              : "info (OPENRAC_LOG=verbose, or verbose_log = 1 in the settings, for more)";
+    log::header("==== OpenRAC session ====");
+    log::header(std::format("session   {}", started));
+    log::header(std::format("openrac   {}, commit {}", build_info::version(), build_info::commit()));
+    log::header(std::format("game      {}: {}, disc {}", openrac_game.id, openrac_game.title, openrac_game.serial));
+    log::header(std::format("system    {}, {} of memory", system_info::os(), system_info::memory()));
+    log::header(std::format("cpu       {}", system_info::cpu()));
+    log::header(std::format("command   {}", command_line(argc, argv)));
+    log::header(std::format("log       {}", level));
+    log::header("=========================");
+}
+
+// What a crash report says the game was doing (common/crash.h): sampled each frame.
+void sample_state() {
+    crash::GameState s;
+    s.frame = g_frame;
+    const int level = openrac_game_loaded_overlay();
+    s.level = level == OPENRAC_OVERLAY_EXE ? -1 : level;
+    if (openrac_game_mode != nullptr) {
+        s.has_mode = openrac_game_mode(&s.mode) != 0;
+    }
+    if (openrac_game_hero_position != nullptr) {
+        s.has_hero = openrac_game_hero_position(s.hero) != 0;
+    }
+    crash::set_state(s);
+}
+
+// [testing only] OPENRAC_CRASH_TEST=KIND:FRAME stops the program on purpose at that frame, to check
+// the crash report: segv (an access to game memory that is not mapped), host (to a host address
+// that is not), abort, fpe (a raised SIGFPE), fatal (log::fatal), trap (the game's trap).
+void crash_test() {
+    static const char* test = std::getenv("OPENRAC_CRASH_TEST");
+    if (test == nullptr) {
+        return;
+    }
+    char kind[16] = {};
+    long frame = 0;
+    if (std::sscanf(test, "%15[a-z]:%ld", kind, &frame) < 1 || g_frame != frame) {
+        return;
+    }
+    log::warn("OPENRAC_CRASH_TEST: stopping on purpose ({})", kind);
+    const std::string k = kind;
+    if (k == "segv") {
+        *static_cast<volatile std::uint32_t*>(G(0x0F000000u)) = 1;
+    } else if (k == "host") {
+        *reinterpret_cast<volatile std::uint32_t*>(static_cast<std::uintptr_t>(16)) = 1;
+    } else if (k == "abort") {
+        std::abort();
+    } else if (k == "fpe") {
+        std::raise(SIGFPE);
+    } else if (k == "fatal") {
+        log::fatalf("OPENRAC_CRASH_TEST: a fatal error on purpose");
+    } else if (k == "trap") {
+        openrac_game_crash("the game raised a trap (a failed assertion of its own): OPENRAC_CRASH_TEST");
+    }
+}
+
+// OPENRAC_REACH=FILE: the functions without C (and the zero-filled calls) this run reached, with
+// their calls (guest.h, openrac_reach_site; port/tools/regress reach). Written at exit and every
+// 600 frames, so a run that crashes still leaves most of it.
+void write_reach() {
+    static const char* path = std::getenv("OPENRAC_REACH");
+    if (path != nullptr && *path != 0 && openrac_guest_write_reach(path, openrac_game.id, g_frame) == 0) {
+        log::warn("OPENRAC_REACH: cannot write {}", path);
+    }
+}
+
+// OPENRAC_AUDIO_TICKED=1: no sound device. The game's sounds advance by one tick's samples each
+// tick (rendered and dropped), and streams are read when they start, so every answer the game
+// gets back from the sound engine (a voice's state, a stream's position) lands on the same tick, however
+// fast the machine runs it: port/tools/regress's runs repeat. A device pulls at the real clock's
+// rate, which an uncapped run outpaces by a varying amount.
+bool audio_ticked() {
+    static const bool on = std::getenv("OPENRAC_AUDIO_TICKED") != nullptr;
+    return on;
+}
+
+void audio_tick() {
+#ifdef OPENRAC_FRONTEND
+    if (!audio_ticked() || !g_window) {
+        return;
+    }
+    static std::vector<std::int16_t> samples(static_cast<std::size_t>(platform::kAudioRate / tick_rate()) * 2);
+    openrac_sound_render(samples.data(), samples.size() / 2);
+#endif
+}
+
 void finish() {
+    write_reach();
     openrac_guest_report_missing();
     log::info("{} frames", g_frame);
 }
@@ -235,6 +386,12 @@ extern "C" {
 // What the game's renderers drew since the last frame (openrac_game_draw), and whether it reports.
 static unsigned g_draws = 0;
 static bool g_reports_draws = false;
+
+void openrac_game_crash(const char* reason) {
+    log::error("{}", reason);
+    crash::report(reason, crash::Kind::Trap);
+    std::_Exit(3);
+}
 
 void openrac_game_draw(unsigned layers) {
     g_draws |= layers;
@@ -251,16 +408,24 @@ void openrac_game_draw(unsigned layers) {
 // OPENRAC_WRITE=FRAME:ADDRESS:VALUE[:FRAMES],...: a 32-bit word written into the game's memory at
 // each vertical blank from FRAME for FRAMES blanks (default 1), hexadecimal address and value; the
 // old interpreter's --write, for getting somewhere directly (0x15EE84, the level being played, set
-// around a new game's transition loads that level).
+// around a new game's transition loads that level). cFRAME counts the window's frames from control
+// instead, as OPENRAC_PRESS's c entries do (port/tools/regress: the same moment in every version).
 static void apply_writes() {
     static const char* script = std::getenv("OPENRAC_WRITE");
     if (script == nullptr) {
         return;
     }
+    std::int64_t since = -1;
+#ifdef OPENRAC_FRONTEND
+    since = g_window ? frontend::since_control() : -1;
+#endif
     for (const char* at = script; at && *at;) {
         unsigned long frame = 0, address = 0, value = 0, length = 1;
-        if (std::sscanf(at, "%lu:%lx:%lx:%lu", &frame, &address, &value, &length) >= 3
-            && g_frame >= frame && g_frame < frame + length) {
+        const bool from_control = *at == 'c';
+        const std::int64_t now = from_control ? since : static_cast<std::int64_t>(g_frame);
+        if (std::sscanf(at + (from_control ? 1 : 0), "%lu:%lx:%lx:%lu", &frame, &address, &value, &length) >= 3
+            && now >= 0 && now >= static_cast<std::int64_t>(frame)
+            && now < static_cast<std::int64_t>(frame + length)) {
             const std::uint32_t word = static_cast<std::uint32_t>(value);
             std::memcpy(G(static_cast<gaddr>(address)), &word, 4);
         }
@@ -316,6 +481,9 @@ int openrac_game_vsync(void) {
     }
 #endif
     g_frame++;
+    audio_tick();
+    sample_state();
+    crash_test();
     // The level being played, once per change: the launcher reads this line for Discord's presence.
     static int shown_level = OPENRAC_OVERLAY_EXE;
     static int shown_bolts = -1;
@@ -338,6 +506,9 @@ int openrac_game_vsync(void) {
     }
     if (openrac_game_on_frame != nullptr) {
         openrac_game_on_frame(static_cast<unsigned>(g_frame));
+    }
+    if (g_frame % 600 == 0) {
+        write_reach();
     }
     if (g_options.frames >= 0 && g_frame >= g_options.frames) {
         std::exit(0);  // finish() runs at exit
@@ -699,6 +870,23 @@ int openrac_game_hud_side(void) {
     return 0;
 }
 
+float openrac_game_picture_wider(void) {
+#ifdef OPENRAC_FRONTEND
+    if (g_window) {
+        return frontend::picture_wider();
+    }
+#endif
+    return 1.0f;
+}
+
+int openrac_game_strafe_mode(void) {
+#ifdef OPENRAC_FRONTEND
+    return static_cast<int>(settings::get().strafe);
+#else
+    return 0;
+#endif
+}
+
 int openrac_game_ui_quad(const openrac_game_ui_rect* quad) {
 #ifdef OPENRAC_FRONTEND
     if (g_window) {
@@ -762,9 +950,30 @@ gaddr openrac_game_text(int id) {
     return 0;
 }
 
+// [verbose log] The first pad's buttons each time they change, and its sticks when one moves far.
+static void log_pad(int port, const uint16_t* buttons, const uint8_t analog[4]) {
+    static uint16_t last = 0xFFFF;
+    static uint8_t last_analog[4] = {0x80, 0x80, 0x80, 0x80};
+    if (port != 0 || !log::verbose_on()) {
+        return;
+    }
+    bool moved = false;
+    for (int i = 0; i < 4; ++i) {
+        moved = moved || std::abs(int(analog[i]) - int(last_analog[i])) >= 0x30;
+    }
+    if (*buttons == last && !moved) {
+        return;
+    }
+    last = *buttons;
+    std::memcpy(last_analog, analog, 4);
+    log::verbose("frame {}: pad 0 buttons {:#06x} (active low), sticks {} {} {} {}", g_frame, *buttons, analog[0],
+                 analog[1], analog[2], analog[3]);
+}
+
 int openrac_game_pad(int port, uint16_t* buttons, uint8_t analog[4]) {
 #ifdef OPENRAC_FRONTEND
     if (g_window && frontend::pad(port, buttons, analog)) {
+        log_pad(port, buttons, analog);
         return 1;
     }
 #endif
@@ -833,6 +1042,7 @@ static void load_level_program(int level) {
                    level, path.string());
         return;
     }
+    log::verbose("level {}'s program: {} bytes", level, bytes.size());
     std::uint32_t entry = 0;
     for (std::size_t at = 0; at + 16 <= bytes.size();) {
         std::uint32_t head[4];
@@ -874,6 +1084,7 @@ static int check_levels(const fs::path& levels) {
     ids.push_back(98);
     ids.push_back(99);
     int bad = 0;
+    int newer = 0;  // levels of a newer format than this game reads: the game is out of date
     for (const int id : ids) {
         const fs::path dir = levels / std::format("level_{:02d}", id);
         viewer::LevelData level;
@@ -881,6 +1092,7 @@ static int check_levels(const fs::path& levels) {
         if (!viewer::load_level(dir, level, error)) {
             log::error("level {:02d}: {}", id, error);
             ++bad;
+            newer += error.find("newer than this game") != std::string::npos;
             continue;
         }
         // The flight world has only its ships' textures; every other one has ground to stand on.
@@ -897,6 +1109,12 @@ static int check_levels(const fs::path& levels) {
         }
         log::info("level {:02d}: {} models, {} vertices, {} textures", id, level.models.size(), level.vertices.size(),
                   level.images.size());
+    }
+    if (newer > 0) {
+        log::error("{} of {} levels in {} are of a newer format than this game reads: build the game again (the "
+                   "launcher's \"Build the game\"; tools/build_port.py)",
+                   newer, ids.size(), levels.string());
+        return 1;
     }
     if (bad > 0) {
         log::error("{} of {} levels in {} cannot be drawn: read them from the disc again (the launcher's "
@@ -922,6 +1140,7 @@ static int check_levels(const fs::path& levels) {
 // when rounded to nearest (a moby of rac1's level 6 shrank to a negative scale).
 // OPENRAC_ROUND_NEAREST=1 keeps the host's mode, to compare.
 static int run_game_as_the_ee() {
+    crash::prepare_thread();  // the game may run on a thread of its own (platform/pump.h)
     if (std::getenv("OPENRAC_ROUND_NEAREST") == nullptr) {
         std::fesetround(FE_TOWARDZERO);
     }
@@ -937,7 +1156,7 @@ int main(int argc, char** argv) {
     g_options = parse(argc, argv);
     if (g_options.check_levels) {
 #ifdef OPENRAC_FRONTEND
-        return check_levels(g_options.levels.empty() ? g_options.data / "port" : g_options.levels);
+        return check_levels(g_options.levels.empty() ? default_levels(g_options.data) : levels_or_flat(g_options.levels));
 #else
         log::fatalf("--check-levels needs a build with the window (it reads the levels as the window does)");
 #endif
@@ -955,7 +1174,7 @@ int main(int argc, char** argv) {
             g_options.data.string()
         );
     }
-    log::set_file((g_options.data / (program_name() + ".log")).string().c_str());
+    open_session(argc, argv);
     log::info("{}: {}", program_name(), openrac_game.title);
 
     runtime::Memory::create();
@@ -991,7 +1210,12 @@ int main(int argc, char** argv) {
     if (g_options.window) {
         std::string why;
         settings::load(g_options.settings);
-        fs::path levels =g_options.levels.empty() ? g_options.data / "port" : g_options.levels;
+        log::header("settings  " + settings::summary(), false);
+        if (settings::get().verbose_log && log::level() > log::Level::Verbose) {
+            log::set_level(log::Level::Verbose);
+            log::info("the settings ask for the detailed log (verbose_log = 1)");
+        }
+        fs::path levels = g_options.levels.empty() ? default_levels(g_options.data) : levels_or_flat(g_options.levels);
         if (!frontend::open(openrac_game.id, levels, why)) {
             log::fatalf("no window: {}", why);
         }
@@ -999,9 +1223,10 @@ int main(int argc, char** argv) {
         if (g_options.debug_overlay) {
             frontend::debug_overlay::request();
         }
-        // The game's sounds (openrac/sound_engine.h), rendered on the output's thread.
+        // The game's sounds (openrac/sound_engine.h), rendered on the output's thread; with
+        // OPENRAC_AUDIO_TICKED, by the game's ticks instead (audio_tick).
         static std::unique_ptr<platform::AudioOutput> sound_output =
-            platform::AudioOutput::open(why, [](std::span<std::int16_t> samples) {
+            audio_ticked() ? nullptr : platform::AudioOutput::open(why, [](std::span<std::int16_t> samples) {
                 openrac_sound_render(samples.data(), samples.size() / 2);
                 // The player's volume (settings.h): at 0 the output is silence itself.
                 if (const float gain = settings::output_gain(); gain < 1.0f) {
@@ -1010,7 +1235,10 @@ int main(int argc, char** argv) {
                     }
                 }
             });
-        if (!sound_output) {
+        if (audio_ticked()) {
+            openrac_stream_read_at_once(1);
+            log::info("OPENRAC_AUDIO_TICKED: no sound device; the sounds advance with the game's ticks");
+        } else if (!sound_output) {
             log::warn("no sound: {}", why);
         }
     }

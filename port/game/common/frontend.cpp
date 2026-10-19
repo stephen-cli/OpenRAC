@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <chrono>
 #include <thread>
 #include <unordered_map>
@@ -52,6 +54,11 @@ extern "C" {
 extern const unsigned char openrac_icon_png[];
 extern const unsigned int openrac_icon_png_size;
 }
+
+// The game's name and version, "Ratchet & Clank (PAL)" (cmake/Games.cmake).
+#ifndef OPENRAC_GAME_TITLE
+#define OPENRAC_GAME_TITLE "OpenRAC"
+#endif
 
 namespace openrac::frontend {
 
@@ -172,6 +179,29 @@ struct State {
 
 std::unique_ptr<State> g;
 
+// Where a scripted run is (port/tools/regress): the game mode as frame() last read it, and the
+// window frame at which the player got control (-1 before). Control is a level's game mode 0 (play)
+// held for kControlHold ticks in a row: a level's program can show mode 0 for a few ticks between
+// loading and its arrival scene, and those are no control.
+constexpr int kControlHold = 30;
+struct Route {
+    int level = -1;
+    int mode = -1;
+    int streak = 0;
+    std::int64_t control = -1;
+    // The window frame at which what plays now became skippable (-1 while nothing can be skipped):
+    // OPENRAC_PRESS's s entries count from it, so a skip falls on the same tick of a scene in every
+    // version, wherever the scene starts in window frames.
+    std::int64_t skippable_from = -1;
+};
+Route g_route;
+
+// Whether Start would skip what is playing now: a level's in-game scene (mode 2), or the flight
+// between planets (the boot program's mode 6).
+bool skippable() {
+    return (g_route.level >= 0 && g_route.mode == 2) || (g_route.level < 0 && g_route.mode == 6);
+}
+
 std::uint32_t word_at(std::span<const std::uint8_t> ram, std::uint32_t at) {
     std::uint32_t w = 0;
     at &= 0x01FFFFFF;
@@ -193,7 +223,8 @@ std::vector<std::uint8_t> direct_packets(std::span<const std::uint8_t> ram, std:
                                          std::vector<renderer::EffectStrip>* strips = nullptr,
                                          std::vector<renderer::ImageUpload>* uploads = nullptr,
                                          std::size_t* before_world = nullptr,
-                                         std::size_t* first_offscreen = nullptr) {
+                                         std::size_t* first_offscreen = nullptr,
+                                         std::size_t* world_marker = nullptr) {
     std::vector<std::uint8_t> vif;
     std::uint32_t tag_at = chain & 0x01FFFFF0;
     std::uint32_t stack[2] = {0, 0};
@@ -386,6 +417,16 @@ std::vector<std::uint8_t> direct_packets(std::span<const std::uint8_t> ram, std:
             // the direct renderer reads every one from its first tag.
             const std::uint32_t head[4] = {0, 0, 0, 0x50000000u | (imm & 0xFFFF)};
             direct_at = gif.size();
+            // The world's marker (renderer::GifInterpreter::kWorldMarker): one PACKED A+D write to
+            // the NOP register, put where the game's terrain pass runs.
+            if (world_marker != nullptr && *world_marker == SIZE_MAX && imm == 2) {
+                std::uint64_t value, address;
+                std::memcpy(&value, vif.data() + at + 16, 8);
+                std::memcpy(&address, vif.data() + at + 24, 8);
+                if ((address & 0xFF) == 0x7F && (value >> 48) == renderer::GifInterpreter::kWorldMarker) {
+                    *world_marker = direct_at;
+                }
+            }
             gif.insert(gif.end(), reinterpret_cast<const std::uint8_t*>(head),
                        reinterpret_cast<const std::uint8_t*>(head) + sizeof(head));
             gif.insert(gif.end(), vif.data() + at, vif.data() + at + size);
@@ -568,15 +609,14 @@ constexpr int kTitleWorld = 99;
 constexpr int kFlightWorld = 98;
 // Where the sky's textures are placed in the texture pool, past the GS's 14-bit blocks.
 constexpr std::uint32_t kSkyTextureKey = 0x20000;
-// The game mode word (PAL 0x15F6E8, NTSC-U 0x15F604); 6 in the boot program is the flight between
-// planets.
+// The game mode word, as the game's front end names it (rac1: port/game/rac1/host/front_end.c); 6
+// in the boot program is the flight between planets. 0 for a game without one.
 std::uint32_t game_mode_address() {
-    return g->game == "rac1-ntsc" ? 0x0015F604 : 0x0015F6E8;
+    return openrac_game_front_end != nullptr ? openrac_game_front_end->game_mode : 0;
 }
-// The directional light bank, in the executable's terms (relocated to the loaded program's copy):
-// PAL 0x19BEC0, NTSC-U 0x19BDC0.
+// The directional light bank, in the executable's terms (relocated to the loaded program's copy).
 gaddr light_bank_address() {
-    return g->game == "rac1-ntsc" ? 0x0019BDC0 : 0x0019BEC0;
+    return openrac_game_front_end != nullptr ? openrac_game_front_end->light_bank : 0;
 }
 
 // Uploads a level's geometry; while the boot program runs (the title and the main menu), the title
@@ -730,6 +770,22 @@ int hud_side() {
     // the difference, in pixels of which the game's picture has 512.
     const float wider = static_cast<float>(box.width) / (kTvAspect * static_cast<float>(box.height));
     return wider > 1.0f ? static_cast<int>(256.0f * (wider - 1.0f)) : 0;
+}
+
+float picture_wider() {
+    if (!g || !g->window) {
+        return 1.0f;
+    }
+    int window_width = 0;
+    int window_height = 0;
+    g->window->drawable_size(window_width, window_height);
+    const float aspect = picture_aspect(window_width, window_height);
+    const Box box = frame_box(window_width, window_height, aspect);
+    // As render() widens the frame's horizontal tangent: 1 / picture_scale.
+    if (aspect <= kTvAspect || box.width <= 0 || box.height <= 0) {
+        return 1.0f;
+    }
+    return std::max(1.0f, static_cast<float>(box.width) / (kTvAspect * static_cast<float>(box.height)));
 }
 
 void sky_sprite(const std::uint8_t* record, std::uint64_t tex0) {
@@ -988,6 +1044,107 @@ void set_window_icon(platform::Window& window) {
     stbi_image_free(rgba);
 }
 
+#if defined(__linux__) || defined(__FreeBSD__)
+static bool write_file_if_changed(const std::filesystem::path& path, const void* data, std::size_t size) {
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec) && std::filesystem::file_size(path, ec) == size) {
+        std::ifstream current(path, std::ios::binary);
+        if (current) {
+            std::vector<char> buffer(size);
+            if (current.read(buffer.data(), static_cast<std::streamsize>(size))) {
+                if (std::memcmp(buffer.data(), data, size) == 0) {
+                    return false;
+                }
+            }
+        }
+    }
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+    return out.good();
+}
+
+static void ensure_linux_desktop_integration(const std::string& game_id) {
+    const char* home = std::getenv("HOME");
+    if (home == nullptr || home[0] == '\0') {
+        return;
+    }
+    const std::filesystem::path home_path = home;
+    const std::filesystem::path icons_base = home_path / ".local/share/icons/hicolor";
+    const std::filesystem::path app_dir = home_path / ".local/share/applications";
+
+    bool icons_changed = false;
+    bool entries_changed = false;
+
+    // The game's icon for the desktop and taskbar (KDE Plasma, GNOME, etc.).
+    // Wayland compositors identify windows by their app_id (dev.openrac.<game_id>)
+    // and match them against .desktop files in ~/.local/share/applications/ and
+    // icons in ~/.local/share/icons/hicolor/.
+    const std::filesystem::path icon_dir = icons_base / "512x512/apps";
+    const std::string app_id = "dev.openrac." + game_id;
+    const std::string prog_id = "openrac-" + game_id;
+
+    if (openrac_icon_png_size > 0) {
+        icons_changed |= write_file_if_changed(icon_dir / (app_id + ".png"), openrac_icon_png, openrac_icon_png_size);
+        icons_changed |= write_file_if_changed(icon_dir / (prog_id + ".png"), openrac_icon_png, openrac_icon_png_size);
+    }
+
+    // Resolve current executable path for desktop entry.
+    std::error_code ec;
+    std::filesystem::path exe_path = std::filesystem::canonical("/proc/self/exe", ec);
+    if (ec || exe_path.empty()) {
+        exe_path = prog_id;
+    }
+
+    const auto make_entry = [&](const std::string& wm_class, bool hidden) {
+        std::string entry = "[Desktop Entry]\n";
+        entry += "Type=Application\n";
+        entry += "Name=";
+        entry += OPENRAC_GAME_TITLE;
+        entry += "\nComment=Play ";
+        entry += OPENRAC_GAME_TITLE;
+        entry += " with OpenRAC\n";
+        entry += "Exec=\"";
+        entry += exe_path.string();
+        entry += "\"\n";
+        entry += "Icon=" + app_id + "\n";
+        entry += "Terminal=false\n";
+        entry += "Categories=Game;\n";
+        entry += "StartupNotify=true\n";
+        entry += "StartupWMClass=" + wm_class + "\n";
+        if (hidden) {
+            entry += "NoDisplay=true\n";
+        }
+        return entry;
+    };
+
+    const std::string dev_entry = make_entry(app_id, false);
+    const std::string prog_entry = make_entry(prog_id, true);
+
+    entries_changed |= write_file_if_changed(app_dir / (app_id + ".desktop"), dev_entry.data(), dev_entry.size());
+    entries_changed |= write_file_if_changed(app_dir / (prog_id + ".desktop"), prog_entry.data(), prog_entry.size());
+
+    // Refresh system caches if files were added or modified
+    if (icons_changed) {
+        if (std::system(nullptr)) {
+            std::string cmd = "gtk-update-icon-cache -f -t \"" + icons_base.string() + "\" >/dev/null 2>&1 &";
+            (void)std::system(cmd.c_str());
+        }
+    }
+    if (entries_changed || icons_changed) {
+        if (std::system(nullptr)) {
+            std::string cmd1 = "update-desktop-database \"" + app_dir.string() + "\" >/dev/null 2>&1 &";
+            (void)std::system(cmd1.c_str());
+            std::string cmd2 = "kbuildsycoca6 >/dev/null 2>&1 &";
+            (void)std::system(cmd2.c_str());
+        }
+    }
+}
+#endif
+
 bool open(const std::string& game_id, const std::filesystem::path& levels, std::string& error) {
     g = std::make_unique<State>();
     g->game = game_id;
@@ -995,7 +1152,10 @@ bool open(const std::string& game_id, const std::filesystem::path& levels, std::
     // Before SDL starts: on Wayland the app id names the program to the desktop, and a machine
     // with two graphics cards is asked for the fast one.
     const std::string app_id = "dev.openrac." + game_id;
-    platform::set_app_metadata("OpenRAC: Ratchet & Clank", app_id.c_str());
+#if defined(__linux__) || defined(__FreeBSD__)
+    ensure_linux_desktop_integration(game_id);
+#endif
+    platform::set_app_metadata(OPENRAC_GAME_TITLE, app_id.c_str());
     platform::prefer_discrete_gpu();
     g->sdl = std::make_unique<platform::Platform>(platform::kVideo | platform::kGamepad | platform::kAudio);
     if (!g->sdl->ok()) {
@@ -1003,7 +1163,7 @@ bool open(const std::string& game_id, const std::filesystem::path& levels, std::
         return false;
     }
     platform::WindowConfig config;
-    config.title = "OpenRAC: Ratchet & Clank (native)";
+    config.title = OPENRAC_GAME_TITLE;
     config.width = 1280;
     config.height = 960;
     // The game ticks 60 times a second (main.cpp, every version) and the window draws at the
@@ -1027,6 +1187,9 @@ bool open(const std::string& game_id, const std::filesystem::path& levels, std::
     // few frames a second, which looks like a broken port (OPENRAC_SOFTWARE_GL=1: run it anyway).
     config.software = std::getenv("OPENRAC_SOFTWARE_GL") != nullptr ? platform::SoftwareRenderer::Allow
                                                                     : platform::SoftwareRenderer::Refuse;
+    // OPENRAC_HIDDEN=1: the window is made and drawn as always but never shown, for scripted runs
+    // that should not open windows on the player's screen (several can run at once).
+    config.hidden = std::getenv("OPENRAC_HIDDEN") != nullptr;
     g->window = platform::Window::open(config, error);
     if (!g->window) {
         return false;
@@ -1890,17 +2053,18 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
             return false;
         }
         if (window_key(event) || debug_overlay::event(event)
-            || debug_menu::event(event, g->game.c_str(), openrac_game_loaded_overlay())) {
+            || debug_menu::event(event, openrac_game_loaded_overlay())) {
             continue;  // the window's own keys; the debug overlay's; the port's debug menu (debug_menu.h)
         }
         g->input.handle_event(event);
     }
     g->input.update();
-    debug_menu::update(g->game.c_str(), openrac_game_loaded_overlay(), g->index);
     // The port's rows on the game's Video options page (options_menu.h): a changed one is applied.
-    if (options_menu::update(g->game.c_str(), openrac_game_loaded_overlay())) {
+    // Before the debug menu, which adds its entry to the Options list options_menu gives the game.
+    if (options_menu::update(openrac_game_loaded_overlay())) {
         apply_settings();
     }
+    debug_menu::update(openrac_game_loaded_overlay(), g->index);
 
     // The level program loaded now (-1: the boot program, title and menus), as the port knows it.
     const int level = openrac_game_loaded_overlay();
@@ -1939,6 +2103,68 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
                   state.camera_position[0], state.camera_position[1], state.camera_position[2], state.forward[0],
                   state.forward[1], state.forward[2], state.up[0], state.up[1], state.up[2], world_ran ? 1 : 0);
     }
+    // The game mode (the loaded level's copy, or the boot program's word) and control (Route).
+    {
+        std::uint32_t mode = 0;
+        const bool in_level = level >= 0 && level < 19;
+        if (!(in_level && openrac_game_mode != nullptr && openrac_game_mode(&mode) != 0)) {
+            mode = game_mode_address() != 0 ? word_at(ram, game_mode_address()) : 0;
+        }
+        g_route.level = in_level ? level : -1;
+        g_route.mode = static_cast<int>(mode);
+        if (!skippable()) {
+            g_route.skippable_from = -1;
+        } else if (g_route.skippable_from < 0) {
+            g_route.skippable_from = static_cast<std::int64_t>(g->index);
+        }
+        if (g_route.control < 0) {
+            g_route.streak = in_level && mode == 0 ? g_route.streak + 1 : 0;
+            if (g_route.streak >= kControlHold) {
+                g_route.control = static_cast<std::int64_t>(g->index);
+                log::info("control at frame {} (level {})", g->index, level);
+            }
+        }
+    }
+    // OPENRAC_TRACE=FILE: one JSON line a tick, for port/tools/regress (docs/port/REGRESSION.md):
+    // f the window frame, c frames since control (null before), lv the level (-1 the boot
+    // program), m the game mode, cam/fw the camera's position and forward row, hp/hr/hs the hero's
+    // position, rotation and state, mb the live mobys, dr the layers the game drew.
+    static std::FILE* trace = [] {
+        const char* path = std::getenv("OPENRAC_TRACE");
+        std::FILE* f = path != nullptr && *path != 0 ? std::fopen(path, "w") : nullptr;
+        if (path != nullptr && f == nullptr) {
+            log::warn("OPENRAC_TRACE: cannot write {}", path);
+        }
+        return f;
+    }();
+    if (trace != nullptr) {
+        const auto num = [](float v) { return std::isfinite(v) ? std::format("{:.4f}", v) : std::string("null"); };
+        const auto vec = [&](const float* v) { return std::format("[{},{},{}]", num(v[0]), num(v[1]), num(v[2])); };
+        std::string line = std::format("{{\"f\":{},\"c\":{},\"lv\":{},\"m\":{},\"cam\":{},\"fw\":{}", g->index,
+                                       g_route.control < 0 ? std::string("null")
+                                                           : std::to_string(static_cast<std::int64_t>(g->index) - g_route.control),
+                                       g_route.level, g_route.mode, vec(state.camera_position.data()),
+                                       vec(state.forward.data()));
+        float hp[3]{}, hr[3]{};
+        std::int32_t hs = 0;
+        if (openrac_game_hero != nullptr && openrac_game_hero(hp, hr, &hs) != 0) {
+            line += std::format(",\"hp\":{},\"hr\":{},\"hs\":{}", vec(hp), vec(hr), hs);
+        }
+        line += std::format(",\"mb\":{},\"dr\":{}}}\n", state.mobys.size(), draws);
+        std::fputs(line.c_str(), trace);
+        std::fflush(trace);  // a crash keeps every tick before it
+    }
+    // OPENRAC_CONTROL_FRAMES=N: the run ends N frames after control (a route's length).
+    static const long control_frames = [] {
+        const char* v = std::getenv("OPENRAC_CONTROL_FRAMES");
+        return v != nullptr ? std::atol(v) : -1L;
+    }();
+    if (control_frames >= 0 && g_route.control >= 0
+        && static_cast<std::int64_t>(g->index) >= g_route.control + control_frames) {
+        log::info("{} frames after control: the run ends", control_frames);
+        return false;
+    }
+
     // OPENRAC_DUMP_RAM=FRAME: the game's 32 MB of main memory at that frame, to ram_FRAME.bin.
     static const char* dump_ram = std::getenv("OPENRAC_DUMP_RAM");
     if (dump_ram != nullptr && g->index == std::strtoull(dump_ram, nullptr, 10)) {
@@ -1959,15 +2185,24 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
             state.camera_position[2], state.forward[0], state.forward[1], state.forward[2],
             state.tan_half_fov_y, state.mobys.size(), draws
         );
-        log::info("  mode {} dialog kind {} step {} level word {} title exit {} pad {:#x}",
-                  static_cast<int>(word_at(ram, 0x0015F6E8)), static_cast<int>(word_at(ram, 0x00193400)),
-                  static_cast<int>(word_at(ram, 0x00193400 + 0x1C)), static_cast<int>(word_at(ram, 0x0015EE84)),
-                  static_cast<int>(word_at(ram, 0x0015F690)), word_at(ram, 0x0013CBE4));
-        if (g->game == "rac1-pal") {
+        if (const openrac_front_end* fe = openrac_game_front_end) {
+            // The first pad's block: +0x100 the sticks, +0x194 its socket, +0x198 its state,
+            // +0x1A0 the buttons held, +0x1A4 the raw word.
+            // The level's own game mode (openrac_game_mode: rac1's level copy of its mode word, 6 in
+            // the ship's landing, 2 in a cutscene, 0 in play), or -1 outside a level.
+            std::uint32_t level_mode = 0xFFFFFFFFu;
+            if (openrac_game_mode == nullptr || openrac_game_mode(&level_mode) == 0) {
+                level_mode = 0xFFFFFFFFu;
+            }
+            log::info("  mode {} level mode {} dialog kind {} step {} level word {} title exit {} pad {:#x}",
+                      static_cast<int>(word_at(ram, fe->game_mode)), static_cast<int>(level_mode),
+                      static_cast<int>(word_at(ram, fe->dialog)),
+                      static_cast<int>(word_at(ram, fe->dialog + 0x1C)), static_cast<int>(word_at(ram, fe->level)),
+                      static_cast<int>(word_at(ram, fe->title_exit)), word_at(ram, fe->pad + 0x1A4));
             float axes[4]{};
-            std::memcpy(axes, ram.data() + 0x0013CB40, sizeof axes);
+            std::memcpy(axes, ram.data() + fe->pad + 0x100, sizeof axes);
             log::info("  pad socket {} state {} held {:#x}, right {:.3f} {:.3f}, left {:.3f} {:.3f}",
-                      word_at(ram, 0x0013CBD4), word_at(ram, 0x0013CBD8), word_at(ram, 0x0013CBE0),
+                      word_at(ram, fe->pad + 0x194), word_at(ram, fe->pad + 0x198), word_at(ram, fe->pad + 0x1A0),
                       axes[0], axes[1], axes[2], axes[3]);
         }
         log::info("  fog colour {:.0f} {:.0f} {:.0f}, depth {:.0f} to {:.0f}, F {:.0f} to {:.0f}",
@@ -2226,10 +2461,10 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
     g->moby_cameras.clear();
     g->scene.set_fog(state.fog_colour, state.fog_near, state.fog_far, state.fog_near_f,
                      state.fog_far_f);
-    // The light bank as the game holds it now (16 sets of 0x40 bytes; the executable's 0x19BEC0, each
+    // The light bank as the game holds it now (16 sets of 0x40 bytes; the executable's, each
     // level's copy elsewhere): the level loader fills it from the gameplay file, and the game changes
     // sets at run time (the page menus write set 14 for their frame mobys, fog zones the hero's).
-    {
+    if (light_bank_address() != 0) {
         const gaddr bank = openrac_relocate_data(light_bank_address());
         if (bank + 16 * 0x40 <= ram.size()) {
             std::vector<float> sets(16 * 16);
@@ -2286,8 +2521,10 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
     std::vector<renderer::EffectStrip> strips;
     std::size_t before_world = SIZE_MAX;
     std::size_t first_offscreen = SIZE_MAX;
+    std::size_t world_marker = SIZE_MAX;
     std::vector<std::uint8_t> packets = direct_packets(ram, viewer::shown_chain(ram, a), &strip_vertices, &strips,
-                                                       &g->effect_uploads, &before_world, &first_offscreen);
+                                                       &g->effect_uploads, &before_world, &first_offscreen,
+                                                       &world_marker);
     // The markers in a list index the quads of the tick that built it, and the list shown is the
     // one the last tick built (the game builds the next while this one is sent), one tick behind
     // the quads just recorded; FadeToBlack sends an old list again. Drawn with this tick's quads, a
@@ -2321,6 +2558,16 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
     // A frame with mobys and no VU1 program in its chain (the vendor's menu: its frozen world, then
     // the vendor, which the port draws natively, then its screens rendered to textures and put on
     // the monitors): what comes before the first render to a texture is the picture under the mobys.
+    // A level's frame whose terrain was drawn has the world's marker where it was (put by the
+    // terrain pass, rac1/host/render_native.c): the split is there, or at a VU1 program started
+    // before it. The first VU1 program alone was too fragile: the port's world renderers send
+    // none, and the first is the world text's sprite pass (func_001F7B70), which runs only while
+    // there is any. On Kerwan in play there was none: all of the 2D path, the HUD with it, was
+    // taken as coming before the world and drawn under it. On Rilgar the split moved from frame
+    // to frame, and the HUD and the sea's layers flickered.
+    if (world_marker != SIZE_MAX) {
+        before_world = std::min(before_world, world_marker);
+    }
     if (before_world == SIZE_MAX && (k.draws & 0x10u) != 0) {
         before_world = first_offscreen;
     }
@@ -2498,7 +2745,7 @@ int between(std::chrono::steady_clock::time_point next_tick) {
             return -1;
         }
         if (window_key(event) || debug_overlay::event(event)
-            || debug_menu::event(event, g->game.c_str(), openrac_game_loaded_overlay())) {
+            || debug_menu::event(event, openrac_game_loaded_overlay())) {
             continue;
         }
         g->input.handle_event(event);
@@ -2539,6 +2786,10 @@ bool hold() {
     return true;
 }
 
+std::int64_t since_control() {
+    return g && g_route.control >= 0 ? static_cast<std::int64_t>(g->index) - g_route.control : -1;
+}
+
 bool pad(int port, std::uint16_t* buttons, std::uint8_t analog[4]) {
     if (!g || port < 0 || port >= platform::kPadPorts) {
         return false;
@@ -2552,12 +2803,34 @@ bool pad(int port, std::uint16_t* buttons, std::uint8_t analog[4]) {
     // OPENRAC_PRESS=FRAME:MASK:FRAMES[:LX:LY[:RX:RY]],... holds buttons (mask bits as the pad reports
     // them, 0x4000 cross, 0x8 start) and optionally the left and right sticks (0-255, 128 centred; 0
     // is left or up) for scripted checks. FRAME counts the window's frames (world, 2D and movie frames).
+    // cFRAME counts from control instead (Route: the same moment in every version); kPERIOD holds the
+    // buttons the first FRAMES of every PERIOD frames while what plays can be skipped and control has
+    // not come yet (Start through scenes and the flight), counted on window frames; sPERIOD does the
+    // same counted from the frame what plays became skippable, which is the same tick of the scene in
+    // every version (k's window frames fall at other ticks of it in PAL and US); SPERIOD as s, before
+    // and after control (the scenes and flights a route starts once the player has control).
     if (const char* script = port == 0 ? std::getenv("OPENRAC_PRESS") : nullptr) {
         for (const char* at = script; at && *at;) {
             unsigned long frame = 0, mask = 0, length = 5;
             unsigned int lx = 128, ly = 128, rx = 128, ry = 128;
-            const int read = std::sscanf(at, "%lu:%lx:%lu:%u:%u:%u:%u", &frame, &mask, &length, &lx, &ly, &rx, &ry);
-            if (read >= 2 && g->index >= frame && g->index < frame + length) {
+            const char kind = *at == 'c' || *at == 'k' || *at == 's' || *at == 'S' ? *at : 0;
+            const int read = std::sscanf(at + (kind != 0 ? 1 : 0), "%lu:%lx:%lu:%u:%u:%u:%u", &frame, &mask, &length,
+                                         &lx, &ly, &rx, &ry);
+            bool active = false;
+            if (kind == 'c') {
+                const std::int64_t since = static_cast<std::int64_t>(g->index) - g_route.control;
+                active = g_route.control >= 0 && since >= static_cast<std::int64_t>(frame)
+                         && since < static_cast<std::int64_t>(frame + length);
+            } else if (kind == 'k') {
+                active = g_route.control < 0 && frame > 0 && skippable() && g->index % frame < length;
+            } else if (kind == 's' || kind == 'S') {
+                active = (kind == 'S' || g_route.control < 0) && frame > 0 && skippable() && g_route.skippable_from >= 0
+                         && (static_cast<std::int64_t>(g->index) - g_route.skippable_from) % static_cast<std::int64_t>(frame)
+                                < static_cast<std::int64_t>(length);
+            } else {
+                active = g->index >= frame && g->index < frame + length;
+            }
+            if (read >= 2 && active) {
                 *buttons = static_cast<std::uint16_t>(*buttons & ~mask);
                 if (read >= 5) {
                     analog[2] = static_cast<std::uint8_t>(lx);
@@ -2572,20 +2845,21 @@ bool pad(int port, std::uint16_t* buttons, std::uint8_t analog[4]) {
             at = at ? at + 1 : nullptr;
         }
     }
-    // Start skips an in-game cutscene: the game skips one on Start with L1, L2, R1 and R2 held
-    // (Start alone only once it is beaten; ReRAC cutscenes_transitions.md, "skip"), so while one
-    // plays a pressed Start also presses the four shoulders. Bits are active low: 0x8 Start,
-    // 0x0F00 L2 R2 L1 R1.
+    // Start skips an in-game scene the way the game itself skips it: a pressed Start also presses
+    // what the game's own skip of the scene playing reads (rac1: in a cutscene the four shoulders,
+    // since the game skips one on Start with L1, L2, R1 and R2 held, Start alone only once it is
+    // beaten, ReRAC cutscenes_transitions.md, "skip"; in the ship's landing and take-off Cross).
+    // Bits are active low: 0x8 Start, 0x4000 Cross, 0x0F00 L2 R2 L1 R1.
     if (port == 0 && settings::get().skip_cutscenes && (*buttons & 0x8) == 0) {
-        if (openrac_game_in_cutscene != nullptr && openrac_game_in_cutscene() != 0) {
-            *buttons = static_cast<std::uint16_t>(*buttons & ~0x0F00);
+        if (openrac_game_skip_buttons != nullptr) {
+            *buttons = static_cast<std::uint16_t>(*buttons & ~(openrac_game_skip_buttons() & 0xFFFF));
         }
         if (openrac_game_skip != nullptr) {
             openrac_game_skip();
         }
     }
     if (port == 0) {
-        debug_menu::filter_pad(*buttons, g->game.c_str(), openrac_game_loaded_overlay());
+        debug_menu::filter_pad(*buttons, openrac_game_loaded_overlay());
         debug_overlay::pad(*buttons, analog);  // [debug tools]
     }
     if (std::getenv("OPENRAC_TRACE_INPUT") != nullptr) {

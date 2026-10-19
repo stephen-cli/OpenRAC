@@ -16,22 +16,21 @@
     "src/sdk/library/moddi3.c",
     "src/sdk/library/udivdi3.c",
     "src/sdk/library/umoddi3.c",
-    "src/sdk/library/malloc_extend_top.c",
-    "src/overlays/l06/gameplay/entities/002b4770.c",
-    "src/overlays/l13/gameplay/vendor/003058a8.c",
-    "src/overlays/l16/gameplay/entities/002a3f38.c",
-    "src/overlays/shared/gameplay/vendor/002e9010.c"
+    "src/sdk/library/malloc_extend_top.c"
   ],
   "includes": [
     "include",
     "src"
   ],
-  "defines": [],
+  "defines": ["LOMBYTE_QZERO_H"],
+  "aliases": ["config/us/port_aliases.h"],
   "symbols": [
-    "config/us/symbol_addrs.txt"
+    "config/us/symbol_addrs.txt",
+    "config/us/port_symbols.txt"
   ],
   "places": "config/overlays/us/functions.tsv",
   "libraries": "libraries.tsv",
+  "host_shared": ["../rac1/host"],
   "overlay_hook": true,
   "roots": [
     "FUN_0012d9d8",
@@ -65,7 +64,12 @@
     "func_001E9428",
     "func_001E9430",
     "func_001E9438",
-    "func_001E9440"
+    "func_001E9440",
+    "func_001E9458",
+    "func_001E9460",
+    "func_001E9468",
+    "func_001E9470",
+    "func_001E9478"
   ],
   "host_functions": [
     "FUN_001f7580",
@@ -137,6 +141,7 @@
     "FUN_L00_001f3170",
     "FUN_00125180",
     "FUN_0020ede8",
+    "FUN_0020fa90",
     "func_L00_00251CE8"
   ],
   "hand": "hand/hand.tsv",
@@ -144,5 +149,12 @@
     "guard": "NON_MATCHING",
     "units": "drafts.tsv"
   },
-  "split_places": "split_places.tsv"
+  "split_places": "split_places.tsv",
+  "asm": {
+    "enabled": true,
+    "dirs": ["config/us/overlays/asm", "config/us/expected/asm", "config/us/asm",
+             "build/baseline/config/us/expected/asm", "build/baseline/config/us/asm"],
+    "retail": {"exe": "config/us/SCUS_971.99", "dump": "config/us/overlays"},
+    "gp": "0x00166C00"
+  }
 }

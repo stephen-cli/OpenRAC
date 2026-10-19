@@ -296,7 +296,7 @@ extern int func_002383D8(int);
 extern void func_00234E80(void);
 
 /* DmaTieTextures: the same splice for ties, largest size in D_00161074. */
-void func_00236958(void) {
+void DmaTieTextures(void) {
     int *p = (int *)D_00161000;
     int size;
 
@@ -334,7 +334,7 @@ extern char D_001E2D00[];
    in the -1-terminated list at D_001E3300, walk the tie's 0x50-byte
    records and patch the nonzero halves of the remap entry picked by byte
    0x33 into the low 14 bits of the words at +0x00 and +0x20. */
-void func_00236A98(void) {
+void PatchTieGifs(void) {
     int *p;
     for (p = (int *)D_001E3300; *p >= 0; p++) {
         char *tie = D_001E1A00[*p];
@@ -353,7 +353,7 @@ extern void func_00236A98(void);
 extern char D_001E4500[];
 extern char D_001E4100[];
 
-void func_00236B58(void) {
+void copy_render_buffer_pair(void) {
     PatchTieGifs();
     FastMemCopy(D_001E3300, D_001E4500, 0x200);
     FastMemCopy(D_001E2D00, D_001E4100, 0x400);
@@ -364,7 +364,7 @@ extern void func_00238688(void *);
 extern char D_001E3500[];
 extern char D_001E4700[];
 
-void func_00236BB0(void) {
+void LightTieBuffers(void) {
     LightTies(D_001E3500);
     LightTies(D_001E4700);
 }
@@ -381,23 +381,23 @@ extern void func_00236958(void); /* DmaTieTextures */
 
 /* DrawTies_1: DrawShrubs' shape, the packet pointer advanced through a
    local. */
-void func_00236BE0(void) {
+void DrawTies_1(void) {
     int p = D_00161000;
 
     D_00161068 = p;
     D_0015EF74 = D_0015EF78;
     p += 0x10;
     D_00161000 = p;
-    func_001F2560(D_00161030, 1);
+    ProfileMarker_Begin(D_00161030, 1);
     if (D_0018A3C8 != 0) {
         func_00118D80(0);
         TieProc();
         write_dma_channel(D_001E3500, 0x3600, 0x40);
     }
-    func_001F2560(D_00161040, 5);
+    ProfileMarker_Begin(D_00161040, 5);
     DmaTieTextures();
     FastMemCopy((void *)D_00161000, D_001DF3B0, 0x20);
-    func_001F2558(D_00161040, 5);
+    ProfileMarker_End(D_00161040, 5);
 }
 
 extern int D_0016104C MACRO_ADDR;
@@ -415,7 +415,7 @@ typedef struct {
    the even ones'. Each flag loop reads the tie count into its own local
    (the loop's stores could alias it) and the flag is a `short` (so the
    `&= ~8` stays an int AND with -9, not andi 0xFFF7). */
-void func_00236CA8(void) {
+void DrawTies_2(void) {
     {
         int i;
         int n = D_0016104C;
@@ -430,7 +430,7 @@ void func_00236CA8(void) {
         p += 0x10;
         D_00161000 = p;
     }
-    func_001F2560(D_00161030, 1);
+    ProfileMarker_Begin(D_00161030, 1);
     {
         DrawCfg_236CA8 *d = (DrawCfg_236CA8 *)D_0018A3B0;
         if (d->unk18 != 0) {
@@ -469,7 +469,7 @@ void func_00236CA8(void) {
             write_dma_channel(D_001E3500, 0x3600, 0x40);
         }
     }
-    func_001F2560(D_00161040, 5);
+    ProfileMarker_Begin(D_00161040, 5);
     DmaTieTextures();
     {
         int i;
@@ -479,5 +479,5 @@ void func_00236CA8(void) {
         }
     }
     FastMemCopy((void *)D_00161000, D_001DF3B0, 0x20);
-    func_001F2558(D_00161040, 5);
+    ProfileMarker_End(D_00161040, 5);
 }

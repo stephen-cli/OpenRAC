@@ -29,9 +29,9 @@ extern u8 D_0013E533[];
 extern f32 D_0015FFC8[2] __attribute__((sda));
 extern f32 D_001CC0C8[][8];
 extern u8 D_001CC080[][4];
-extern Q_25a478 *func_002141F8(void *);
+extern Q_25a478 *suck_get_aim_height(void *) __asm__("FUN_002141f8");
 extern Q_25a478 *ReadStateField(void *);
-extern s32 func_001F9770(s16 *);
+extern s32 fast_dec_timer_s16(s16 *) __asm__("func_001F9770");
 extern s32 scale_game_frames(s32) __asm__("func_001F96F8");
 extern f32 fast_arc_tan(f32, f32) __asm__("func_001F9E90");
 extern f32 fast_cos(f32) __asm__("func_001F9DC8");
@@ -45,6 +45,10 @@ extern void set_vector_length_xy(void *, void *, f32) __asm__("FUN_001f9c48");
 s32 fun_00213928(O_25a478 *obj, P_25a478 *p, Q_25a478 *q, u32 flags, s32 *out, f32 *fp, s32 *kp, s32 idx) __asm__("FUN_00213928");
 
 s32 fun_00213928(O_25a478 *obj, P_25a478 *p, Q_25a478 *q, u32 flags, s32 *out, f32 *fp, s32 *kp, s32 idx) {
+    enum {
+        FALLBACK_HIT_RESPONSE = 1,
+        DEFAULT_HIT_RESPONSE = 1
+    };
     V_25a478 v;
     V_25a478 t;
     s32 r;
@@ -67,7 +71,7 @@ s32 fun_00213928(O_25a478 *obj, P_25a478 *p, Q_25a478 *q, u32 flags, s32 *out, f
         return 0;
     }
     if (!q) {
-        q = func_002141F8(obj);
+        q = suck_get_aim_height(obj);
         if (!q) {
             *out = 0;
             return 0;
@@ -76,7 +80,7 @@ s32 fun_00213928(O_25a478 *obj, P_25a478 *p, Q_25a478 *q, u32 flags, s32 *out, f
     if (idx == 4) idx = q->b8;
     if (!p) {
         if (q) {
-            func_001F9770(&q->h1C);
+            fast_dec_timer_s16(&q->h1C);
             q->h16 = -1;
         }
         *out = 1;
@@ -139,10 +143,10 @@ s32 fun_00213928(O_25a478 *obj, P_25a478 *p, Q_25a478 *q, u32 flags, s32 *out, f
     if (kp) *kp = kind;
     res = D_001CC080[r][q->b8];
     if (q->h14 != kind) q->h1C = 0;
-    if (func_001F9770(&q->h1C)) {
+    if (fast_dec_timer_s16(&q->h1C)) {
         switch (r) {
         case 0: q->h1C = scale_game_frames(0x25); break;
-        case 1: q->h1C = scale_game_frames(0xF); break;
+        case DEFAULT_HIT_RESPONSE: q->h1C = scale_game_frames(0xF); break;
         case 4: q->h1C = scale_game_frames(0x3C); break;
         case 7:
             if (D_0013E533[0]) q->h1C = scale_game_frames(0x2D);
@@ -154,7 +158,7 @@ s32 fun_00213928(O_25a478 *obj, P_25a478 *p, Q_25a478 *q, u32 flags, s32 *out, f
     } else {
         switch (r) {
         case 0:
-        case 1:
+        case FALLBACK_HIT_RESPONSE:
             if (!(flags & 0x10)) res = 0xB;
             if (!(flags & 0x20)) *out = 1;
             goto z;

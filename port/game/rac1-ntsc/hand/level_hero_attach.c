@@ -1,5 +1,8 @@
 /* Carried from port/game/rac1-pal/hand/level_hero_attach.c through the version map (../README.md): names and
- * addresses are this version's, raw addresses in comments are PAL's. Not yet checked in play. */
+ * addresses are this version's, raw addresses in comments are PAL's. Not yet checked in play.
+ * functional: high. Read against the US assembly of FUN_L00_0020f580 on 2026-10-18: state, slot,
+ * definition and moby offsets, globals, poses and the colour pulse agree; the frame-scaling call
+ * now names the US FUN_001f96f8. */
 #ifndef MACRO_ADDR
 #define MACRO_ADDR
 #endif
@@ -38,12 +41,14 @@ typedef struct HeroAttachMoby {
     float basis[3][4];
 } HeroAttachMoby;
 
+/* 0x50 bytes a slot, at state +0x1070: retail reads primary +0x20, secondary +0x24, auxiliary
+ * +0x2C, detached +0x3A (a thrown wrench) and item +0x48 (PAL's port, 119a8881). */
 typedef struct HeroAttachSlot {
     float point[4], angles[4];
     HeroAttachMoby *primary, *secondary;
-    unsigned char pad28[2], detached, pad2B;
+    unsigned char pad28[4];
     HeroAttachMoby* auxiliary;
-    unsigned char pad30[0x18];
+    unsigned char pad30[0xA], detached, pad3B[0xD];
     int item, pad4C;
 } HeroAttachSlot;
 
@@ -103,7 +108,8 @@ extern void ha_cross(void*, void*, void*) __asm__("func_001F9AD8");
 extern HeroAttachMoby* ha_spawn(int) __asm__("func_0020C4F8");
 extern void ha_joint(void*, int, void*) __asm__("func_0020CCA8");
 extern void ha_auxiliary(void) __asm__("func_L00_00207D00");
-extern int ha_ticks(int) __asm__("func_001F9688");
+/* US scale_game_frames (FUN_001f96f8); the carry had named 001F9688, inside another function. */
+extern int ha_ticks(int) __asm__("func_001F96F8");
 extern float ha_float(int) __asm__("func_001FA6C0");
 extern float ha_sin(float) __asm__("func_001F9DE0");
 extern int ha_truncate(float) __asm__("func_001FA6D0");

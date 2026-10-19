@@ -107,28 +107,30 @@ void func_00119E70(int c) {
     }
 }
 
-/* |d| to int for the float printer (func_00119F38 passes the soft-float
-   double's bits): exponent e = biased exponent - 1075; 0 below 2^-53,
-   9999 from 2^13 up; otherwise the 53-bit mantissa shifted into place,
-   right shifts keeping two guard bits and rounding up when both are set.
-   Exact only if the final `(int)` truncation's dsra is moved into the
-   `j $31` slot (see RESULT.md): retail's compiler did that, ours leaves
-   the slot to the assembler, which pads it with a nop. */
-/* The parameter doubles as the mantissa and the exponent is computed
-   in place. It ends in the same int truncation as func_0012AAA8, with
-/* func_00119EA8: matched only with the truncation's last instruction moved into the return slot by a removed step (docs/BUILD_FIDELITY.md, "Removed"). */
-INCLUDE_ASM("asm/nonmatchings/core_text", func_00119EA8);
+/* Float printer: extract the exponent and hidden mantissa bit, retain two
+   guard bits when shifting right, and round up when both are set.
+   Uses the target compiler's 64-bit long and R5900 shift semantics. */
+int func_00119EA8(unsigned long bits) {
+    long exponent = (long)((bits << 1) >> 53);
+    exponent -= 1075;
+    if (exponent < -53) return 0;
+    if (exponent >= 13) return 9999;
+    bits = (bits << 12) >> 12;
+    bits |= 1UL << 52;
+    if (exponent < 0) {
+        exponent = -exponent;
+        bits >>= (int)(exponent - 2);
+        if ((bits & 3) == 3) bits = (bits >> 2) + 1;
+        else bits >>= 2;
+    } else {
+        bits <<= (int)exponent;
+    }
+    return (int)bits;
+}
 
-extern char D_00152880[]; /* "0.%d" */
-extern char D_00152888[]; /* "e+%d" */
-extern char D_00152890[]; /* "e%d" */
 extern void *D_0012FD00;
 extern long func_0011E6D8(double);
 extern void func_0011A690(const char *, ...);
-
-extern char D_00152880[]; /* "0.%d" */
-extern char D_00152888[]; /* "e+%d" */
-extern char D_00152890[]; /* "e%d" */
 
 /* printfloat (libkernl.a:kprintf.o): the kprintf %f formatter. Prints a
    leading '-' through the putchar hook (D_0012FD00) if negative, then
@@ -141,8 +143,10 @@ extern char D_00152890[]; /* "e%d" */
 
    The magnitude is checked, then rescaled, in nested `if (v < 0.1)
    { while (v < 0.1) ... }`: retail keeps a separate 0.1 for each. Its
-   constants are this object's .rodata, linked at D_00152898 (see
-   config/core_rodata.txt). */
+   three format strings and its constants open this object's .rodata
+   (D_00152880-D_001528A8), followed by _printf's jump table
+   (jtbl_001528B0): the strings are literals so that the table lands
+   16-aligned at its retail address (config/core_rodata.txt). */
 void func_00119F38(double v) {
     int exp10 = 0;
     int digits;
@@ -163,15 +167,227 @@ void func_00119F38(double v) {
         }
     }
     digits = func_00119EA8(func_0011E6D8(v * 1000000.0));
-    func_0011A690(D_00152880, digits);
+    func_0011A690("0.%d", digits);
     if (exp10 >= 0) {
-        func_0011A690(D_00152888, exp10);
+        func_0011A690("e+%d", exp10);
     } else {
-        func_0011A690(D_00152890, exp10);
+        func_0011A690("e%d", exp10);
     }
 }
 
-INCLUDE_ASM("asm/nonmatchings/core_text", func_0011A0A0);
+/* _printf: the SDK libc formatter behind printf/sprintf: walks fmt, takes
+   each argument from the 8-byte slots at ap and writes characters through
+   the output hook at D_0012FD00, with interrupts held off around it.
+   Adapted from Lombyte (MIT): src/sdk/debug/printf_impl.c, _printf. */
+
+extern s32 DIntr_A0A0(void) __asm__("func_0011D960");
+extern s32 EnableInterrupts_A0A0(void) __asm__("func_0011D9A8");
+extern void printfloat_A0A0(double) __asm__("func_00119F38");
+extern void (*D_0012FD00_A0A0[])(s32) __asm__("D_0012FD00");
+
+
+int func_0011A0A0(const char *fmt, va_list ap) {
+    char buf[32];
+    char *pad;
+    char *p;
+    s32 mod;
+    s32 n;
+    unsigned long d;
+    u8 ch;
+    char second;
+    s64 v;
+    s32 ie;
+
+    ie = DIntr_A0A0();
+    for (; *fmt != 0; fmt++) {
+        p = (char *)fmt;
+        pad = 0;
+        mod = 0;
+        if (*fmt == '%') {
+        again:
+            fmt++;
+            switch ((char)(*fmt - '0')) {
+            case 0:
+                n = fmt[1] - '0';
+                second = fmt[2];
+                if ((u8)n < 10) {
+                    if ((u32)(second - '0') < 10) {
+                        n = n * 10 + (second - '0');
+                        fmt += 2;
+                        if (n >= 32) {
+                            n = 31;
+                        }
+                    } else {
+                        fmt += 1;
+                    }
+                    pad = &buf[31 - n];
+                    while (n > 0) {
+                        buf[31 - n] = '0';
+                        n--;
+                    }
+                    goto again;
+                }
+                goto again;
+            case 'l' - '0':
+                mod = 'l';
+                goto again;
+            case 'h' - '0':
+                mod = 'h';
+                goto again;
+            case 'o' - '0':
+                if (mod == 'l') {
+                    v = (ap += 8, *(s64 *)(ap - 8));
+                } else if (mod == 'h') {
+                    v = (ap += 8, *(u16 *)(ap - 8));
+                } else {
+                    v = (ap += 8, *(u32 *)(ap - 8));
+                }
+                p = &buf[31];
+                *p = 0;
+                if (v == 0) {
+                    *--p = '0';
+                } else {
+                    do {
+                        *--p = (v & 7) + '0';
+                        v = (u64)v >> 3;
+                    } while (v != 0);
+                }
+                if (pad != 0 && pad < p) {
+                    p = pad;
+                }
+                while (*p != 0) {
+                    D_0012FD00_A0A0[0](*p++);
+                }
+                break;
+            case 'x' - '0':
+                if (mod == 'l') {
+                    v = (ap += 8, *(s64 *)(ap - 8));
+                } else if (mod == 'h') {
+                    v = (ap += 8, *(u16 *)(ap - 8));
+                } else {
+                    v = (ap += 8, *(u32 *)(ap - 8));
+                }
+                p = &buf[31];
+                *p = 0;
+                if (v == 0) {
+                    *--p = '0';
+                } else {
+                    do {
+                        d = v & 0xF;
+                        if (d < 10) {
+                            *--p = d + '0';
+                        } else {
+                            *--p = d + 'a' - 10;
+                        }
+                        v = (u64)v >> 4;
+                    } while (v != 0);
+                }
+                if (pad != 0 && pad < p) {
+                    p = pad;
+                }
+                while (*p != 0) {
+                    D_0012FD00_A0A0[0](*p++);
+                }
+                break;
+            case 'd' - '0':
+                if (mod == 'l') {
+                    v = (ap += 8, *(s64 *)(ap - 8));
+                } else if (mod == 'h') {
+                    v = (ap += 8, *(s16 *)(ap - 8));
+                } else {
+                    v = (ap += 8, *(s32 *)(ap - 8));
+                }
+                p = &buf[31];
+                *p = 0;
+                if (v == 0) {
+                    *--p = '0';
+                } else {
+                    if (v < 0) {
+                        v = -v;
+                        D_0012FD00_A0A0[0]('-');
+                    }
+                    while (v != 0) {
+                        *--p = v % 10 + '0';
+                        v = v / 10;
+                    }
+                }
+                if (pad != 0 && pad < p) {
+                    p = pad;
+                }
+                while (*p != 0) {
+                    D_0012FD00_A0A0[0](*p++);
+                }
+                break;
+            case 'u' - '0':
+                if (mod == 'l') {
+                    v = (ap += 8, *(s64 *)(ap - 8));
+                } else if (mod == 'h') {
+                    v = (ap += 8, *(u16 *)(ap - 8));
+                } else {
+                    v = (ap += 8, *(u32 *)(ap - 8));
+                }
+                p = &buf[31];
+                *p = 0;
+                if (v == 0) {
+                    *--p = '0';
+                } else {
+                    do {
+                        *--p = (u64)v % 10 + '0';
+                        v = (u64)v / 10;
+                    } while (v != 0);
+                }
+                if (pad != 0 && pad < p) {
+                    p = pad;
+                }
+                while (*p != 0) {
+                    D_0012FD00_A0A0[0](*p++);
+                }
+                break;
+            case 'e' - '0':
+            case 'f' - '0': {
+                f32 f = (ap += 8, *(f32 *)(ap - 8));
+                if (f == 0.0f) {
+                    D_0012FD00_A0A0[0]('0');
+                } else {
+                    printfloat_A0A0(f);
+                }
+            } break;
+            case 's' - '0': {
+                char *string = (ap += 8, *(char * *)(ap - 8));
+                if (*string == 0) {
+                    D_0012FD00_A0A0[0]('(');
+                    D_0012FD00_A0A0[0]('n');
+                    D_0012FD00_A0A0[0]('u');
+                    D_0012FD00_A0A0[0]('l');
+                    D_0012FD00_A0A0[0]('l');
+                    D_0012FD00_A0A0[0](')');
+                } else {
+                    p = string;
+                    if (*p != 0) {
+                        do {
+                            D_0012FD00_A0A0[0](*p++);
+                        } while (*p != 0);
+                    }
+                }
+                break;
+            }
+            case 'c' - '0':
+                v = (ap += 8, *(char *)(ap - 8));
+                D_0012FD00_A0A0[0](v);
+                break;
+            default:
+                break;
+            }
+        } else {
+            D_0012FD00_A0A0[0](*fmt);
+        }
+    }
+    if (ie != 0) {
+        EnableInterrupts_A0A0();
+    }
+}
+
+
 
 /* The print core: walks fmt with the va_list, writing through the hook
    D_0012FD00, and returns the count. */
@@ -1110,7 +1326,134 @@ void *func_0011B7F8(unsigned int arg0) {
     return ret;
 }
 
-INCLUDE_ASM("asm/nonmatchings/core_text", func_0011B868);
+typedef struct {
+    s32 v;
+} __attribute__((packed)) Word;
+
+typedef struct {
+    Word ret;
+    Word func;
+    Word dest;
+    Word size;
+} FsRcvHead;
+
+typedef struct {
+    void *dest;
+} __attribute__((packed)) FsRcvPtr;
+
+typedef struct {
+    Word dest;
+    Word size;
+} FsRcvBuf;
+
+typedef struct {
+    s32 n1;
+    s32 n2;
+    u8 *d1;
+    u8 *d2;
+    u8 buf1[0x40];
+    u8 buf2[0x40];
+} FsRcvRead;
+
+typedef struct {
+    u8 b[0x144];
+} __attribute__((packed)) FsDirent;
+
+typedef struct {
+    u8 b[0x40];
+} __attribute__((packed)) FsStat;
+
+extern volatile s32 D_0012FD10[];
+extern u32 D_0012FD90[];
+extern s32 D_0012FD98[];
+extern u8 D_00157600[];
+extern void *func_00115248(void *, const void *, u32);
+
+void func_0011B868(s32 *arg) {
+    FsRcvHead h;
+    FsRcvHead *src;
+    FsRcvBuf *bs;
+    union {
+        FsRcvPtr p;
+        FsRcvBuf b;
+    } u;
+    FsRcvRead *r;
+    u8 *pkt;
+    u8 *base;
+    u8 *d;
+    u32 *bank = D_0012FD90;
+    s32 idx;
+    s32 i;
+    s64 ret;
+    u32 n;
+    u32 addr;
+
+    idx = D_0012FD98[0] != 0 ? arg[3] : 0;
+    *bank = idx;
+    base = D_00157600;
+    addr = (u32)base;
+    addr += (u32)idx * 0x440;
+    pkt = (u8 *)(addr | 0x20000000);
+    src = (FsRcvHead *)pkt;
+    h.ret = src->ret;
+    h.func = src->func;
+    h.dest = src->dest;
+    h.size = src->size;
+    if (h.ret.v >= 0) {
+        func_00115248((void *)h.dest.v, pkt + 0x10, h.size.v);
+    }
+    switch (h.func.v) {
+    case 2:
+        r = (FsRcvRead *)(pkt + 0x14);
+        if (r->n1 > 0) {
+            d = r->d1;
+            for (i = 0; i < r->n1; i++) {
+                d[i] = r->buf1[i];
+            }
+        }
+        if (r->n2 > 0) {
+            d = r->d2;
+            for (i = 0; i < r->n2; i++) {
+                d[i] = r->buf2[i];
+            }
+        }
+        break;
+    case 11:
+        u.p = *(FsRcvPtr *)(pkt + 0x14);
+        *(FsDirent *)u.p.dest = *(FsDirent *)(pkt + 0x18);
+        break;
+    case 12:
+        u.p = *(FsRcvPtr *)(pkt + 0x14);
+        *(FsStat *)u.p.dest = *(FsStat *)(pkt + 0x18);
+        break;
+    case 23:
+    case 25:
+    case 26:
+        bs = (FsRcvBuf *)(pkt + 0x14);
+        u.b.dest = bs->dest;
+        u.b.size = bs->size;
+        n = u.b.size.v;
+        if (n > 0x400) {
+            u.b.size.v = 0x400;
+            n = 0x400;
+        }
+        func_00115248((void *)u.b.dest.v, pkt + 0x1C, n);
+        break;
+    }
+    if (h.ret.v < 0) {
+        u32 semaphore = 0u - (u32)h.ret.v;
+        ret = (s32)semaphore;
+        h.ret.v = (s32)semaphore;
+        for (i = 0; i < 32; i++) {
+            if (((s32 *)D_0012FD10)[i] == ret) {
+                D_0012FD10[i] = -1;
+                break;
+            }
+        }
+        return;
+    }
+    func_00118CA0(h.ret.v);
+}
 
 extern int D_0012FD9C;
 extern int func_00118C70(void *);
@@ -1142,7 +1485,68 @@ void func_0011BC70(void) {
 
 ASM_FUNC("asm/handwritten/core_text", func_0011BC80);
 
-INCLUDE_ASM("asm/nonmatchings/core_text", func_0011BCB0);
+/* CD/DVD init step: install the two RPC-side handlers, bind the RPC server
+ * at 0x80000001 (retrying until it has an address), clear the 32-slot table
+ * D_00157E80, then send command 0xFF and copy back the reply word and the
+ * flag that says whether the reply was 2. Returns 0 on success, -1 when the
+ * bind failed, 0xFFFEFFFF when the RPC failed. */
+struct RpcCb { void (*cb)(void *); void *data; };
+extern struct RpcCb D_00158100;
+extern char D_001580C0[];
+extern char D_00158080[];
+extern char D_001575C0[];
+extern char *D_00156940[];
+extern char D_001580A8[];
+extern int D_0012FD94;
+extern void func_0011B868();
+extern void func_0011BC80();
+
+struct W4 { char b[4]; };
+s32 func_0011BCB0(void) {
+    s32 r, i;
+    char *p;
+    struct W4 w;
+    s32 *q;
+
+    struct RpcCb *rq = &D_00158100;
+    func_0011AE20(0);
+    D_00158100.cb = 0;
+    rq->data = 0;
+    r = func_0011D960();
+    func_0011AA38(0x80000011, (int)func_0011B868, (int)D_001580C0);
+    func_0011AA38(0x80000013, (int)func_0011BC80, (int)rq);
+    if (r != 0) {
+        func_0011D9A8();
+    }
+    for (;;) {
+        r = func_0011B2F8(D_00158080, 0x80000001, 0);
+        if (r < 0) {
+            return -1;
+        }
+        if (*(s32 *)(D_00158080 + 0x24) != 0) {
+            break;
+        }
+        for (i = 0x100000; i != -1; i--) {
+        }
+    }
+    func_0011B710();
+    func_00118CB0(D_0012FDA0);
+    for (p = D_00157E80; p < D_00157E80 + 0x200; p += 0x10) {
+        *(s32 *)(p + 4) = 0;
+    }
+    func_00118C90(D_0012FDA0);
+    D_00156940[0] = D_00157600;
+    D_00156940[1] = D_00157600 + 0x440;
+    r = func_0011B4C8(D_00158080, 0xFF, 0, D_00156940, 8, D_001575C0, 8, 0, 0);
+    if (r < 0) {
+        return (s32)0xFFFEFFFF;
+    }
+    *(struct W4 *)D_001580A8 = *(struct W4 *)((u32)D_001575C0 | 0x20000000);
+    w = *(struct W4 *)((u32)(D_001575C0 + 4) | 0x20000000);
+    D_0012FD98[0] = (*(s32 *)&w == 2);
+    D_0012FD94 = 1;
+    return 0;
+}
 
 extern char D_0012FCEC[];
 extern char D_001580A8[];
@@ -1687,7 +2091,24 @@ extern int D_0012FDAC;
    0x80000003, busy-waiting until the server answers; -1 if binding fails.
    Built with -fno-schedule-insns (config/func_cflags.txt), the flag
 /* func_0011CB40: matched only with -fno-schedule-insns, which the rest of its object does not build with (docs/BUILD_FIDELITY.md, "Removed"). */
-INCLUDE_ASM("asm/nonmatchings/core_text", func_0011CB40);
+int func_0011CB40(void) {
+    int k;
+    int r;
+
+    for (;;) {
+        r = func_0011B2F8(D_00158140, 0x80000003, 0);
+        if (r < 0) {
+            return -1;
+        }
+        if (*(int *)(D_00158140 + 0x24) != 0) {
+            D_0012FDAC = 0;
+            break;
+        }
+        for (k = 0x100000; k != -1; k--) {
+        }
+    }
+    return 0;
+}
 
 extern int D_00158180;
 extern int D_001581C0;

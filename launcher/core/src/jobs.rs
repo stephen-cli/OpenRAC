@@ -144,7 +144,9 @@ impl Jobs {
 /// Starts `plan` on its own: its output is not read and the launcher does
 /// not wait for it.
 pub fn launch(plan: &Plan, root: Option<&std::path::Path>) -> Result<Started, String> {
-    let mut cmd = Command::new(&plan.program);
+    // Quiet, so a console program (Godot's `_console.exe`, a Scoop shim) opens no console
+    // window on Windows; a window program opens its window as ever.
+    let mut cmd = crate::detect::quiet(&plan.program);
     cmd.args(&plan.args).current_dir(&plan.cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     environment(&mut cmd, root);
     cmd.envs(plan.env.iter().map(|(k, v)| (k, v)));
@@ -270,7 +272,10 @@ pub fn plain(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // For the tests that run a shell, which are Unix only.
+    #[cfg(unix)]
     use std::path::PathBuf;
+    #[cfg(unix)]
     use std::sync::mpsc;
 
     #[test]

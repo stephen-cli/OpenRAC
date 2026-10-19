@@ -24,7 +24,10 @@ extern s32 push_help_history() __asm__("func_001FED30");
 
 void mode_freeze_init(u32 mode, s32 arg1) __asm__("FUN_001fbab8");
 
-void mode_freeze_init(u32 mode, s32 arg1) {
+void mode_freeze_init(u32 mode, s32 freeze_context) {
+    enum {
+        FREEZE_VIDEO_MODE_CHANGE = 6
+    };
     struct FreezeModeState *st;
 
     if (game_mode != 3) {
@@ -32,7 +35,7 @@ void mode_freeze_init(u32 mode, s32 arg1) {
         music_pause(0);
     }
     freeze.unk14 = game_mode;
-    freeze.unk18 = arg1;
+    freeze.unk18 = freeze_context;
     game_mode = 4;
     freeze.unk0 = mode;
     switch (mode) {
@@ -71,7 +74,7 @@ void mode_freeze_init(u32 mode, s32 arg1) {
         freeze.unk20 = 0;
         freeze.unk24 = scale_game_frames(0x1E);
         break;
-    case 6:
+    case FREEZE_VIDEO_MODE_CHANGE:
         freeze.unk4 = scale_game_frames(0x1E);
         freeze.unk1C = 0;
         break;

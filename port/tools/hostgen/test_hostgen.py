@@ -22,10 +22,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import asm  # noqa: E402
 import clangast  # noqa: E402
 import ctype  # noqa: E402
 import hostgen  # noqa: E402
 import prep  # noqa: E402
+
+sys.path.insert(0, str(HERE / "tests"))
+import mips  # noqa: E402
 
 RUNTIME_INCLUDE = HERE.parent.parent / "runtime" / "include"
 
@@ -61,7 +65,8 @@ def have_compiler() -> bool:
 class Translate(unittest.TestCase):
     def run_program(self, files: dict[str, str], places: str = "", config: dict | None = None,
                     extra_files: dict[str, str] | None = None, host_c: str = "",
-                    stubs: int = 0) -> list[str]:
+                    stubs: int = 0, hostgen_args: list[str] | None = None,
+                    cflags: list[str] | None = None) -> list[str]:
         """Translates, builds and runs files (name -> C); returns the printed lines.
         config adds to hostgen.json; extra_files are written beside it (tables);
         host_c is linked in (the port's own C); stubs is how many functions are
@@ -87,12 +92,13 @@ class Translate(unittest.TestCase):
             (tmp / "hostgen.json").write_text(json.dumps(cfg))
             out = tmp / "gen"
             rc = hostgen.main(["--game", str(tmp / "hostgen.json"), "--source", str(src), "--out", str(out),
-                               "--jobs", "2", "--quiet"])
+                               "--jobs", "2", "--quiet", *(hostgen_args or [])])
             self.assertEqual(rc, 0)
             report = json.loads((out / "report.json").read_text())
             self.last_report = report
             self.assertEqual(report["functions_stubbed"], stubs, report["stubbed"])
             sources = [out / u.strip() for u in (out / "units.txt").read_text().splitlines()]
+            self.last_generated = "\n".join(s.read_text() for s in sources)
             sources += [out / "stubs.c", out / "functions.c", out / "libraries.c", HERE / "tests" / "harness.c"]
             if host_c:
                 (tmp / "host.c").write_text('#include "openrac/guest.h"\n' + textwrap.dedent(host_c))
@@ -100,7 +106,7 @@ class Translate(unittest.TestCase):
             exe = tmp / "prog"
             build = subprocess.run(
                 ["clang", "-std=gnu11", "-O1", "-w", "-fno-strict-aliasing", "-fwrapv", "-fsigned-char",
-                 "-I", str(RUNTIME_INCLUDE), "-I", str(out), "-o", str(exe), *map(str, sources)],
+                 *(cflags or []), "-I", str(RUNTIME_INCLUDE), "-I", str(out), "-o", str(exe), *map(str, sources)],
                 capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
@@ -201,11 +207,14 @@ class Translate(unittest.TestCase):
             """,
             "caller.c": """
                 extern int two(int);
-                int test_main(void) { test_print(two(5)); return 0; }
+                int test_main(void) { test_print(two(5)); test_print(two(6)); return 0; }
             """,
         })
-        self.assertEqual(out, ["5"])
-        self.assertEqual(self.last_report["arguments_filled_with_zero"], {"test_main": ["two argument 2"]})
+        # Each call counts in a site of its own (OPENRAC_REACH): its first call registers it.
+        self.assertEqual(out, ["reach", "test_main", "5", "reach", "test_main", "6"])
+        self.assertEqual(self.last_report["arguments_filled_with_zero"],
+                         {"test_main": ["two argument 2", "two argument 2"]})
+        self.assertEqual(self.last_generated.count("openrac_reach_site site_"), 2)
 
     def test_calls_follow_the_definition(self):
         # The caller declares the callee with its float and integer arguments
@@ -222,7 +231,68 @@ class Translate(unittest.TestCase):
                 int run(int unused) { test_print(mix(1.5f, 3)); return 0; }
             """,
         })
-        self.assertEqual(out, ["3", "1.500", "0"])
+        self.assertEqual(out, ["reach", "run", "3", "1.500", "0"])
+
+    def test_a_call_through_a_cast_of_a_function_follows_the_definition(self):
+        # The decompilation casts a function to another order of its float and integer
+        # parameters to get the retail argument setup (partupd_00280428.c). On the EE that is
+        # the function's own call; on the host it goes through the definition's type, with
+        # each kind's arguments in order: Windows x64 gives arguments slots by position, and
+        # the cast's type put the integer where the callee reads its second float.
+        out = self.run_program({
+            "callee.c": """
+                void func_00110000(int *out, int n, float a, float b) { *out = n * 100 + (int)a * 10 + (int)b; }
+            """,
+            "caller.c": """
+                extern void func_00110000(int *, int, float, float);
+                int test_main(void) {
+                    int r;
+                    ((void (*)(int *, float, float, int))func_00110000)(&r, 3.0f, 4.0f, 2);
+                    test_print(r);
+                    return 0;
+                }
+            """,
+        })
+        self.assertEqual(out, ["234"])
+        self.assertIn("GFN(void (*)(gaddr, int, float, float), ", self.last_generated)
+        self.assertNotIn("GFN(void (*)(gaddr, float, float, int), ", self.last_generated)
+
+    def test_a_callee_typedef_the_caller_does_not_know(self):
+        # The callee's file names its float and its pointer by typedefs the caller's file does
+        # not have: the call still passes the float in a float register and the pointer in an
+        # integer one, and the float result comes back.
+        out = self.run_program({
+            "callee.c": """
+                typedef float real_t;
+                typedef int word_t;
+                real_t half(word_t *p, word_t n, real_t x) { test_print(*p + n); return x * 0.5f; }
+            """,
+            "caller.c": """
+                extern float half(void *p, void *n, float x);
+                int test_main(void) { int v = 40; test_print_float(half(&v, (void *)2, 3.0f)); return 0; }
+            """,
+        })
+        self.assertEqual(out, ["42", "1.500"])
+
+    def test_the_ports_own_function_replaces_another_spelling_of_its_place(self):
+        # The decompilation has C for 0x00100100 under one spelling; the port's own function
+        # (host_functions) names the same place another way. Calls by either name, and through the
+        # address, reach the port's.
+        out = self.run_program({
+            "a.c": """
+                int FUN_00100100(void) { return 1; }
+                extern int func_00100100(void);
+                int test_main(void) {
+                    int (*p)(void) = (int (*)(void))0x00100100;
+                    test_print(FUN_00100100());
+                    test_print(p());
+                    return 0;
+                }
+            """,
+        }, config={"host_functions": HOST_FUNCTIONS + ["func_00100100"],
+                   "names": {"code": [r"^func_(?P<addr>[0-9A-Fa-f]{8})$", r"^FUN_(?P<addr>[0-9A-Fa-f]{8})$"]}},
+           host_c="int func_00100100(void) { return 2; }")
+        self.assertEqual(out, ["2", "2"])
 
     def test_pass_through(self):
         out = self.run_program({
@@ -295,6 +365,50 @@ class Translate(unittest.TestCase):
         """}, stubs=1)
         self.assertIn("a va_list passed as a game pointer, or the other way round",
                       self.last_report["stubbed"].values())
+
+    def test_a_files_own_va_list_is_a_game_pointer(self):
+        # rac1's vfprintf.c declares typedef char *va_list itself and walks the console's
+        # argument area, eight bytes a slot; the caller passes it as a pointer.
+        out = self.run_program({"a.c": """
+            typedef char *va_list;
+            int vsum(int n, va_list ap) {
+                int s = 0;
+                while (n--) s += (*(int *)((ap += 8) - 8));
+                return s;
+            }
+            extern int vsum_p(int n, void *ap) __asm__("vsum");
+            int wrap(int n, void *ap) { return vsum_p(n, ap); }
+            extern long D_00200000[3];
+            int test_main(void) {
+                D_00200000[0] = 4; D_00200000[1] = 5; D_00200000[2] = 6;
+                test_print(wrap(3, D_00200000));
+                return 0;
+            }
+        """})
+        self.assertEqual(out, ["15"])
+
+    def test_a_local_of_an_unnamed_enum(self):
+        # newlib's _vfprintf_r: enum { OCT, DEC, HEX } base; an int, its constants usable.
+        out = self.run_program({"a.c": """
+            int pick(int c) {
+                enum { OCT, DEC, HEX } base;
+                base = c == 'x' ? HEX : c == 'o' ? OCT : DEC;
+                return base == HEX ? 16 : base == OCT ? 8 : 10;
+            }
+            int test_main(void) { test_print(pick('x')); test_print(pick('d')); return 0; }
+        """})
+        self.assertEqual(out, ["16", "10"])
+
+    def test_two_functions_with_the_same_local_enum(self):
+        # The NTSC decomp declares `enum { JUMP = 7 };` inside several functions; hoisted to file
+        # scope the constant is written once, and one that differs keeps the function's own name.
+        out = self.run_program({"a.c": """
+            int one(int c) { enum { JUMP = 7, STAY = 1 }; return c == JUMP ? STAY : JUMP; }
+            int two(int c) { enum { JUMP = 7 }; return c + JUMP; }
+            int three(int c) { enum { JUMP = 9 }; return c + JUMP; }
+            int test_main(void) { test_print(one(7)); test_print(two(1)); test_print(three(1)); return 0; }
+        """})
+        self.assertEqual(out, ["1", "8", "10"])
 
     def test_candidate_replaces_an_assembly_stub(self):
         # The decompilation still has func_00110100 as assembly; its table of
@@ -437,6 +551,14 @@ class Translate(unittest.TestCase):
         """})
         self.assertEqual(out, ["missing", "func_00120000", "0"])
 
+    def test_a_stub_counts_its_calls_in_its_own_site(self):
+        # The stub's site logs the first call only; the rest are counted in its word.
+        out = self.run_program({"a.c": """
+            extern int func_00120000(int);
+            int test_main(void) { func_00120000(1); func_00120000(2); test_print(3); return 0; }
+        """})
+        self.assertEqual(out, ["missing", "func_00120000", "3"])
+
     def test_later_global_declaration_keeps_local_extern_type(self):
         out = self.run_program({"a.c": """
             int func_00100000(void) {
@@ -476,7 +598,7 @@ class Translate(unittest.TestCase):
     def test_gcc_295_habits(self):
         # Strings across lines, a later declaration that contradicts the
         # definition, inline assembly Clang cannot read, a variable-length
-        # array: the program still builds; the last two become stubs.
+        # array: the program still builds; the assembly becomes a stub.
         out = self.run_program({"a.c": """
             int twice(int x) { return 2 * x; }
             extern int twice(int, int);
@@ -487,10 +609,11 @@ class Translate(unittest.TestCase):
             lines";
                 test_print(twice(4, 9));
                 test_print(s[3] == '\\n');
+                test_print(vla(6));
                 return 0;
             }
-        """}, stubs=2)
-        self.assertEqual(out, ["8", "1"])
+        """}, stubs=1)
+        self.assertEqual(out, ["8", "1", "6"])
         self.assertIn("inline assembly Clang cannot read", self.last_report["stubbed"].values())
 
     def test_variable_length_array_of_a_local_length(self):
@@ -517,6 +640,99 @@ class Translate(unittest.TestCase):
         """})
         self.assertEqual(out, ["30", "0", "2340"])
 
+    def test_variable_length_array_of_fixed_rows(self):
+        # rac1's func_L12_00304038: float v[count][4], a row of four floats per element.
+        out = self.run_program({"a.c": """
+            void row(float *r, int i) { r[0] = i; r[3] = i * 2; }
+            int rows(int count) {
+                float v[count][4];
+                int i, s = 0;
+                for (i = 0; i < count; i++) row(v[i], i);
+                for (i = 0; i < count; i++) s += (int)v[i][0] + (int)v[i][3];
+                return s;
+            }
+            int test_main(void) { test_print(rows(6)); test_print(rows(1)); return 0; }
+        """})
+        self.assertEqual(out, ["45", "0"])
+
+    def test_variable_length_array_of_an_expression(self):
+        # rac1's func_L10_002DBA50: char scratch[*(int *)(data + 4) * 0x40]. The length goes into a
+        # local of its own on the same line, computed once where the array is declared.
+        out = self.run_program({"a.c": """
+            int fill(int *data) {
+                char scratch[(unsigned int)*(data + 1) * 0x40];
+                float rows[data[0] + 1][4], more[data[1] + 2];
+                int i, s = 0;
+                more[data[1] + 1] = 2;
+                for (i = 0; i < data[1] * 0x40; i++) scratch[i] = (char)i;
+                for (i = 0; i <= data[0]; i++) rows[i][3] = i;
+                for (i = 0; i < data[1] * 0x40; i++) s += scratch[i];
+                return s + (int)rows[data[0]][3] + (int)more[data[1] + 1];
+            }
+            int test_main(void) {
+                int d[2];
+                d[0] = 4; d[1] = 1;
+                test_print(fill(d));
+                return 0;
+            }
+        """})
+        self.assertEqual(out, [str(sum(range(64)) + 6)])
+
+    def test_a_macro_whose_body_casts_to_an_unnamed_record(self):
+        # rac1's help_0020CDF0.c (`#define DEFA (((struct { T a[1]; } *)D)->a)`) and
+        # vendor_002C0310.c (`#define S_I(p, o) (((struct { char _p[o]; int v; } *)(p))->v)`):
+        # written out where they are used, the records are named in each function.
+        out = self.run_program({"a.c": """
+            typedef struct { int x; short y; } T;
+            #define FIRST (((struct { T a[1]; } *)table)->a)
+            #define AT(p, o) (((struct { char _p[o]; int v; } *)(p))->v)
+            int test_main(void) {
+                int table[8];
+                FIRST[1].x = 7;
+                AT(table, 4) = 3;
+                test_print(table[2] + table[1]);
+                test_print(AT((char *)table, 8));
+                return 0;
+            }
+        """})
+        self.assertEqual(out, ["10", "7"])
+
+    def test_cast_macros_keep_lines_and_skip_other_directives(self):
+        src = ("#define AT(p, o) (((struct { char _p[o]; int v; } *)(p))->v)\n"
+               "int f(char *s) { return AT(s, 8) + AT(s,\n"
+               "   12); }\n"
+               "#define B AT(x, 4)\n"
+               "#undef AT\n"
+               "int g(char *s) { return AT(s, 4); }\n")
+        out = prep.expand_cast_macros(src).split("\n")
+        self.assertEqual(len(out), len(src.split("\n")))
+        self.assertEqual(out[1], "int f(char *s) { return (((struct { char _p[8]; int v; } *)(s))->v) + AT(s,")
+        self.assertEqual(out[3], "#define B AT(x, 4)")
+        self.assertEqual(out[5], "int g(char *s) { return AT(s, 4); }")
+
+    def test_alloca_takes_game_stack_until_the_function_returns(self):
+        # rac1's func_L13_002EE590: __builtin_alloca for a copy of a list. The space is in game
+        # memory (its address is passed on) and is given back when the function returns.
+        out = self.run_program({"a.c": """
+            int sum(int *p, int n) { int s = 0; while (n--) s += *p++; return s; }
+            int copy(int count) {
+                int *list;
+                int i;
+                if (count == 0) return -1;
+                list = __builtin_alloca(count * 4);
+                for (i = 0; i < count; i++) list[i] = i + 1;
+                return sum(list, count);
+            }
+            int test_main(void) {
+                int i, s = 0;
+                for (i = 0; i < 4000; i++) s = copy(100);  /* 400 bytes each: 1.6 MB if kept */
+                test_print(s);
+                test_print(copy(0));
+                return 0;
+            }
+        """})
+        self.assertEqual(out, ["5050", "-1"])
+
     def test_libraries_bind_to_shared_replacements(self):
         # The game's table binds an address to a shared replacement by name;
         # hostgen writes the binding (libraries.c) with the shared signature.
@@ -535,6 +751,42 @@ class Translate(unittest.TestCase):
         """)
         self.assertEqual(out, ["103"])
 
+
+    def test_literal_addresses_reach_the_loaded_levels_globals(self):
+        # The NTSC decomp's render_capture_effect_pass read the vendor's salesman flag through
+        # *(s32 *)0x1610A8: a literal address in the range the levels move is the same global a
+        # name at that address is (OPENRAC_DATA), not the executable's copy under the level. The
+        # host's relocation here moves the range up by 0x1000, as a loaded level would.
+        out = self.run_program({"a.c": """
+            typedef struct { int a; int b; } Pair;
+            extern int D_00300010[2];
+            extern Pair D_00300100;
+            int test_main(void) {
+                int *p = (int *)0x00300010;
+                *(s32 *)0x00300010 = 5;
+                ((int *)0x00300010)[1] = 6;
+                ((Pair *)0x00300100)->b = 7;
+                *(s32 *)(0x00300100 + 0) = 8;
+                *(s32 *)0x00200000 = 9;               /* below the range: as it is */
+                test_print(D_00300010[0]);
+                test_print(D_00300010[1]);
+                test_print(D_00300100.b);
+                test_print(D_00300100.a);
+                test_print(p[1]);
+                test_print(*(s32 *)0x00201000);       /* nothing went to the executable's copy */
+                test_print(*(s32 *)0x00200000);
+                return 0;
+            }
+        """}, config={"relocate": [0x300000, 0x400000]}, host_c="""
+            gaddr openrac_relocate_low = 0x300000, openrac_relocate_high = 0x400000;
+            gaddr openrac_relocate_data(gaddr a) { return a + 0x1000; }
+            gaddr openrac_relocate_code(gaddr a) { return a + 0x1000; }
+        """)
+        self.assertEqual(out, ["5", "6", "7", "8", "6", "0", "9"])
+        self.assertEqual(sorted(self.last_report["literal_addresses"]["test_main"]), [
+            "0x300010 -> OPENRAC_DATA(0x00300010u)", "0x300010 -> OPENRAC_DATA(0x00300010u)",
+            "0x300010 -> OPENRAC_DATA(0x00300010u)", "0x300100 -> OPENRAC_DATA(0x00300100u)",
+            "0x300100 -> OPENRAC_DATA(0x00300100u)"])
 
     def test_a_separate_program_in_its_own_group(self):
         # Up Your Arsenal's menu is a program of its own, loaded over part of
@@ -613,6 +865,163 @@ class Places(unittest.TestCase):
                                            "--jobs", "1", "--quiet"]), 0)
             self.assertIn("OPENRAC_LDATA(0, 0x00410000u)", (out / "a.c").read_text())
 
+    @unittest.skipUnless(have_compiler(), "needs Clang on a POSIX host")
+    def test_a_data_label_with_an_offset_is_the_symbol_plus_it(self):
+        # rac1/ntsc's l16 00214598.c: extern f32 D_L16_0017C224[] __asm__("D_L16_0017C218+12").
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "game"
+            (src / "src").mkdir(parents=True)
+            (src / "src" / "a.c").write_text(
+                "extern float row[] __asm__(\"D_L00_00410000+12\");\n"
+                "extern float back[] __asm__(\"D_00200010 - 0x10\");\n"
+                "float func_L00_00420000(void) { return row[1] + back[0]; }\n")
+            (src / "functions.tsv").write_text(
+                "func_L00_00420000\tshared\t4\tfingerprint\t2\t00:00420000,01:00430000\n")
+            (root / "hostgen.json").write_text(json.dumps({
+                "sources": ["src"], "includes": [], "places": "functions.tsv",
+                "relocate": [0x1A7C80, 0x500000],
+            }))
+            out = root / "gen"
+            self.assertEqual(hostgen.main(["--game", str(root / "hostgen.json"),
+                                           "--source", str(src), "--out", str(out),
+                                           "--jobs", "1", "--quiet"]), 0)
+            text = (out / "a.c").read_text()
+            self.assertIn("OPENRAC_LDATA(0, 0x0041000Cu)", text)
+            self.assertIn("0x00200000u", text)
+            self.assertNotIn("openrac_stub", text)
+
+    @unittest.skipUnless(have_compiler(), "needs Clang on a POSIX host")
+    def test_code_declared_as_data_is_relocated_as_code(self):
+        # rac1's space.c: extern u8 resident_effect_entry[] __asm__("func_0022F4C0"), passed on as
+        # resident_effect_entry + 8, the entry of the function the catalogue starts 8 bytes early.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "game"
+            (src / "src").mkdir(parents=True)
+            (src / "src" / "a.c").write_text(
+                "typedef unsigned char u8;\n"
+                "extern u8 entry[] __asm__(\"func_00300000\");\n"
+                "extern void func_00320000(void *);\n"
+                "void func_00310000(void) { func_00320000(entry + 8); func_00320000(entry); }\n")
+            (root / "hostgen.json").write_text(json.dumps({
+                "sources": ["src"], "includes": [],
+                "relocate": [0x1A7C80, 0x500000],
+            }))
+            out = root / "gen"
+            self.assertEqual(hostgen.main(["--game", str(root / "hostgen.json"),
+                                           "--source", str(src), "--out", str(out),
+                                           "--jobs", "1", "--quiet"]), 0)
+            text = (out / "a.c").read_text()
+            self.assertIn("OPENRAC_CODE((gaddr)(0x00300000u) + (gaddr)(8)", text)
+            self.assertIn("OPENRAC_CODE(0x00300000u)", text)
+            self.assertNotIn("OPENRAC_DATA", text)
+
+    @unittest.skipUnless(have_compiler(), "needs Clang on a POSIX host")
+    def test_literal_addresses_take_their_globals_relocation(self):
+        # A literal address goes the way a D_ name at that address would: the loaded level's in an
+        # executable function, the level's own copy in a function several levels carry, as it is
+        # in a function of one level; a function pointer as code.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "game"
+            (src / "src").mkdir(parents=True)
+            (src / "src" / "a.c").write_text(
+                "typedef void (*fn_t)(void);\n"
+                "int func_00300000(void) { return *(int *)0x00410000 + *(int *)0x00100000; }\n"
+                "void func_00300100(void) { ((fn_t)0x00320000)(); }\n"
+                "int func_L00_00420000(void) { return *(int *)0x00410004; }\n"
+                "void func_L00_00420100(void) { *(int *)0x00410008 = 1; }\n")
+            (src / "functions.tsv").write_text(
+                "func_L00_00420000\tshared\t4\tfingerprint\t2\t00:00420000,01:00430000\n"
+                "func_L00_00420100\tl00\t4\tfingerprint\t1\t00:00420100\n")
+            (root / "hostgen.json").write_text(json.dumps({
+                "sources": ["src"], "includes": [], "places": "functions.tsv",
+                "relocate": [0x1A7C80, 0x500000],
+            }))
+            out = root / "gen"
+            self.assertEqual(hostgen.main(["--game", str(root / "hostgen.json"),
+                                           "--source", str(src), "--out", str(out),
+                                           "--jobs", "1", "--quiet"]), 0)
+            text = (out / "a.c").read_text()
+            self.assertIn("OPENRAC_DATA(0x00410000u)", text)
+            self.assertNotIn("OPENRAC_DATA(0x00100000u)", text)
+            self.assertIn("OPENRAC_CODE(0x00320000u)", text)
+            self.assertIn("OPENRAC_LDATA(0, 0x00410004u)", text)
+            self.assertNotIn("(0, 0x00410008u)", text)
+            report = json.loads((out / "report.json").read_text())
+            self.assertEqual(report["literal_addresses"], {
+                "func_00300000": ["0x410000 -> OPENRAC_DATA(0x00410000u)"],
+                "func_00300100": ["0x320000 -> OPENRAC_CODE(0x00320000u)"],
+                "func_L00_00420000": ["0x410004 -> OPENRAC_LDATA(0, 0x00410004u)"],
+                "func_L00_00420100": ["0x410008 -> kept"],
+            })
+
+    @unittest.skipUnless(have_compiler(), "needs Clang on a POSIX host")
+    def test_small_folded_executable_function_forms_its_own_globals(self):
+        # rac1's func_0023BF48 (movie.c, printf on a buffer of its own) is also, by its instructions,
+        # a Novalis moby's update, whose first argument is a draw callback of that level.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "game"
+            (src / "src").mkdir(parents=True)
+            (src / "src" / "a.c").write_text(
+                "extern char D_00200000[];\n"
+                "extern void func_00320000(void *, char *);\n"
+                "void func_00300000(char *fmt) { func_00320000(D_00200000, fmt); }\n")
+            (src / "functions.tsv").write_text(
+                "func_00300000\texe\t36\tfingerprint\t2\t00:00440000,01:00450000,01:00460000\n")
+            (root / "hostgen.json").write_text(json.dumps({
+                "sources": ["src"], "includes": [], "places": "functions.tsv",
+                "relocate": [0x1A7C80, 0x500000],
+            }))
+            out = root / "gen"
+            self.assertEqual(hostgen.main(["--game", str(root / "hostgen.json"),
+                                           "--source", str(src), "--out", str(out),
+                                           "--jobs", "1", "--quiet"]), 0)
+            text = (out / "a.c").read_text()
+            self.assertIn("openrac_data_in_copy(-1, 0x00300000u, 36u, openrac_self_, 0x00200000u)", text)
+            self.assertIn("openrac_guest_entry((openrac_host_fn)func_00300000)", text)
+
+    def generate(self, root: Path, source: str, places: str, cfg: dict | None = None) -> Path:
+        src = root / "game"
+        (src / "src").mkdir(parents=True)
+        (src / "src" / "a.c").write_text(source)
+        (src / "functions.tsv").write_text(places)
+        (root / "hostgen.json").write_text(json.dumps({
+            "sources": ["src"], "includes": [], "places": "functions.tsv", **(cfg or {})}))
+        out = root / "gen"
+        self.assertEqual(hostgen.main(["--game", str(root / "hostgen.json"), "--source", str(src),
+                                       "--out", str(out), "--jobs", "1", "--quiet"]), 0)
+        return out
+
+    def test_the_address_of_one_place_of_a_folded_wrapper_is_that_place(self):
+        # rac1's Suck Cannon passes func_L00_00238128, the second of the five level 0 wrappers the
+        # catalogue folds into func_L00_00237B70, as a HUD callback: each wrapper calls another
+        # function, so the address must be that wrapper's, not the folded function's first.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.generate(Path(tmp),
+                "void func_L00_00237B70(void) {}\n"
+                "extern void cb(void) __asm__(\"func_L00_00238128\");\n"
+                "extern void func_00300000(int);\n"
+                "void func_L00_00240000(void) { func_00300000((int)cb); func_00300000((int)func_L00_00237B70); }\n",
+                "func_L00_00237B70\tshared\t28\tfp\t2\t00:00237B70,00:00238128,01:00337B70,01:00338128\n"
+                "func_L00_00240000\tlevel\t64\tfp2\t1\t00:00240000\n")
+            text = (out / "a.c").read_text()
+            self.assertIn("0x00238128u", text)
+            self.assertIn("0x00237B70u", text)
+
+    def test_an_entry_inside_a_catalogue_place_answers_calls(self):
+        # hostgen.json "entries": rac1's HUD gauge draw starts 0x20 bytes into its catalogue place.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.generate(Path(tmp),
+                "int func_L06_0024A080(char *p) { return p[0]; }\n",
+                "func_L06_0024A080\tshared\t940\tfp\t2\t06:0024A080,07:00262970\n",
+                {"entries": {"func_L06_0024A080": "0x20"}})
+            text = (out / "functions.c").read_text()
+            for addr in ("0x0024A080u", "0x0024A0A0u", "0x00262970u", "0x00262990u"):
+                self.assertIn(f"{{{addr}, (openrac_host_fn)func_L06_0024A080", text)
+
 
 class TypeStrings(unittest.TestCase):
     def test_declarators(self):
@@ -625,6 +1034,7 @@ class TypeStrings(unittest.TestCase):
             "float *[3][2]": "gaddr x[3][2]",
             "struct (unnamed struct at src/a.c:3:9)": "struct openrac_anon_src_a_c_3_9 x",
             "union S::(anonymous at a.c:1:25)": "union openrac_anon_a_c_1_25 x",
+            "enum (unnamed enum at src/a.c:5:2)": "int x",
             "void (int) __attribute__((noreturn))": "void x(int)",
             "struct Moby *[count]": "gaddr x[count]",
         }
@@ -638,6 +1048,47 @@ class TypeStrings(unittest.TestCase):
 
 
 class Preparation(unittest.TestCase):
+    def test_readable_names_are_written_as_their_address_names(self):
+        # rac1/pal's names.h: a definition under its readable name is still the matched C of
+        # func_0022F4C8, so the port's own copy of that function steps aside.
+        aliases = prep.read_aliases('#define DrawQuads    func_0022F4C8\n#define D_X D_00100000\n')
+        self.assertEqual(aliases, {"DrawQuads": "func_0022F4C8", "D_X": "D_00100000"})
+        src = ('#define DrawQuads func_0022F4C8\n'
+               'void DrawQuads(char *m) { /* DrawQuads */ char *s = "DrawQuads"; DrawQuadsX(m); }\n'
+               'INCLUDE_ASM("asm", func_0022F4C0);\n')
+        out = prep.unalias(src, aliases)
+        self.assertIn('#define DrawQuads func_0022F4C8\nvoid func_0022F4C8(char *m) { /* DrawQuads */ '
+                      'char *s = "DrawQuads"; DrawQuadsX(m); }', out)
+        both = 'void func_0022F4C0(void) {}\nvoid func_0022F4C8(char *m) {}\n'
+        text = prep.use_candidates(out, {"func_0022F4C0": both}, set())
+        self.assertEqual(text.count("void func_0022F4C8(char *m)"), 1)
+
+    def test_each_declarator_keeps_its_own_assembler_name(self):
+        # Batalia: several names in one extern statement each reach their own symbol, not the first's.
+        src = ('extern float func_A(int),func_B(float), *D_C;\n'
+               'void f(void) { func_B(1.0f); func_A(2); }\n')
+        out = prep.own_declarations(src, "_hc1")
+        self.assertIn('func_A_hc1(int) __asm__("func_A")', out)
+        self.assertIn('func_B_hc1(float) __asm__("func_B")', out)
+        self.assertIn('*D_C_hc1 __asm__("D_C")', out)
+        self.assertIn("func_B_hc1(1.0f); func_A_hc1(2);", out)
+        self.assertEqual(out.count("\n"), src.count("\n"))
+
+    def test_a_labelled_va_list_library_name_is_renamed(self):
+        # The US vfprintf: named like the library's, bound to a game address, taking a game pointer.
+        src = ('s32 vfprintf(FILE *fp, const char *f, void *ap) __asm__("FUN_00116da8");\n'
+               's32 vfprintf(FILE *fp, const char *f, void *ap) { return vfprintf(fp, f, ap); }\n'
+               'char *s = "vfprintf(";\n')
+        out = prep.rename_va_builtins(src)
+        self.assertEqual(out.count("vfprintf_game("), 3)
+        self.assertIn('"vfprintf("', out)
+        self.assertEqual(prep.rename_va_builtins("int vfprintf(void *, const char *, void *);\n"),
+                         "int vfprintf(void *, const char *, void *);\n")
+
+    def test_commas_in_a_parameter_list_do_not_split(self):
+        src = "extern int func_A(int, float);\n"
+        self.assertEqual(prep.split_declarators(src), src)
+
     def test_long_constant_suffix_is_widened(self):
         # The EE's long is 64 bits: 1UL << 60 must stay a 64-bit shift.
         src = 'x = 1UL << 60; y = 0xFE00L; z = 3LU; w = 5ULL; s = "2L";'
@@ -715,6 +1166,373 @@ class Preparation(unittest.TestCase):
         self.assertEqual(prep.use_draft(taken, "NON_MATCHING"), taken)
         # Another guard is left alone.
         self.assertEqual(prep.use_draft(stub, "OTHER"), stub)
+
+
+ASM_CONFIG = {"asm": {"enabled": True, "dirs": ["asm"], "gp": "0x00180000"}}
+
+
+@unittest.skipUnless(have_compiler(), "needs Clang on a POSIX host")
+class FromAssembly(unittest.TestCase):
+    """C from assembly (asmc.py): a function the test's decompilation has only as assembly (an
+    INCLUDE_ASM stub, with an assembly file tests/mips.py writes the way the setup writes one),
+    translated, built with the C that calls it, run, and its output checked."""
+    run_program = Translate.run_program
+
+    def run_asm(self, c: str, functions: dict[str, tuple[int, str]], symbols=None, tables=None) -> list[str]:
+        files = {f"game/asm/{name}.s": mips.assemble(name, start, text, symbols, (tables or {}).get(name))
+                 for name, (start, text) in functions.items()}
+        return self.run_program({"a.c": c}, config=ASM_CONFIG, extra_files=files)
+
+    def test_branches_and_delay_slots(self):
+        # sum of n..1, the counter decremented in the delay slot after the test read it; a likely
+        # branch whose delay slot runs only when it is taken.
+        out = self.run_asm("""
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(int n);
+            INCLUDE_ASM("asm", func_00100100);
+            extern int func_00100100(int x);
+            int test_main(void) {
+                test_print(func_00100000(4));
+                test_print(func_00100000(0));
+                test_print(func_00100100(3));
+                test_print(func_00100100(0));
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                daddu $2, $0, $0
+                beq $4, $0, done
+                nop
+            loop:
+                addu $2, $2, $4
+                bne $4, $0, loop      # $4 is tested, then decremented: one more turn with 0
+                addiu $4, $4, -1
+            done:
+                jr $31
+                nop
+            """), "func_00100100": (0x00100100, """
+                addiu $2, $0, 100
+                bnel $4, $0, out
+                addiu $2, $0, 7       # only when taken
+                addiu $2, $2, 1
+            out:
+                jr $31
+                nop
+            """)})
+        self.assertEqual(out, ["10", "0", "7", "101"])
+        self.assertEqual(self.last_report["functions_from_assembly"], 2)
+
+    def test_calls_pass_arguments_by_the_callees_prototype(self):
+        # The assembly calls C: integers in $a0.., floats in $f12.., the result in $v0 / $f0;
+        # its own frame on the game stack, a local's address passed to C.
+        out = self.run_asm("""
+            int func_00200000(int a, float b, int c) {
+                test_print(a); test_print_float(b); test_print(c);
+                return a + c;
+            }
+            float func_00200100(float x) { return x * 2.0f; }
+            void func_00200200(int *p) { test_print(*p); *p = 77; }
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(int a, int b, float f);
+            int test_main(void) { test_print(func_00100000(5, 6, 1.5f)); return 0; }
+        """, {"func_00100000": (0x00100000, """
+                addiu $29, $29, -32
+                sq $31, 16($29)
+                sw $16, 0($29)
+                daddu $16, $5, $0      # keep b
+                sw $5, 4($29)
+                daddu $6, $5, $0       # c = b
+                jal func_00200000      # (a, f, b)
+                mov.s $f12, $f12
+                addu $16, $16, $2      # b + (a + b)
+                jal func_00200100
+                mov.s $f12, $f12
+                mfc1 $3, $f0
+                jal func_00200200      # the address of the local at 4($sp)
+                addiu $4, $29, 4
+                lw $2, 4($29)
+                addu $2, $2, $16
+                lq $31, 16($29)
+                lw $16, 0($29)
+                jr $31
+                addiu $29, $29, 32
+            """)}, symbols={"func_00200000": 0x00200000, "func_00200100": 0x00200100, "func_00200200": 0x00200200})
+        self.assertEqual(out, ["5", "1.500", "6", "6", "94"])
+
+    def test_floats(self):
+        # (a * b + c) / d, a compare and its branch, a conversion to an integer.
+        out = self.run_asm("""
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(float a, float b, float c, float d);
+            INCLUDE_ASM("asm", func_00100100);
+            extern float func_00100100(float a, float b);
+            int test_main(void) {
+                test_print(func_00100000(2.0f, 3.0f, 4.0f, 0.5f));
+                test_print_float(func_00100100(1.0f, 2.0f));
+                test_print_float(func_00100100(5.0f, 2.0f));
+                test_print_float(func_00100100(-1.0f, 0.0f));
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                mul.s $f0, $f12, $f13
+                add.s $f0, $f0, $f14
+                div.s $f0, $f0, $f15
+                cvt.w.s $f1, $f0
+                jr $31
+                mfc1 $2, $f1
+            """), "func_00100100": (0x00100100, """
+                c.lt.s $f12, $f13
+                bc1t less
+                sub.s $f0, $f12, $f13
+                jr $31
+                nop
+            less:
+                div.s $f0, $f12, $f13  # by zero: the EE's largest float, not infinity
+                jr $31
+                neg.s $f0, $f0
+            """)})
+        self.assertEqual(out[0], "20")
+        self.assertEqual(out[1:3], ["-0.500", "3.000"])
+        self.assertEqual(out[3], "340282346638528859811704183484516925440.000")
+
+    def test_loads_and_stores(self):
+        out = self.run_asm("""
+            extern unsigned char D_00300000[32];
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(unsigned char *p);
+            int test_main(void) {
+                int i;
+                for (i = 0; i < 32; i++) D_00300000[i] = (unsigned char)(i * 16 + 1);
+                test_print(func_00100000(D_00300000));
+                for (i = 16; i < 32; i++) test_print(D_00300000[i]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                lb $2, 15($4)          # 0xF1: -15
+                lbu $3, 15($4)         # 241
+                addu $2, $2, $3        # 226
+                lh $3, 2($4)           # 0x3121
+                addu $2, $2, $3
+                lq $8, 0($4)           # all 16 bytes
+                sq $8, 16($4)          # copied
+                lwl $9, 4($4)          # an unaligned word at 1: bytes 1..4
+                lwr $9, 1($4)
+                sw $9, 16($4)
+                ld $10, 8($4)
+                dsrl32 $10, $10, 0
+                jr $31
+                addu $2, $2, $10       # + the high word of the second doubleword (signed)
+            """)}, symbols={"D_00300000": 0x00300000})
+        # 226 + 0x3121 + (bytes 12..15 as a word: 0xF1E1D1C1 = -237907519)
+        self.assertEqual(out[0], str(226 + 0x3121 + (0xF1E1D1C1 - (1 << 32))))
+        self.assertEqual(out[1:5], ["17", "33", "49", "65"])          # bytes 1..4 stored at 16..19
+        self.assertEqual(out[5:], [str((i * 16 + 1) & 0xFF) for i in range(4, 16)])
+
+    def test_jump_table_and_globals(self):
+        # A switch through a table of code addresses in the game's data, the table's address
+        # formed with %hi/%lo; a global through $gp.
+        source = """
+                sltiu $2, $4, 3
+                beq $2, $0, other
+                sll $4, $4, 2
+                lui $2, %hi(jtbl_00300000)
+                addiu $2, $2, %lo(jtbl_00300000)
+                addu $4, $4, $2
+                lw $4, 0($4)
+                jr $4
+                nop
+            case0:
+                jr $31
+                addiu $2, $0, 10
+            case1:
+                jr $31
+                lw $2, -0x10($28)      # D_0017FFF0, through $gp
+            case2:
+                lui $3, %hi(D_00300010)
+                lw $2, %lo(D_00300010)($3)
+                jr $31
+                addiu $2, $2, 1
+            other:
+                jr $31
+                addiu $2, $0, -1
+        """
+        labels = mips.label_addresses(0x00100000, source)
+        out = self.run_asm(f"""
+            extern unsigned int D_00300000[8];
+            extern int D_0017FFF0;
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(int);
+            int test_main(void) {{
+                D_00300000[0] = 0x{labels['case0']:08X}u;
+                D_00300000[1] = 0x{labels['case1']:08X}u;
+                D_00300000[2] = 0x{labels['case2']:08X}u;
+                D_00300000[4] = 41;
+                D_0017FFF0 = 20;
+                test_print(func_00100000(0)); test_print(func_00100000(1));
+                test_print(func_00100000(2)); test_print(func_00100000(9));
+                return 0;
+            }}
+        """, {"func_00100000": (0x00100000, source)},
+            symbols={"jtbl_00300000": 0x00300000, "D_00300010": 0x00300010},
+            tables={"func_00100000": {"jtbl_00300000": ["case0", "case1", "case2"]}})
+        self.assertEqual(out, ["10", "20", "42", "-1"])
+
+    def test_mmi_and_vu0(self):
+        out = self.run_asm("""
+            extern float D_00300000[12];
+            extern int D_00300100[8];
+            INCLUDE_ASM("asm", func_00100000);
+            extern void func_00100000(float *v, int *w);
+            int test_main(void) {
+                int i;
+                for (i = 0; i < 4; i++) { D_00300000[i] = (float)(i + 1); D_00300000[4 + i] = 10.0f * (i + 1); }
+                for (i = 0; i < 4; i++) D_00300100[i] = i + 1;
+                func_00100000(D_00300000, D_00300100);
+                for (i = 8; i < 12; i++) test_print_float(D_00300000[i]);
+                for (i = 4; i < 8; i++) test_print(D_00300100[i]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                lqc2 $vf1, 0($4)            # (1, 2, 3, 4)
+                lqc2 $vf2, 16($4)           # (10, 20, 30, 40)
+                vmulbc.xyz $vf3, $vf1, $vf2y   # (20, 40, 60, w kept)
+                vadd.w $vf3, $vf1, $vf2     # w = 44
+                sqc2 $vf3, 32($4)
+                lq $8, 0($5)                # (1, 2, 3, 4)
+                pextlw $9, $8, $8           # (1, 1, 2, 2)
+                pcpyld $10, $9, $8          # (1, 2, 1, 1)
+                jr $31
+                sq $10, 16($5)
+            """)}, symbols={})
+        self.assertEqual(out, ["20.000", "40.000", "60.000", "44.000", "1", "2", "1", "1"])
+
+    def test_declared_nowhere_gets_its_parameters_from_its_registers(self):
+        # Called only through its code address; the C calls it as (int, int).
+        out = self.run_asm("""
+            INCLUDE_ASM("asm", func_00100000);
+            int test_main(void) {
+                int (*f)(int, int) = (int (*)(int, int))0x00100000;
+                test_print(f(30, 12));
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                jr $31
+                addu $2, $4, $5
+            """)})
+        self.assertEqual(out, ["42"])
+
+    def test_what_it_cannot_write_stays_a_stub_and_is_reported(self):
+        out = self.run_asm("""
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(void);
+            int test_main(void) { test_print(func_00100000()); return 0; }
+        """, {"func_00100000": (0x00100000, """
+                syscall
+                jr $31
+                nop
+            """)})
+        self.assertEqual(out, ["missing", "func_00100000", "0"])
+        self.assertEqual(self.last_report["functions_from_assembly"], 0)
+        self.assertIn("a system call", self.last_report["assembly_unsupported"]["func_00100000"])
+
+    def test_an_input_no_caller_passes_stays_a_stub(self):
+        # $3 read before it is written: a hand-written routine's own convention, or a fragment.
+        self.run_asm("""
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(int);
+            int test_main(void) { return func_00100000(1) * 0; }
+        """, {"func_00100000": (0x00100000, """
+                jr $31
+                addu $2, $4, $3
+            """)})
+        self.assertIn("$3", self.last_report["assembly_unsupported"]["func_00100000"])
+
+    def test_a_routine_taking_registers_runs_in_place(self):
+        # The helper takes $3 (no prototype can say so): the call runs its code in place and comes
+        # back through $ra; the function's own return is the saved $ra's.
+        out = self.run_asm("""
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(int);
+            int test_main(void) { test_print(func_00100000(4)); test_print(func_00100000(10)); return 0; }
+        """, {"func_00100000": (0x00100000, """
+                addiu $29, $29, -16
+                sq $31, 0($29)
+                jal func_00100100
+                addiu $3, $4, 5
+                jal func_00100100
+                daddu $3, $2, $0
+                lq $31, 0($29)
+                jr $31
+                addiu $29, $29, 16
+            """), "func_00100100": (0x00100100, """
+                jr $31
+                sll $2, $3, 1
+            """)}, symbols={"func_00100100": 0x00100100})
+        self.assertEqual(out, ["36", "60"])
+
+    def test_console_form(self):
+        # The form for the console's compiler (rac1-decomp's tools/fcheck.py): the function under a
+        # name of its own with the function's symbol, calls by retail address with every argument
+        # register, memory at the console's addresses.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "console"
+            files = {"game/asm/func_00100000.s": mips.assemble("func_00100000", 0x00100000, """
+                addiu $29, $29, -16
+                sq $31, 0($29)
+                jal func_00200000
+                lw $4, 0x10($4)
+                lq $31, 0($29)
+                jr $31
+                addiu $29, $29, 16
+            """, {"func_00200000": 0x00200000})}
+            self.run_program({"a.c": """
+                int func_00200000(int x) { return x; }
+                INCLUDE_ASM("asm", func_00100000);
+                extern int func_00100000(int *p);
+                int test_main(void) { return 0; }
+            """}, config={**ASM_CONFIG}, extra_files=files, hostgen_args=["--asm-console", str(out)])
+            text = (out / "func_00100000.c").read_text()
+        self.assertIn('int openrac_asmc_func_00100000(gaddr a0) __asm__("func_00100000");', text)
+        self.assertIn("((int (*)(openrac_u64, openrac_u64, openrac_u64, openrac_u64, openrac_u64, openrac_u64, "
+                      "openrac_u64, openrac_u64, float, float, float, float, float, float, float, float, openrac_u64, openrac_u64, openrac_u64, openrac_u64))0x00200000u)", text)
+        self.assertIn("#define OPENRAC_EE_PTR(a) ((void *)(openrac_u32)(a))", text)
+        self.assertNotIn("GFN(", text)
+
+
+class Decoding(unittest.TestCase):
+    def test_words(self):
+        cases = {
+            0x27BDFFE0: ("addiu", dict(rs=29, rt=29, imm=-32)),
+            0x03E00008: ("jr", dict(rs=31)),
+            0x0C080000: ("jal", dict(target=0x00200000)),
+            0x7FB00010: ("sq", dict(rs=29, rt=16, imm=16)),
+            0x46020000: ("add.s", dict(fs=0, ft=2, fd=0)),
+            0x4A0208A8: ("vadd", dict(fs=1, ft=2, fd=2)),
+            0x70A84389: ("pcpyld", dict(rs=5, rt=8, rd=8)),
+        }
+        for word, (op, fields) in cases.items():
+            with self.subTest(hex(word)):
+                i = asm.decode(word, 0x00100000)
+                self.assertEqual(i.op, op)
+                for k, v in fields.items():
+                    self.assertEqual(getattr(i, k), v, k)
+
+    def test_file_reading(self):
+        text = mips.assemble("func_00100000", 0x00100000, """
+            beq $4, $0, end
+            nop
+        end:
+            jr $31
+            nop
+        """)
+        path = Path(self.id().replace(".", "_") + ".s")
+        try:
+            path.write_text(text)
+            (block,) = asm.parse_file(path)
+        finally:
+            path.unlink()
+        self.assertEqual(block.name, "func_00100000")
+        self.assertEqual([l.addr for l in block.lines], [0x00100000, 0x00100004, 0x00100008, 0x0010000C])
+        self.assertEqual(block.labels, {0x00100008: ".L00100008"})
 
 
 if __name__ == "__main__":

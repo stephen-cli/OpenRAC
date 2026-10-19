@@ -107,7 +107,7 @@ extern int func_00122630(void *, short, short, short, short, short, short, short
 extern int func_00122958(void *, void *);
 extern int func_00120858(int, unsigned short);
 
-s32 func_00202AA8(MipTexture_202AA8 *tex, u64 *regs)
+s32 UploadMipTexture(MipTexture_202AA8 *tex, u64 *regs)
 {
     MipUpload_202AA8 upload;
     LoadImage_202AA8 load_image;
@@ -118,7 +118,7 @@ s32 func_00202AA8(MipTexture_202AA8 *tex, u64 *regs)
     u64 pal;
     u64 lod;
 
-    func_001F99B0(&upload, 0, sizeof(upload));
+    FastMemSet(&upload, 0, sizeof(upload));
     switch (tex->psm) {
     case 0:
     case 2:
@@ -145,8 +145,8 @@ s32 func_00202AA8(MipTexture_202AA8 *tex, u64 *regs)
     default:
         break;
     }
-    upload.width_log2 = func_001F9968(tex->width);
-    upload.height_log2 = func_001F9968(tex->height);
+    upload.width_log2 = log2dim(tex->width);
+    upload.height_log2 = log2dim(tex->height);
     upload.mip_addresses[0] = (s32)tex->data + upload.palette_size;
     switch (tex->psm) {
     case 0:
@@ -230,7 +230,7 @@ extern void func_001F9A00(void *, void *, int);
 extern int func_001F9968(int);
 
 /* ParseParticleTexs */
-void func_00202F00(int *hdr, int base, int *list, int count) {
+void ParseParticleTexs(int *hdr, int base, int *list, int count) {
     int n = hdr[0];
     int off = hdr[2];
     int size = hdr[3];
@@ -268,7 +268,7 @@ extern short func_001F9968_s(int) __asm__("func_001F9968");
 
 /* Unpack count point records (x, y, u, v words, 12.4 fixed point for
    x/y) into D_0018D540. Adapted from Lombyte (MIT) for PAL. */
-void func_00203038(int *src, int count) {
+void UnpackPointRecords(int *src, int count) {
     int x;
     int y;
     int u;
@@ -330,7 +330,7 @@ extern SkyDefL *D_0016055C_s __asm__("D_0016055C") MACRO_ADDR;
    retail reloads it after each call. The item pointer is a separate
    `sh + k` local: loop.c then reduces it to one register starting at sh
    and reaches the item at +0x20 from it, as retail does. */
-void func_00203118(SkyDefL *s) {
+void RelocateSkyDefinition(SkyDefL *s) {
     int i;
 
     D_0016055C_s = s;
@@ -435,7 +435,7 @@ extern char D_0015FCB0[];
 #define ALIGN64(x) (((x) + 0x3F) & 0xFFFFFFC0)
 
 /* Builds the runtime HUD-bank arena from the compressed HUD image. Adapted from Lombyte (MIT) for PAL: ui/hud/load_hud_banks.c, load_hud_banks. */
-void func_002032D0(void) {
+void LoadHudBanks(void) {
     SrcHdr *base;
     int *out;
     int *p;
@@ -523,16 +523,16 @@ void func_002032D0(void) {
  */
 extern int *D_0015EF4C MACRO_ADDR;
 extern char *D_0019A500;
-extern void func_0020C468(int);
+extern void func_0020C468(int, int);
 
 /* LoadCompressedHudBank(int, char *). Each scaled index in its own local
    gives retail's base-first addu; written inline, the multiply goes
    first. */
-void func_00203548(int idx, int size) {
+void LoadCompressedHudBank(int idx, int size) {
     if (((size + 0xF) & 0xFFFFFFF0) != 0) {
         int *base = D_0015EF4C;
         int off = idx * 8;
-        func_0020C468(*(int *)((char *)base + off + 0x28) + (int)base);
+        func_0020C468(*(int *)((char *)base + off + 0x28) + (int)base, (size + 0xF) & 0xFFFFFFF0);
     }
     {
         int off = idx * 4;
@@ -645,7 +645,7 @@ extern long D_0019E7D8[];
    the second word), -1 a fixed constant and 0. The row is read before
    the sign test, as in retail. The OR operands are named locals so fold
    does not move the 0x20 to the end of the chain. */
-void func_00203808(long *out, int arg1, int arg2, int arg3, int arg4, int arg5) {
+void SetUpVisGifViewer(long *out, int arg1, int arg2, int arg3, int arg4, int arg5) {
     long f0 = D_0019E640[arg5 * 3];
     long f1 = D_0019E640[arg5 * 3 + 1];
     long f2 = D_0019E640[arg5 * 3 + 2];
@@ -719,7 +719,7 @@ typedef struct {
    loop pass hoists their constants into saved registers, and the pointer
    advances in the for increment so the reversed counter's decrement
    lands in FlushCache's delay slot. */
-void func_00203958(int base, int count, Chunk *list) {
+void UploadTextureImages(int base, int count, Chunk *list) {
     GsLoadImage li;
     int i;
 
@@ -758,7 +758,7 @@ void func_00203958(int base, int count, Chunk *list) {
     D_0015EF78 = D_0015EF74;
 }
 
-void func_00203B18(char *arg0, int idx) {
+void relocateObjectPointers(char *arg0, int idx) {
     char *obj;
     int *p;
     int i;
@@ -970,20 +970,20 @@ extern void func_00203B70(void *, int, int, int);
    the slot count is bumped. A non-null arg0 also has its +0x2C field
    kept in D_001B6500 and is set up by func_00203B70 once the count is
    bumped. The slot byte is D_00160000 read again as a byte. */
-void func_00203E78(void *arg0, int arg1, int arg2, int arg3) {
+void RegisterMobyClass(void *arg0, int arg1, int arg2, int arg3) {
     int idx = D_00160000;
 
     D_001B3E40[arg3] = *(unsigned char *)&D_00160000;
     D_001B3C80[idx] = arg3;
     D_001B3580[idx] = arg0;
     if (arg0 == 0) {
-        func_00213BB8(arg3);
+        SetMobyClassEntry(arg3);
         D_00160000 = D_00160000 + 1;
     } else {
         D_001B6500[idx] = *(int *)((char *)arg0 + 0x2C);
-        func_00213BB8(arg3);
+        SetMobyClassEntry(arg3);
         D_00160000 = D_00160000 + 1;
-        func_00203B70(arg0, arg1, arg2, arg3);
+        MobyClassRelocate(arg0, arg1, arg2, arg3);
     }
 }
 __asm__(".section .text\n\tnop\n");
@@ -992,19 +992,117 @@ INCLUDE_ASM("asm/nonmatchings/text", func_00203F68);
 
 INCLUDE_ASM("asm/nonmatchings/text", func_00204340);
 
-INCLUDE_ASM("asm/nonmatchings/text", func_00204918);
+typedef struct { int x0; int x4; float scale; } FontHdr_04918;
+typedef struct {
+    char pad0[0x10];
+    int glyphs;            /* 0x10 */
+    char pad14[8];
+    unsigned short off1C;  /* 0x1C */
+    char pad1E[0xA];
+    unsigned char count;   /* 0x28 */
+    char pad29[0x17];
+} FontRun_04918;
+typedef struct {
+    int x0;
+    char pad4[0xC];
+    int x10;
+    int x14;
+    char pad18[8];
+    int x20;
+    int x24;
+    char pad28[0x28];
+} Glyph_04918;
+typedef struct { long lo; long hi; } GifQ_04918;
+typedef struct { short x0; short x2; unsigned short x4; short x6; short x8; short xA; short xC; short xE; } GlyphSrc_04918;
+extern int D_00160F90 MACRO_ADDR;
+extern float D_00160FA0[3];
+extern char *D_00160F8C MACRO_ADDR;
+extern void func_00234380(void);
+
+void func_00204918(FontHdr_04918 *hdr, char *tbl) {
+    char *base;
+    float scale;
+    int i;
+    int j;
+    int n;
+    int k;
+
+    D_00160F90 = *(int *)((char *)hdr + 4);
+    scale = *(float *)((char *)hdr + 8);
+    D_00160FA0[0] = scale * 6.0f;
+    D_00160FA0[1] = scale * 4.0f;
+    D_00160FA0[2] = scale + scale;
+    func_00234380();
+    base = (char *)hdr + *(int *)hdr;
+    D_00160F8C = base;
+    n = D_00160F90;
+    for (k = 0; k < n; k++) {
+        *(int *)(base + k * 0x40 + 0x10) = (int)base + *(int *)(base + k * 0x40 + 0x10);
+    }
+    for (i = 0; i < D_00160F90; i++) {
+        for (j = 0; j < ((FontRun_04918 *)D_00160F8C)[i].count; j++) {
+            FontRun_04918 *run = (FontRun_04918 *)((i << 6) + (int)D_00160F8C);
+            unsigned long *o = (unsigned long *)((char *)run->glyphs + run->off1C + j * 0x50);
+            int k0 = ((Glyph_04918 *)o)->x0;
+            int k10 = ((Glyph_04918 *)o)->x10;
+            int k14 = ((Glyph_04918 *)o)->x14;
+            int k20 = ((Glyph_04918 *)o)->x20;
+            int k24 = ((Glyph_04918 *)o)->x24;
+            GlyphSrc_04918 *m = (GlyphSrc_04918 *)(tbl + k0 * 16);
+            int t = m->x4 << 16;
+            int a17 = t >> 22;
+            int a19 = t >> 23;
+            long u;
+            int v;
+            int gs;
+            unsigned long tex0, tex1, clamp, mip1;
+
+            if (!(0 < a17)) {
+                a17 = 1;
+            }
+            if (!(0 < a19)) {
+                a19 = 1;
+            }
+            u = func_001F9968(t >> 16);
+            v = func_001F9968(m->x6);
+            gs = D_0015EF8C >> 8;
+            tex0 = (unsigned long)0 | ((unsigned long)a17 << 14) | ((unsigned long)0x13 << 20)
+                  | ((unsigned long)u << 26) | ((unsigned long)v << 30) | ((unsigned long)1 << 34)
+                  | ((unsigned long)0 << 35) | ((unsigned long)(m->xA + gs) << 37)
+                  | ((unsigned long)0 << 51) | ((unsigned long)0 << 55) | ((unsigned long)0 << 56)
+                  | ((unsigned long)4 << 61);
+            t = m->x8 - 1;
+            tex1 = (unsigned long)0 | ((unsigned long)t << 2) | ((unsigned long)1 << 5)
+                  | ((unsigned long)k14 << 6) | ((unsigned long)0 << 9) | ((unsigned long)0 << 19)
+                  | ((unsigned long)(unsigned int)k10 << 32);
+            clamp = (unsigned long)k20 | ((unsigned long)k24 << 2) | ((unsigned long)0 << 4)
+                  | ((unsigned long)0 << 14) | ((unsigned long)k0 << 24) | ((unsigned long)0 << 34);
+            mip1 = (unsigned long)0 | ((unsigned long)a19 << 14) | ((unsigned long)(m->xC + gs) << 20)
+                  | ((unsigned long)1 << 34) | ((unsigned long)(m->xE + gs) << 40)
+                  | ((unsigned long)1 << 54);
+            *o = tex0;
+            o += 2;
+            *o = tex1;
+            o += 2;
+            *o = clamp;
+            o += 2;
+            *o = mip1;
+            ((GifQ_04918 *)o)[1].lo = 0;
+        }
+    }
+}
 
 extern int D_00137C80[];
 extern char D_1FF7FF0[];
 extern int func_002175C8(int, int, int);
 
-int func_00204BE8(void) {
+int Level_StartDataRead(void) {
     int *hdr = D_00137C80;
     int want = ((hdr[0x13F] << 11) + 0x1057) & 0xFFFFF000;
 
     D_0015EF4C = (int *)(((int)D_1FF7FF0 - want) & -0x10);
     *D_0015EF4C = 0x60;
-    func_002175C8((int)D_0015EF4C + *D_0015EF4C, hdr[0x13E], hdr[0x13F]);
+    Stream_SubmitRead((int)D_0015EF4C + *D_0015EF4C, hdr[0x13E], hdr[0x13F]);
     return 1;
 }
 
@@ -1063,7 +1161,7 @@ extern s32 func_00120F30_04C60(s32) __asm__("func_00120F30");
    error or a 720-frame stall, then by stage reads the shared, level and sound archives
    below 0x1FF8000 and swaps the level's sound bank. Returns 1 when everything is in.
    Adapted from Lombyte (MIT) for PAL: src/gameplay/state/fun_00204428.c, service_level_archive_load. */
-s32 func_00204C60(void) {
+s32 LevelArchiveLoadStep(void) {
     s32 stage;
     u16 next_stage;
     s32 retry_stage;
@@ -1286,7 +1384,7 @@ extern struct Moby *func_0020D348_m(int) __asm__("func_0020D348");
    spawning (func_0020D348) and initialising the moby the first time; each
    part's pointer table is made absolute. Adapted from Lombyte (MIT) for
    PAL. */
-void func_00204FC0(void *arg0) {
+void UpdateWorldObjectAnimation(void *arg0) {
     struct ModelRec *rec;
     struct Moby *mob;
     int *cp;
@@ -1371,11 +1469,11 @@ extern int D_0016100C_m __asm__("D_0016100C") MACRO_ADDR;
    with the chunk's value as the current one meanwhile. The slot address is
    written base - (-(index * 4)), which keeps retail's base-first addu
    (adapted from Lombyte (MIT) for PAL). */
-void func_00205220(int arg0) {
+void ParseSpaceSceneChunk(int arg0) {
     char *base = (char *)&D_0018CC20;
     char *p = base - (-(arg0 * 4));
     *(int *)(base + 0x5C) = *(int *)(p + 0x60);
-    func_00204FC0(p);
+    UpdateWorldObjectAnimation(p);
     *(int *)(base + 0x5C) = D_001941C8 + D_0016100C_m;
 }
 
@@ -1406,7 +1504,7 @@ extern GadgetRec_05270 D_001864D0[];
 extern unsigned char D_0013E620[];
 extern long D_0019E7F0[];
 
-void func_00205270(int class_id, int buffer_index) {
+void LoadMobyClassResources(int class_id, int buffer_index) {
     int runtime_index;
     int resource_table_index;
     ClassResourceHeader_05270 *resource_data;
@@ -1435,7 +1533,7 @@ void func_00205270(int class_id, int buffer_index) {
     resource_table = D_001B3580;
     resource_table[class_slot] = resource_data;
     D_001B6500[class_slot] = resource_data->original_field_2c;
-    ((void (*)(void *, void *, void *, int))func_00203B70)(resource_data, D_001CAE40, D_001CBF60[D_0016004C], class_id);
+    ((void (*)(void *, void *, void *, int))MobyClassRelocate)(resource_data, D_001CAE40, D_001CBF60[D_0016004C], class_id);
     resource_table_index = D_0016004C;
     resource_tag = D_00160044;
     for (runtime_index = 0; runtime_index < 16; runtime_index++) {

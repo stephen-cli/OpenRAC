@@ -11,7 +11,7 @@ extern void set_sound_handle_id(u32, s64) __asm__("func_00216B68");
 extern void snd_continue_vag_stream(s32) __asm__("func_0012ECA0");
 extern s32 snd_stream_safe_cd_sync(s32) __asm__("func_0012EE08");
 extern s32 scale_game_frames(s32) __asm__("func_001F96F8");
-extern s32 func_001F9740(void *);
+extern s32 fast_dec_timer(void *) __asm__("func_001F9740");
 extern void music_start_track_by_id(s32, s32, s32) __asm__("func_00215970");
 extern void music_preseek_track(s32, s32, s32) __asm__("func_00215B68");
 extern void music_start_track(s32, s32, s32) __asm__("func_00215C40");
@@ -23,6 +23,9 @@ extern s32 start_audio_stream_read(s32, s32, s32) __asm__("FUN_00216788");
 void music_update(void) __asm__("FUN_00216290");
 
 void music_update(void) {
+    enum {
+        CROSSFADE_FADE_OUT_PRIMARY = 2
+    };
     s8 requested_track;
     s32 fade_volume;
     s32 handle;
@@ -43,7 +46,7 @@ void music_update(void) {
             }
         }
     }
-    if (func_001F9740(&music_stream_state.retry_timer) != 0) {
+    if (fast_dec_timer(&music_stream_state.retry_timer) != 0) {
         requested_track = music_stream_state.requested_track;
         if (requested_track != -1 && music_stream_state.crossfade_state == 0) {
             if (music_stream_state.primary.track != requested_track) {
@@ -71,7 +74,7 @@ void music_update(void) {
         !(music_stream_state.primary.fade_flags & 0x8000) && !(music_stream_state.primary.state & 0x8000) &&
         !(music_stream_state.transition.fade_flags & 0x8000) && !(music_stream_state.transition.state & 0x8000)) {
         switch (music_stream_state.crossfade_state) {
-        case 2:
+        case CROSSFADE_FADE_OUT_PRIMARY:
             /* Fade the primary stream against the transition's remaining time. */
             fade_volume =
                 music_stream_state.primary.volume *

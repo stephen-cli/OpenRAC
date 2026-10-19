@@ -152,7 +152,7 @@ extern void FUN_L00_001f3aa0(void);
 extern void FUN_L00_001f4490(void);
 extern void sound_update(void) __asm__("FUN_0022ca50");
 extern void update_all_point_lights(void) __asm__("FUN_00201a28");
-extern void FUN_0020cfd0(void);
+extern void update_resident_packed_direction(void) __asm__("FUN_0020cfd0");
 extern void FUN_L00_0023ac78(s32);
 extern void update_help_state(void) __asm__("FUN_001fde90");
 extern void FUN_L00_00297e70_c(void) __asm__("FUN_L00_00297e70");
@@ -283,7 +283,7 @@ void handle_pause_input(void) {
     sound_update();
     noop_main_callback(D_L00_00161038, 6);
     update_all_point_lights();
-    FUN_0020cfd0();
+    update_resident_packed_direction();
     FUN_L00_0023ac78(1);
     update_help_state();
     if (DBG(2))
@@ -350,8 +350,7 @@ void memset_298840(void *, int, int) __asm__("FUN_001f97e8");
 void f2039a0_298840(void) __asm__("FUN_L00_002039a0");
 extern int hero_set_state(int, int) __asm__("FUN_L00_002223f8");
 void f232fe8_298840(void) __asm__("FUN_L00_00232fe8");
-int f2451b8_298840(int) __asm__("FUN_L00_002451b8");
-int f1f96f8_298840(int) __asm__("FUN_001f96f8");
+int FUN_L00_002451b8_c(int) __asm__("FUN_L00_002451b8");
 void f1f4a58_298840(int) __asm__("FUN_001f4a58");
 void update_world_object_animation(void) __asm__("FUN_00204790");
 void f22ca50_298840(void) __asm__("FUN_0022ca50");
@@ -359,7 +358,8 @@ int f122298_298840(int) __asm__("FUN_00122298");
 int f215b10_298840(void) __asm__("FUN_00215b10");
 extern char D_L00_0017C440[] __attribute__((section(".data")));
 extern float D_L00_0015F59C;
-void FUN_L00_00298840(int a) {
+void start_scene(int a) __asm__("FUN_L00_00298840");
+void start_scene(int a) {
     O_298840 *o;
     int t, i;
     if (a < 0)
@@ -397,8 +397,8 @@ void FUN_L00_00298840(int a) {
         active_scene_trigger.moby->flags |= 1;
     if (D_L00_001B9CF0.unkEC)
         ((struct Moby *)D_L00_001B9CF0.unkEC)->flags |= 1;
-    f2451b8_298840(0);
-    f1f4a58_298840(f1f96f8_298840(6));
+    FUN_L00_002451b8_c(0);
+    f1f4a58_298840(scale_game_frames(6));
     update_audio_stream_until_idle(1);
     update_world_object_animation();
     for (o = D_L00_0015FFDC_298840; o->st != 0xFF; o++) {
@@ -412,7 +412,7 @@ void FUN_L00_00298840(int a) {
     }
     D_L00_0016C860_298840.x48 = -3;
     f215b10_298840();
-    f2451b8_298840(1);
+    FUN_L00_002451b8_c(1);
     for (i = 0; D_L00_0016C860_298840.x48 < i; i--)
         f122298_298840(0);
 }
@@ -467,8 +467,7 @@ float absolute_float(float) __asm__("FUN_001f99c0");
 void f2330d0_298b18(void) __asm__("FUN_L00_002330d0");
 void f216f90_298b18(void *, void *, int, int) __asm__("FUN_L00_00216f90");
 void fun_00216c48(F_298b18 *, void *, int) __asm__("FUN_00216c48");
-int f1f96f8_298b18(int) __asm__("FUN_001f96f8");
-void f265880_298b18(int) __asm__("FUN_L00_00265880");
+void FUN_L00_00265880(int);
 void FUN_L00_00298b18(void) {
     O_298b18 *o;
     float f, g;
@@ -519,7 +518,7 @@ void FUN_L00_00298b18(void) {
         active_scene_trigger.trigger = 0;
         fun_00216c48(a, b, 1);
     }
-    f265880_298b18(f1f96f8_298b18(0x1E));
+    FUN_L00_00265880(scale_game_frames(0x1E));
 }
 #include "qcopy.h"
 #include "rnc/overlay/quad.h"
@@ -756,7 +755,7 @@ void FUN_L00_00298f90(void) {
     sound_update();
     noop_main_callback(D_L00_00161038, 6);
     update_all_point_lights();
-    FUN_0020cfd0();
+    update_resident_packed_direction();
     if ((g_debug_menu.update_flags & 2) || ((g_debug_menu.update_flags & 0x10) && (D_0013CAE4 & 0x200))) {
         FUN_L00_00297e70();
     }
@@ -831,138 +830,128 @@ void FUN_L00_00299560(s32 i) {
     }
     FUN_L00_002995d0(a, b, game_language);
 }
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_002995d0.s", FUN_L00_002995d0);
-#else
-extern s32 D_L00_0015F5D8 __attribute__((section(".sdata")));
-extern s32 D_L00_00161048, D_L00_0016104C, D_L00_00161050;
-extern s32 D_L00_0015F40C;
-extern s32 D_0015EE78_gp __asm__("D_0015EE78_gp") __attribute__((sda));
+extern int D_L00_00161048_macro __asm__("D_L00_00161048") __attribute__((section(".sdata")));
+extern int D_L00_0016104C_macro __asm__("D_L00_0016104C") __attribute__((section(".sdata")));
+extern s32 D_L00_00161050_macro __asm__("D_L00_00161050") __attribute__((section(".sdata")));
+extern s32 D_L00_00161054_macro __asm__("D_L00_00161054") __attribute__((section(".sdata")));
+extern s32 D_L00_00161058_macro __asm__("D_L00_00161058") __attribute__((section(".sdata")));
+extern s32 D_L00_0015F40C_macro __asm__("D_L00_0015F40C") __attribute__((section(".sdata")));
+extern s32 D_L00_0015F5C4_macro __asm__("D_L00_0015F5C4") __attribute__((section(".sdata")));
+extern s32 D_L00_00173E04_lui __asm__("D_L00_00173E04") __attribute__((section(".data")));
+/* [0] is gs_texture_allocation_start, [4] depth_buffer_address. */
+extern s32 D_0015EE78_macro[6] __asm__("D_0015EE78") __attribute__((section(".sdata")));
 extern void flush_cache(s32) __asm__("FUN_00118a80");
-extern void FUN_L00_0028e048(void);
-extern void FUN_L00_002656c0(void);
-extern void FUN_L00_001f9838(s32);
+extern void sound_stop_all_sounds(void) __asm__("FUN_0022dcd0");
+extern void music_stop(void) __asm__("FUN_00215ee8");
+extern void fade_to_black(s32 n) __asm__("FUN_001f4a58");
 extern void FUN_L00_002039a0(void);
-extern void sce_gs_set_def_load_image(void *, s16, s32, s32, s32, s32, s32, s32) __asm__("FUN_00122330");
-extern void sce_gs_exec_load_image(void *, s32) __asm__("FUN_00122658");
+extern s32 sceGsSetDefLoadImage(void *, s16, s16, s16, s16, s16, s16, s16);
+extern s32 sceGsExecLoadImage(void *, u8 *);
 extern void wait_for_graphics_pipeline_idle(s32, s32) __asm__("FUN_00120558");
-extern void FUN_L00_001eb078(s32, s32);
-extern void FUN_L00_001ff008(void);
-
+extern void FUN_001e93b0(char *, s32);
+extern void FUN_001f97b0(void);
 extern char D_L00_001E9480[];
 
+/* Sets up a movie load, then uploads image data from the level buffer to GS memory in two runs of strips. */
 void FUN_L00_002995d0(s32 sector, s32 size, s32 language) {
-    u8 buffer[0x60] __attribute__((aligned(16)));
-    s32 source, destination, second_count, pal, initial_count;
+    s32 image[24];
+    s32 large_count, small_count, gs_address, source, i, j;
 
     voice_pool.header[0x6B] |= 8;
     flush_cache(0);
-    FUN_L00_0028e048();
-    FUN_L00_002656c0();
-    D_L00_00161048 = sector;
-    D_L00_0016104C = size;
-    D_L00_00161050 = language;
+    sound_stop_all_sounds();
+    music_stop();
+    D_L00_00161048_macro = sector;
+    D_L00_0016104C_macro = size;
+    D_L00_00161050_macro = language;
     D_L00_0015F5D8 = 1;
-    FUN_L00_001f9838(4);
+    fade_to_black(4);
     FUN_L00_002039a0();
-    destination = *(volatile s32 *)&D_L00_0015F40C;
-    D_L00_0015F5C4 = 1;
-    D_L00_00161054 = D_L00_00173E00_298840.x4;
-    D_L00_00161058 = destination;
-    initial_count = 13;
-    second_count = 17;
-    pal = D_0015ED80;
-    source = *(volatile s32 *)&depth_buffer_address;
-    initial_count = pal ? 14 : initial_count;
-    second_count = pal ? 14 : second_count;
-    if (initial_count != 0) {
-        s32 count = initial_count;
-        do {
-            count--;
-            sce_gs_set_def_load_image(buffer, (source << 8) >> 16, 2, 1, 0, 0, 0x80, 0x80);
-            source += 0x10000;
-            flush_cache(0);
-            sce_gs_exec_load_image(buffer, destination);
-            destination += 0xc000;
-            wait_for_graphics_pipeline_idle(0, 0);
-        } while (count != 0);
+    D_L00_0015F5C4_macro = 1;
+    D_L00_00161054_macro = D_L00_00173E04_lui;
+    D_L00_00161058_macro = D_L00_0015F40C_macro;
+    large_count = D_0015ED80 != 0 ? 0xE : 0xD;
+    small_count = D_0015ED80 != 0 ? 0xE : 0x11;
+    source = D_L00_00161058_macro;
+    gs_address = D_0015EE78_macro[4];
+    i = 0;
+    while (i < large_count) {
+        sceGsSetDefLoadImage(image, gs_address >> 8, 2, 1, 0, 0, 0x80, 0x80);
+        i++;
+        gs_address += 0x10000;
+        flush_cache(0);
+        sceGsExecLoadImage(image, (u8 *)source);
+        source += 0xC000;
+        wait_for_graphics_pipeline_idle(0, 0);
     }
-    source = D_0015EE78_gp;
-    if (second_count != 0) {
-        s32 count = second_count;
-        do {
-            count--;
-            sce_gs_set_def_load_image(buffer, (source << 8) >> 16, 1, 0, 0, 0, 0x40, 0x40);
-            source += 0x4000;
-            flush_cache(0);
-            sce_gs_exec_load_image(buffer, destination);
-            destination += 0x4000;
-            wait_for_graphics_pipeline_idle(0, 0);
-        } while (count != 0);
+    gs_address = D_0015EE78_macro[0];
+    j = 0;
+    while (j < small_count) {
+        sceGsSetDefLoadImage(image, gs_address >> 8, 1, 0, 0, 0, 0x40, 0x40);
+        j++;
+        gs_address += 0x4000;
+        flush_cache(0);
+        sceGsExecLoadImage(image, (u8 *)source);
+        source += 0x4000;
+        wait_for_graphics_pipeline_idle(0, 0);
     }
-    if (source > 0x400000) {
-        FUN_L00_001eb078((s32)D_L00_001E9480, source - 0x400000);
-        FUN_L00_001ff008();
+    if (gs_address > 0x400000) {
+        FUN_001e93b0(D_L00_001E9480, gs_address - 0x400000);
+        FUN_001f97b0();
     }
 }
-#endif
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_002997c8.s", FUN_L00_002997c8);
-#else
 typedef struct { u8 pad[0x38]; s16 h38; } S_2997c8;
 typedef struct { u8 pad[0x6B]; u8 f; } M_2997c8;
-extern int D_0015ED80;
-extern s32 D_0015EE88_2997c8 __asm__("D_0015EE88");
-extern s32 D_0015EE78_2997c8 __asm__("D_0015EE78");
-extern s32 D_0015EED8_2997c8 __asm__("D_0015EED8");
 extern S_2997c8 D_001516D0_2997c8 __asm__("D_001516D0") __attribute__((section(".data")));
 extern s32 D_L00_0015F5C4_2997c8 __asm__("D_L00_0015F5C4");
 extern struct ActiveSceneTrigger active_scene_trigger_lui __asm__("D_L00_00179100") __attribute__((section(".data")));
 extern char D_0013E550[] __attribute__((section(".data")));
-int FUN_00122298_2997c8(s32) __asm__("FUN_00122298");
 void FUN_00120558_2997c8(s32, s32) __asm__("FUN_00120558");
 void FUN_00122e68_2997c8(void *) __asm__("FUN_00122e68");
-void FUN_0012f1c8_2997c8(void) __asm__("FUN_0012f1c8");
 void FUN_00122518_2997c8(void *, short, int, int, int, int, int, int) __asm__("FUN_00122518");
 void FUN_00118a80_2997c8(int) __asm__("FUN_00118a80");
 void FUN_001227d8_2997c8(void *, int) __asm__("FUN_001227d8");
-void FUN_001f4a58_2997c8(s32) __asm__("FUN_001f4a58");
-void FUN_00215b68_2997c8(s32, s32, s32) __asm__("FUN_00215b68");
 void FUN_00216c48_2997c8(struct Moby *, struct SceneTrigger *, s32) __asm__("FUN_00216c48");
+void music_start_track(s32 track, s32 track_flags, s32 volume) __asm__("FUN_00215c40");
+void count_vsync(void) __asm__("FUN_0012f1c8");
 void FUN_L00_002997c8(void) {
     char buf[0x70] __attribute__((aligned(16)));
-    s32 large_count, small_count, src, vram, i;
+    s32 large_count, small_count, gs_address, source, i, j;
     struct ActiveSceneTrigger *active;
     D_L00_0015F5D8 = 1;
-    FUN_00122298_2997c8(0);
-    FUN_00120558_2997c8(0, 0);
-    FUN_00122e68_2997c8(FUN_0012f1c8_2997c8);
-    large_count = D_0015ED80 ? 14 : 13;
-    small_count = D_0015ED80 ? 14 : 17;
-    src = D_L00_00161058;
-    vram = D_0015EE88_2997c8;
-    for (i = 0; i < large_count; i++) {
-        FUN_00122518_2997c8(buf, vram >> 8, 2, 1, 0, 0, 0x80, 0x80);
-        vram += 0x10000;
-        FUN_00118a80_2997c8(0);
-        FUN_001227d8_2997c8(buf, src);
-        src += 0xC000;
-        FUN_00120558_2997c8(0, 0);
+    f122298_298840(0);
+    wait_for_graphics_pipeline_idle(0, 0);
+    FUN_00122e68_2997c8(count_vsync);
+    source = D_L00_00161058_macro;
+    gs_address = D_0015EE78_macro[4];
+    large_count = D_0015ED80 != 0 ? 0xE : 0xD;
+    small_count = D_0015ED80 != 0 ? 0xE : 0x11;
+    i = 0;
+    while (i < large_count) {
+        FUN_00122518_2997c8(buf, gs_address >> 8, 2, 1, 0, 0, 0x80, 0x80);
+        i++;
+        gs_address += 0x10000;
+        flush_cache(0);
+        FUN_001227d8_2997c8(buf, source);
+        source += 0xC000;
+        wait_for_graphics_pipeline_idle(0, 0);
     }
-    vram = D_0015EE78_2997c8;
-    for (i = 0; i < small_count; i++) {
-        FUN_00122518_2997c8(buf, vram >> 8, 1, 0, 0, 0, 0x40, 0x40);
-        vram += 0x4000;
-        FUN_00118a80_2997c8(0);
-        FUN_001227d8_2997c8(buf, src);
-        src += 0x4000;
-        FUN_00120558_2997c8(0, 0);
+    gs_address = D_0015EE78_macro[0];
+    j = 0;
+    while (j < small_count) {
+        FUN_00122518_2997c8(buf, gs_address >> 8, 1, 0, 0, 0, 0x40, 0x40);
+        j++;
+        gs_address += 0x4000;
+        flush_cache(0);
+        FUN_001227d8_2997c8(buf, source);
+        source += 0x4000;
+        wait_for_graphics_pipeline_idle(0, 0);
     }
-    if (D_0015EED8_2997c8 == 2) {
-        D_0015EED8_2997c8 = 0;
+    if (decode_mode == 2) {
+        decode_mode = 0;
     }
-    FUN_001f4a58_2997c8(4);
-    FUN_00215b68_2997c8(D_001516D0_2997c8.h38, 1, 0x400);
+    fade_to_black(4);
+    music_start_track(D_001516D0_2997c8.h38, 1, 0x400);
     D_L00_0015F5C4_2997c8 = 0;
     active = &active_scene_trigger_lui;
     if (active->moby != 0) {
@@ -974,7 +963,6 @@ void FUN_L00_002997c8(void) {
     }
     (*(M_2997c8 *)D_0013E550).f |= 0x10;
 }
-#endif
 /* Stop sound, wait for the loader to go idle, then start the movie load. */
 /* Ported from rac1-decomp (src/overlays/shared/tieproc_00299108.c: func_L00_0029AD18), where it is exact; names translated to the US level program. */
 
@@ -1019,7 +1007,8 @@ extern Tab D_00137B80;
 extern float fade_level_gp __asm__("D_L00_0015F3FC") __attribute__((section(".sdata")));
 extern int D_L00_0015F5C4 __attribute__((section(".sdata")));
 extern int D_L00_0015F5D8_gp __asm__("D_L00_0015F5D8") __attribute__((section(".sdata")));
-extern short D_L00_0015F620 __attribute__((section(".sdata")));
+typedef struct { s16 state; s16 slide; s16 timer; s16 frame; s32 *dst; s32 *src; } Slideshow;
+extern Slideshow slideshow __asm__("D_L00_0015F620") __attribute__((section(".sdata")));
 extern int D_L00_00173E00[];
 extern int D_L00_001611CC __attribute__((section(".sdata")));
 extern int update_audio_stream_until_idle(int) __asm__("FUN_002168a8");
@@ -1035,22 +1024,22 @@ void FUN_L00_00299a68(void) {
     D_L00_0015F5D8_gp = 1;
     fade_level_gp = 1.0f;
     D_L00_0015F5C4 = 7;
-    FillTransferWords(((int *)&D_L00_0015F620), 0, 16);
+    FillTransferWords(&slideshow, 0, 16);
     t = D_L00_001611CC - 0xE0000;
-    ((int *)&D_L00_0015F620)[2] = D_L00_00173E00[1] + t;
-    ((int *)&D_L00_0015F620)[3] = D_L00_00173E00[2] + t;
+    slideshow.dst = (s32 *)(D_L00_00173E00[1] + t);
+    slideshow.src = (s32 *)(D_L00_00173E00[2] + t);
     D_L00_001611CC = t;
     if (D_0015ED80_gp != 0) {
-        start_audio_stream_read(((int *)&D_L00_0015F620)[2], (*(G9 *)&D_00137B80).alt[((short *)((int *)&D_L00_0015F620))[1]].a, (*(G9 *)&D_00137B80).alt[((short *)((int *)&D_L00_0015F620))[1]].b);
+        start_audio_stream_read((s32)slideshow.dst, (*(G9 *)&D_00137B80).alt[slideshow.slide].a, (*(G9 *)&D_00137B80).alt[slideshow.slide].b);
     } else {
-        start_audio_stream_read(((int *)&D_L00_0015F620)[2], (*(G9 *)&D_00137B80).normal[((short *)((int *)&D_L00_0015F620))[1]].a, (*(G9 *)&D_00137B80).normal[((short *)((int *)&D_L00_0015F620))[1]].b);
+        start_audio_stream_read((s32)slideshow.dst, (*(G9 *)&D_00137B80).normal[slideshow.slide].a, (*(G9 *)&D_00137B80).normal[slideshow.slide].b);
     }
     update_audio_stream_until_idle(1);
-    ((short *)((int *)&D_L00_0015F620))[1]++;
+    slideshow.slide++;
     if (D_0015ED80_gp != 0) {
-        start_audio_stream_read(((int *)&D_L00_0015F620)[3], (*(G9 *)&D_00137B80).alt[((short *)((int *)&D_L00_0015F620))[1]].a, (*(G9 *)&D_00137B80).alt[((short *)((int *)&D_L00_0015F620))[1]].b);
+        start_audio_stream_read((s32)slideshow.src, (*(G9 *)&D_00137B80).alt[slideshow.slide].a, (*(G9 *)&D_00137B80).alt[slideshow.slide].b);
     } else {
-        start_audio_stream_read(((int *)&D_L00_0015F620)[3], (*(G9 *)&D_00137B80).normal[((short *)((int *)&D_L00_0015F620))[1]].a, (*(G9 *)&D_00137B80).normal[((short *)((int *)&D_L00_0015F620))[1]].b);
+        start_audio_stream_read((s32)slideshow.src, (*(G9 *)&D_00137B80).normal[slideshow.slide].a, (*(G9 *)&D_00137B80).normal[slideshow.slide].b);
     }
 }
 extern s32 D_L00_0015F3FC;
@@ -1068,109 +1057,94 @@ void FUN_L00_00299c00(void) {
     D_L00_0015F3FC = 0;
     calculate_dma_transfer_address();
 }
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_00299c48.s", FUN_L00_00299c48);
-#else
-extern s16 D_L00_0015F620;
-extern s16 D_L00_0015F624;
-extern s16 D_L00_0015F626;
 extern s16 cd_read_active[] __asm__("D_001516D8");
-extern u8 D_0013D1D2;
+extern char D_0013D1D0[];
 extern s32 D_L00_00173BF0[];
-extern void FUN_L00_0028cc08(void);
+extern void FUN_0022ca50(void);
 
 void FUN_L00_00299c48(void) {
-    s32 index;
-    s32 offset;
-    s32 *source;
-    s32 *destination;
-    s32 pal;
-    s32 active;
-    s16 stage;
+    s32 skip_check;
+    s32 i;
+    s32 *src;
+    s32 *dst;
+    s32 slide;
 
-    FUN_L00_002660c0(0);
-    fade_level -= 0.05f;
-    if (fade_level < 0.0f) {
-        fade_level = 0.0f;
+    update_audio_stream_until_idle(0);
+    fade_level_gp -= 0.05f;
+    if (fade_level_gp < 0.0f) {
+        fade_level_gp = 0.0f;
     }
-    stage = ((int *)&D_L00_0015F620);
-    active = 1;
-    pal = D_0013D1D2 == 'A';
-    if (stage == 0) {
-        if (D_L00_0015F626 >= D_L00_00173BF0[(s16)D_L00_0015F622] - 0x24) {
+    skip_check = 1;
+    if ((u8)D_0013D1D0[2] != 'A') {
+        skip_check = 0;
+    }
+    if (slideshow.state == 0) {
+        if (slideshow.frame >= D_L00_00173BF0[slideshow.slide] - 0x24) {
             if (cd_read_active[0] != 0) {
-                FUN_L00_002660c0(1);
+                update_audio_stream_until_idle(1);
             }
-            if (!pal && (s16)D_L00_0015F622 == 0x27) {
+            if (!skip_check && slideshow.slide == 0x27) {
+            end_show:
                 FUN_L00_00299c00();
                 return;
             }
-            if ((s16)D_L00_0015F622 < 0x2b) {
-                D_L00_0015F624 = -1;
-                ((int *)&D_L00_0015F620) = 1;
-            } else {
-                FUN_L00_00299c00();
-                return;
+            if (slideshow.slide >= 0x2B) {
+                goto end_show;
             }
+            slideshow.timer = -1;
+            slideshow.state = 1;
         }
-    } else if (stage == active) {
+    } else if (slideshow.state == 1) {
         FUN_L00_002a09d8(1);
-        if (D_L00_0015F624 < 0x20) {
-            source = (s32 *)D_L00_0015F62C;
-            destination = (s32 *)D_L00_0015F628;
-            source += D_L00_0015F624;
-            destination += D_L00_0015F624;
-            offset = 0;
-            do {
-                index = *source;
-                offset += 0x20;
-                source += 0x20;
-                *destination = index;
-                destination += 0x20;
-            } while (offset < 0x38000);
-        } else if (D_L00_0015F624 >= 0x24) {
-            if (!pal) {
-                if ((s16)D_L00_0015F622 == 8) {
-                    D_L00_0015F622 = 0x11;
-                    D_L00_0015F626 = 0x1590;
+        if (slideshow.timer < 0x20) {
+            src = slideshow.src;
+            dst = slideshow.dst;
+            src += slideshow.timer;
+            dst += slideshow.timer;
+            for (i = 0; i < 0x38000; i += 0x20) {
+                *dst = *src;
+                src += 0x20;
+                dst += 0x20;
+            }
+        } else if (slideshow.timer >= 0x24) {
+            if (!skip_check) {
+                if (slideshow.slide == 8) {
+                    slideshow.slide = 0x11;
+                    slideshow.frame = 0x1590;
                 }
             } else {
-                if ((s16)D_L00_0015F622 == 0x11) {
-                    D_L00_0015F622 = 0x1b;
-                    D_L00_0015F626 = 0x2238;
+                if (slideshow.slide == 0x11) {
+                    slideshow.slide = 0x1B;
+                    slideshow.frame = 0x2238;
                 }
-                if ((s16)D_L00_0015F622 == 0x25) {
-                    D_L00_0015F622 = 0x27;
-                    D_L00_0015F626 = 0x32b4;
+                if (slideshow.slide == 0x25) {
+                    slideshow.slide = 0x27;
+                    slideshow.frame = 0x32B4;
                 }
             }
-            ((int *)&D_L00_0015F620) = 0;
-            index = (s16)(D_L00_0015F622 + 1);
-            D_L00_0015F624 = -1;
-            D_L00_0015F622 = index;
-            index = index % 0x14;
-            if (pal_mode == 0) {
-                FUN_L00_00265fa0(D_L00_0015F62C, disc_table.music_60000[index + 18].sector,
-                                   disc_table.music_60000[index + 18].size);
+            slideshow.state = 0;
+            slideshow.timer = -1;
+            slideshow.slide++;
+            slide = slideshow.slide % 20;
+            if (D_0015ED80_gp != 0) {
+                start_audio_stream_read((s32)slideshow.src, (*(G9 *)&D_00137B80).alt[slide].a, (*(G9 *)&D_00137B80).alt[slide].b);
             } else {
-                FUN_L00_00265fa0(D_L00_0015F62C, disc_table.music_60000[index + 38].sector,
-                                   disc_table.music_60000[index + 38].size);
+                start_audio_stream_read((s32)slideshow.src, (*(G9 *)&D_00137B80).normal[slide].a, (*(G9 *)&D_00137B80).normal[slide].b);
             }
         }
     }
-    D_L00_0015F624++;
-    D_L00_0015F626++;
+    slideshow.timer++;
+    slideshow.frame++;
     if (D_0013CAE4 & 0x800) {
         FUN_L00_00299c00();
     }
-    FUN_L00_0028cc08();
+    FUN_0022ca50();
 }
-#endif
 /* Ported from rac1-decomp (src/overlays/shared/update_0029B6A0.c: func_L00_0029B6A0), where it is exact; names translated to the US level program. */
 
 extern char *D_L00_00197300_d[] __asm__("D_L00_00197300") __attribute__((section(".data")));
 extern int D_L00_001CA4C0_d[] __asm__("D_L00_001CA4C0") __attribute__((section(".data")));
-extern void FUN_L00_0024d8d0(int, int);
+extern void fast_decompress(int, int) __asm__("FUN_L00_0024d8d0");
 extern void FlushCache(s32);
 extern void relocate_asset_entry_pointers_alt(char *arg0, int idx) __asm__("FUN_002032e0");
 
@@ -1182,7 +1156,7 @@ void FUN_L00_0029a330(void) {
     int v;
     v = D_L00_001CA4C0_d[6] + 0x80000;
     FlushCache(0);
-    FUN_L00_0024d8d0(v, D_L00_001CA4C0_d[6]);
+    fast_decompress(v, D_L00_001CA4C0_d[6]);
     FlushCache(0);
     p = (int *)D_L00_001CA4C0_d[6];
     base = D_L00_00197300_d[D_L00_00197BCC];
@@ -1219,6 +1193,7 @@ extern u8 D_0013D4C0[];
 extern u8 D_0015EDD0_257218[] __asm__("D_0015EDD0") __attribute__((section(".sdata")));
 /* Builds the vendor list: the stocked items (up to 12, 0xFF-terminated), then
    every other available item (D_0013D4C0 set, h8 non-zero) not already listed. */
+void FUN_L00_0029a400(s32 skip_unflagged);
 void FUN_L00_0029a400(s32 skip_unflagged) {
     s32 count, i, j, value, item, k;
 
@@ -1354,7 +1329,7 @@ extern void update_moby_29a6b0(void *) __asm__("FUN_L00_00250df8");
 extern void snd_pause_all_sounds_in_group(s32) __asm__("FUN_0012e3e8");
 extern void FUN_00216050_29a6b0(s32) __asm__("FUN_00216050");
 extern void FUN_0012dc80_29a6b0(void) __asm__("FUN_0012dc80");
-extern void build_list_29a6b0(s32) __asm__("FUN_L00_0029a400");
+extern void FUN_L00_0029a400(s32);
 extern void FUN_L00_0023aef8_29a6b0(void) __asm__("FUN_L00_0023aef8");
 extern s32 add_text_29a6b0(s32, s32, void *, void *, void *, void *, s32) __asm__("FUN_001ff308");
 extern void FUN_L00_00239cc8_29a6b0(void) __asm__("FUN_L00_00239cc8");
@@ -1387,6 +1362,7 @@ extern f32 D_L00_001610E0 __attribute__((sda));
 extern s32 game_language_macro __asm__("D_0015ED88") __attribute__((section(".sdata")));
 extern f32 frame_scale_macro __asm__("D_0015ED60") __attribute__((section(".sdata")));
 /* Opens the vendor: clears its state, spawns the vendor moby when none is given, builds the item list and its texts, then sets up the camera and the four slot offsets. */
+void FUN_L00_0029a6b0(VendorMoby_29a6b0 *m);
 void FUN_L00_0029a6b0(VendorMoby_29a6b0 *m) {
     s32 i;
     Vec4 *v;
@@ -1424,7 +1400,7 @@ void FUN_L00_0029a6b0(VendorMoby_29a6b0 *m) {
     snd_pause_all_sounds_in_group(0x1D);
     FUN_00216050_29a6b0(0);
     FUN_0012dc80_29a6b0();
-    build_list_29a6b0(vendor_29a6b0.mode != 0);
+    FUN_L00_0029a400(vendor_29a6b0.mode != 0);
     half = vendor_29a6b0.count;
     sel = half / 2;
     if (half < 3) sel = 1;
@@ -1587,7 +1563,7 @@ extern void FUN_L00_002a09d8(s32);
 extern void sound_update(void) __asm__("FUN_0022ca50");
 extern void FUN_L00_0020fca8(s32, s32);
 extern void parse_space_scene_chunk(s32, s32) __asm__("FUN_002049f0");
-extern void f2454c8_29ad08(s32) __asm__("FUN_L00_002454c8");
+extern void FUN_L00_002454c8(s32);
 extern void f204a40_29ad08(s32, s32) __asm__("FUN_00204a40");
 extern void FUN_L00_002455c0(s32);
 extern void f215b10_29ad08(void) __asm__("FUN_00215b10");
@@ -1639,7 +1615,7 @@ void FUN_L00_0029ad08(void) {
     if (hero.pending_item[0] == 0x18)
         hero.pending_item[0] = 0;
     f204a40_29ad08(D_L00_00179AC0_29ad08[D_L00_001CA4C0_29ad08.f48].id, -1);
-    f2454c8_29ad08(item);
+    FUN_L00_002454c8(item);
     state = &D_001516D0_29ad08;
     *(s32 *)&state->pad[0x1C] = 0x2734;
     FUN_L00_002455c0(0);
@@ -1713,7 +1689,7 @@ void FUN_L00_0029b4d8(int a) {
     char *b;
     unsigned char *m;
     int s;
-    int s2;
+    int moby_state;
     int r0;
     int r1;
     if (D_L00_00161188 == 0)
@@ -1749,8 +1725,8 @@ void FUN_L00_0029b4d8(int a) {
         break;
     case 2:
     case 3:
-        s2 = m[0x20];
-        if (s2 == 2 || s2 == 0) {
+        moby_state = m[0x20];
+        if (moby_state == 2 || moby_state == 0) {
             char *q = D_L00_001CA4C0;
             *(int *)(q + 0x34) = 0;
         }
@@ -1921,6 +1897,7 @@ extern VendorItemSlot40 D_L00_001C8FF0[];
 extern VendorItemSlot30 D_L00_001C9930[];
 extern VendorRow D_L00_00165E80[];
 extern s16 cd_read_active[] __asm__("D_001516D8");
+extern char D_0013D1D0[];
 extern u8 D_L00_00161128[];
 extern u8 D_L00_00161138[];
 extern u8 D_L00_00161148[];
@@ -1950,7 +1927,7 @@ extern void FUN_0022dc50(void);
 extern void FUN_L00_002070d0(void);
 extern void update_parts(void) __asm__("FUN_00217b88");
 extern void noop_main_callback(void *, s32) __asm__("FUN_001e93e8");
-extern s32 FUN_001f96f8(s32);
+extern s32 scale_game_frames(s32) __asm__("FUN_001f96f8");
 extern void FUN_00212f90(void *, s32, s32, s32);
 extern s32 allocate_voice_for_target_entry(s32, s32, void *) __asm__("FUN_0022da68");
 extern void detach_manipulator(void *, void *) __asm__("FUN_0020cb88");
@@ -1967,10 +1944,10 @@ extern void init_moby_instance(void *, s32) __asm__("FUN_0020c5f0");
 extern void FUN_L00_00250df8(void *);
 extern void pack_render_command_fields(void *, s32, s32, s32, s32) __asm__("FUN_0020d4f0");
 extern void FUN_L00_0029b4d8(s32);
-extern void FUN_0020d580(void *);
-extern void FUN_00237ed0(void *);
+extern void advance_moby_animation(void *) __asm__("FUN_0020d580");
+extern void update_resident_dialogue_animation_state(void *) __asm__("FUN_00237ed0");
 extern f32 multiply_global_factor_ed64(f32) __asm__("FUN_001f96b0");
-extern f32 FUN_001fa580(f32, f32);
+extern f32 fast_add_rotations(f32, f32) __asm__("FUN_001fa580");
 extern f32 fast_sin(f32) __asm__("FUN_001f9de0");
 extern void euler_rotation_basis(void *, void *) __asm__("FUN_001fa030");
 extern s32 FUN_001fdd10(s32);
@@ -2004,7 +1981,7 @@ extern void FUN_0022ca50(void);
 #include "eetypes.h"
 
 /* FUN_L00_0029ba78 - Level-00 shared: per-frame state machine (states 0..4) that
- * drives FUN_0020d580/FUN_L00_00250df8 on g->f20+0x400 and updates the
+ * drives advance_moby_animation/FUN_L00_00250df8 on g->f20+0x400 and updates the
  * progress tables D_L00_001C40B0 / weapon_ammo_counts / D_0013DD70 / D_0015ED98. */
 
 
@@ -2300,7 +2277,7 @@ void FUN_L00_0029c648(void) {
                 fade_level = 0.0f;
             }
             vendor_menu.f4++;
-            if (vendor_menu.f4 >= FUN_001f96f8(40) || vendor_menu.f40 != 0) {
+            if (vendor_menu.f4 >= scale_game_frames(40) || vendor_menu.f40 != 0) {
                 fade_level = 0.0f;
                 vendor_menu.fC = 1;
                 vendor_menu.state = 1;
@@ -2317,7 +2294,7 @@ void FUN_L00_0029c648(void) {
                 if (D_L00_001CA020[vendor_menu.f48] >= 0) { ok = 1; }
             }
             vendor_menu.f4++;
-            if (vendor_menu.f4 >= FUN_001f96f8(40) || vendor_menu.f40 != 0) {
+            if (vendor_menu.f4 >= scale_game_frames(40) || vendor_menu.f40 != 0) {
                 FUN_00212f90(vendor_menu.f1c, 1, 0, 8);
                 row = D_L00_00165E80;
                 for (k = 0; k < 4; k++) {
@@ -2335,7 +2312,7 @@ void FUN_L00_0029c648(void) {
             }
             FUN_L00_0023ac78(1);
         }
-        if (vendor_menu.f4 <= FUN_001f96f8(36)) {
+        if (vendor_menu.f4 <= scale_game_frames(36)) {
             enqueue_callback_list_1(FUN_L00_0029f990, vendor_menu.f1c);
         }
         if (vendor_menu.f40 == 0) {
@@ -2360,32 +2337,32 @@ void FUN_L00_0029c648(void) {
             D_L00_0016118C = 0;
             FUN_L00_0029b4d8(1);
         }
-        FUN_0020d580(vendor_menu.f1c);
+        advance_moby_animation(vendor_menu.f1c);
         FUN_L00_00250df8(vendor_menu.f1c);
         if (D_L00_00161188 == 1) {
             transform_vector_by_basis(&vendor_menu.f24->pos, &D_L00_00161080, vendor_menu.f1c->mtx);
             add_vector_xyz(&vendor_menu.f24->pos, &vendor_menu.f24->pos, &vendor_menu.f1c->pos);
-            FUN_0020d580(vendor_menu.f24);
+            advance_moby_animation(vendor_menu.f24);
             FUN_L00_00250df8(vendor_menu.f24);
-            FUN_00237ed0(vendor_menu.f24);
+            update_resident_dialogue_animation_state(vendor_menu.f24);
         }
         k1 = -0.05f;
         k2 = -0.36f;
         transform_vector_by_basis(&vendor_menu.f20[0].pos, &D_L00_001610B0, vendor_menu.f1c->mtx);
         k3 = 0.05f;
         add_vector_xyz(&vendor_menu.f20[0].pos, &vendor_menu.f20[0].pos, &vendor_menu.f1c->pos);
-        vendor_menu.f20[0].rot.f[0] = FUN_001fa580(vendor_menu.f20[0].rot.f[0], multiply_global_factor_ed64(k1));
+        vendor_menu.f20[0].rot.f[0] = fast_add_rotations(vendor_menu.f20[0].rot.f[0], multiply_global_factor_ed64(k1));
         vendor_menu.f20[0].rot.f[1] = k2;
-        vendor_menu.f20[0].rot.f[2] = FUN_001fa580(vendor_menu.f20[0].rot.f[2], multiply_global_factor_ed64(k3));
+        vendor_menu.f20[0].rot.f[2] = fast_add_rotations(vendor_menu.f20[0].rot.f[2], multiply_global_factor_ed64(k3));
         FUN_L00_00250df8(&vendor_menu.f20[0]);
         transform_vector_by_basis(&vendor_menu.f20[5].pos, &D_L00_001610C0, vendor_menu.f1c->mtx);
         add_vector_xyz(&vendor_menu.f20[5].pos, &vendor_menu.f20[5].pos, &vendor_menu.f1c->pos);
-        vendor_menu.f20[5].rot.f[0] = FUN_001fa580(vendor_menu.f20[5].rot.f[0], multiply_global_factor_ed64(k1));
+        vendor_menu.f20[5].rot.f[0] = fast_add_rotations(vendor_menu.f20[5].rot.f[0], multiply_global_factor_ed64(k1));
         vendor_menu.f20[5].rot.f[1] = k2;
-        vendor_menu.f20[5].rot.f[2] = FUN_001fa580(vendor_menu.f20[5].rot.f[2], multiply_global_factor_ed64(k3));
+        vendor_menu.f20[5].rot.f[2] = fast_add_rotations(vendor_menu.f20[5].rot.f[2], multiply_global_factor_ed64(k3));
         FUN_L00_00250df8(&vendor_menu.f20[5]);
-        D_L00_00161E24 = FUN_001fa580(D_L00_00161E24, multiply_global_factor_ed64(k3));
-        FUN_0020d580(&vendor_menu.f20[1]);
+        D_L00_00161E24 = fast_add_rotations(D_L00_00161E24, multiply_global_factor_ed64(k3));
+        advance_moby_animation(&vendor_menu.f20[1]);
         if (!vendor_menu.f20[1].b53 && (vendor_menu.f20[1].b70 & 2)) {
             FUN_00212f90(&vendor_menu.f20[1], 1, 0, 8);
         }
@@ -2411,7 +2388,7 @@ void FUN_L00_0029c648(void) {
         vendor_menu.f20[3].rot.f[0] = D_L00_001C9930[CUR_ITEM.fD0].f10;
         vendor_menu.f20[3].rot.f[1] = D_L00_001C9930[CUR_ITEM.fD0].f14;
         vendor_menu.f20[3].rot.f[2] = D_L00_00161E24;
-        FUN_0020d580(&vendor_menu.f20[3]);
+        advance_moby_animation(&vendor_menu.f20[3]);
         if (!vendor_menu.f20[3].b53 && (vendor_menu.f20[3].b70 & 2)) {
             FUN_00212f90(&vendor_menu.f20[3], 1, 0, 8);
         }
@@ -2604,7 +2581,7 @@ void FUN_L00_0029c648(void) {
         qcopy(D_L00_00166C80.pos.f, cam);
         transform_vector_by_basis(D_L00_00166C80.pos.f, D_L00_00166C80.pos.f, vendor_menu.f80);
         add_vector_xyz(D_L00_00166C80.pos.f, D_L00_00166C80.pos.f, &vendor_menu.fC0);
-        ang = FUN_001fa580(rot[2], vendor_menu.f80[3].f[2]);
+        ang = fast_add_rotations(rot[2], vendor_menu.f80[3].f[2]);
         sce_vu0_unit_matrix(m);
         sce_vu0_rot_matrix_x(m, m, rot[0]);
         sce_vu0_rot_matrix_y(m, m, rot[1]);
@@ -2650,3 +2627,103 @@ void FUN_L00_0029c648(void) {
     }
     FUN_0022ca50();
 }
+
+s32 D_L00_001B9DDC[1] __attribute__((section(".data"))) = {0};
+s32 D_L00_001CA514[1] __attribute__((section(".data"))) = {0};
+s32 D_L01_0017E984[1] __attribute__((section(".data"))) = {0};
+s32 D_L01_001BA25C[1] __attribute__((section(".data"))) = {0};
+s32 D_L01_001CA994[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_0016CE9C[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_0017EB04[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001BA3DC[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001CAAD8[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001CAAE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001CAAE8[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001CAB14[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_0017E604[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001B9EDC[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001CA5D8[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001CA5E4[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001CA5E8[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001CA614[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001B9F5C[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001CA658[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001CA664[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001CA668[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001CA694[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_0017E984[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001BA25C[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001CA958[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001CA964[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001CA968[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001CA994[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001BA55C[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001CAC58[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001CAC64[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001CAC68[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001CAC94[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001B9E5C[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001CA558[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001CA564[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001CA568[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001CA594[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_0016D09C[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_0017ED04[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001BA5DC[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001CACD8[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001CACE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001CACE8[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001CAD14[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001B9F5C[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001CA658[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001CA664[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001CA668[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001CA694[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001BA25C[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001CA958[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001CA964[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001CA968[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001CA994[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001CAED8[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001CAEE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001CAEE8[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001CAF14[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_0017E984[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001BA25C[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001CA958[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001CA964[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001CA968[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001CA994[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_0016CB9C[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001BA0DC[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001CA7D8[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001CA7E4[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001CA814[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_0016CF9C[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_0017EC04[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001BA4DC[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001CABD8[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001CABE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001CABE8[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001CAC14[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_0017EB04[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001BA3DC[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001CAAD8[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001CAAE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001CAAE8[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001CAB14[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_0017E984[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001BA25C[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001CA958[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001CA964[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001CA968[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001CA994[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_0016D19C[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001CADD8[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001CADE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001CADE8[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001CAE14[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_001CAED8[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_001CAEE4[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_001CAEE8[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_001CAF14[1] __attribute__((section(".data"))) = {0};

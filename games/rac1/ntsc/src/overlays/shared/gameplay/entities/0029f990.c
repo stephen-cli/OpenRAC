@@ -286,7 +286,7 @@ extern s32 sce_gs_sync_v(s32) __asm__("FUN_00122298");
 extern void FUN_L00_002a08c8(void);
 extern void swap_render_buffer_chain(void) __asm__("FUN_00233630");
 extern void FUN_L00_001f99c0(s32);
-extern void FUN_001f2260(void);
+extern void update_camera_view_matrices(void) __asm__("FUN_001f2260");
 extern void fast_vec_cross(void *, void *, void *) __asm__("FUN_001f9ad8");
 extern void init_moby_instance(void *, s32) __asm__("FUN_0020c5f0");
 extern void FUN_L00_00250df8(void *);
@@ -359,7 +359,7 @@ void FUN_L00_002a02b0(void) {
             D_L00_00166C80[0x364 / 4] = 1.0f;
             D_L00_00166C80[0x378 / 4] = 1.0f;
             D_L00_00166C80[0x37C / 4] = 1.0f;
-            FUN_001f2260();
+            update_camera_view_matrices();
         } else {
             D_L00_00165F80[0] = D_L00_00166FD0[0];
             D_L00_00165F80[1] = D_L00_00166FD0[1];
@@ -397,7 +397,7 @@ void FUN_L00_002a02b0(void) {
     }
     FUN_L00_002a0fc8(p->f10, draw_buffer_address, frame_size[0] << 11);
     setup_gif_paging(0);
-    FUN_001f2260();
+    update_camera_view_matrices();
     reset_gs_registers();
     draw_mobys_setup();
     init_moby_class_dists();
@@ -429,3 +429,39 @@ void FUN_L00_002a02b0(void) {
     FUN_L00_002a09d8(0x10);
     patch_moby_gifs();
 }
+
+s32 D_L01_001CA900[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001CAA80[1] __attribute__((section(".data"))) = {0};
+s32 D_L02_001CAAC8[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001CA580[1] __attribute__((section(".data"))) = {0};
+s32 D_L03_001CA5C8[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001CA600[1] __attribute__((section(".data"))) = {0};
+s32 D_L04_001CA648[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001CA900[1] __attribute__((section(".data"))) = {0};
+s32 D_L05_001CA948[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001CAC00[1] __attribute__((section(".data"))) = {0};
+s32 D_L06_001CAC48[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001CA500[1] __attribute__((section(".data"))) = {0};
+s32 D_L07_001CA548[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001CAC80[1] __attribute__((section(".data"))) = {0};
+s32 D_L08_001CACC8[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001CA600[1] __attribute__((section(".data"))) = {0};
+s32 D_L09_001CA648[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001CA900[1] __attribute__((section(".data"))) = {0};
+s32 D_L10_001CA948[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001CAE80[1] __attribute__((section(".data"))) = {0};
+s32 D_L11_001CAEC8[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001CA900[1] __attribute__((section(".data"))) = {0};
+s32 D_L12_001CA948[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001CA780[1] __attribute__((section(".data"))) = {0};
+s32 D_L13_001CA7C8[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001CAB80[1] __attribute__((section(".data"))) = {0};
+s32 D_L14_001CABC8[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001CAA80[1] __attribute__((section(".data"))) = {0};
+s32 D_L15_001CAAC8[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001CA900[1] __attribute__((section(".data"))) = {0};
+s32 D_L16_001CA948[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001CAD80[1] __attribute__((section(".data"))) = {0};
+s32 D_L17_001CADC8[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_001CAE80[1] __attribute__((section(".data"))) = {0};
+s32 D_L18_001CAEC8[1] __attribute__((section(".data"))) = {0};
