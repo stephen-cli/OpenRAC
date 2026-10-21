@@ -7,6 +7,7 @@
   // With developer tools on, one row of chips under the band leads there.
   import CountUp from "$components/CountUp.svelte";
   import CrashNotice from "$components/CrashNotice.svelte";
+  import DifferencesBlock from "$components/DifferencesBlock.svelte";
   import DiscSwitch from "$components/DiscSwitch.svelte";
   import FolderPrompt from "$components/FolderPrompt.svelte";
   import GamesFrame from "$components/GamesFrame.svelte";
@@ -17,12 +18,22 @@
   import ReportsBlock from "$components/ReportsBlock.svelte";
   import SaveManagerBlock from "$components/SaveManagerBlock.svelte";
   import { api, type ActionView, type ReportEntry } from "$lib/api";
-  import { app, clock, currentVersion, guard, jobs, openDevelop, run, uninstallGame } from "$lib/app.svelte";
+  import {
+    app,
+    clock,
+    currentVersion,
+    gameWindow,
+    guard,
+    jobs,
+    openDevelop,
+    run,
+    uninstallGame,
+  } from "$lib/app.svelte";
   import { choiceFor, programOf } from "$lib/discChoice";
   import { pct } from "$lib/format";
   import { SITE_URL } from "$lib/links";
-  import { gameArt, gameClip, hideMissing } from "$lib/media";
-  import { enter, reduced } from "$lib/motion";
+  import { gameArt, hideMissing } from "$lib/media";
+  import { enter } from "$lib/motion";
   import { fly } from "svelte/transition";
   import { place, when } from "$lib/reports";
   import { isBuilt, playerAct, playerState, playerVersion } from "$lib/player.svelte";
@@ -40,6 +51,7 @@
   const action = (id: string): ActionView | null => v?.actions.find((a) => a.id === id && a.thisPlatform) ?? null;
 
   const build = $derived(action("port-build"));
+  const rebuild = $derived(action("port-rebuild"));
   const levels = $derived(action("port-levels"));
   const levelsCheck = $derived(action("port-levels-check"));
   /** The levels were read from the disc and, where the version has the check, the game read them all. */
@@ -50,41 +62,16 @@
   // Each game's still picture, under its band and behind the page.
   const art = $derived(v ? gameArt(v.game) : null);
 
-  // The game's clip plays over its picture while the pointer is on the band or focus is in it, and
-  // stops (it is taken away, so it decodes nothing) when they leave. Never with reduced motion.
-  /** Games whose clip is not there: not asked for again. */
-  let noClip = $state<Record<string, boolean>>({});
-  const clip = $derived(v && !reduced && !noClip[v.game] ? gameClip(v.game) : null);
-  let hero = $state<HTMLElement | null>(null);
-  let clipOn = $state(false);
-  $effect(() => {
-    const el = hero;
-    clipOn = false;
-    if (!el || !clip) return;
-    const on = () => (clipOn = true);
-    const off = () => (clipOn = false);
-    const blur = (e: FocusEvent) => {
-      if (!(e.relatedTarget instanceof Node && el.contains(e.relatedTarget))) clipOn = false;
-    };
-    el.addEventListener("pointerenter", on);
-    el.addEventListener("pointerleave", off);
-    el.addEventListener("focusin", on);
-    el.addEventListener("focusout", blur);
-    return () => {
-      el.removeEventListener("pointerenter", on);
-      el.removeEventListener("pointerleave", off);
-      el.removeEventListener("focusin", on);
-      el.removeEventListener("focusout", blur);
-    };
-  });
   /** The game has a PC port to play (or to build and play); without one, the page says how far it is. */
   const portReady = $derived(!!action("play") && action("play")?.state !== "planned");
 
   const next = $derived(v && game ? playerState(game, v) : null);
+  /** Built by an OpenRAC from before an update that changed it (port_build.rs), and nothing runs. */
+  const updateReady = $derived(!!v?.portOutdated && !!rebuild?.runnable && next?.kind === "play");
   const setUp = $derived(game?.install?.extracted ?? null);
   const built = $derived(!!v && !!game && isBuilt(game, v));
   /** The steps are shown while there is one left that the player can take. */
-  const showSteps = $derived(!!next && next.kind !== "play" && next.kind !== "playing");
+  const showSteps = $derived(!!next && next.kind !== "play" && next.kind !== "playing" && next.kind !== "return");
 
   async function removeSetUp() {
     if (!v) return;
@@ -98,7 +85,7 @@
    *  runs: the page says so under the main button, with the way to what it printed. */
   const stopped = $derived.by(() => {
     if (!v || next?.job) return null;
-    const ids = [`install:${v.game}`, "port-build", "port-levels", "port-levels-check"];
+    const ids = [`install:${v.game}`, "port-build", "port-rebuild", "port-levels", "port-levels-check"];
     const mine = jobs.list.filter(
       (j) => ids.includes(j.actionId) && (j.scope.kind === "repository" || j.scope.key === v.key),
     );
@@ -115,7 +102,7 @@
     const game = v?.game;
     const mine = ++reading;
     last = null;
-    if (!game || !setUp || app.reportsChanged < 0) return;
+    if (!game || !setUp) return;
     void api
       .reportsList(game)
       .then((entries) => {
@@ -142,8 +129,13 @@
     if (!v) return [];
     const dir = v.dir;
     const items: MenuItem[] = [];
-    if (build?.runnable && built && next?.kind === "play") {
-      items.push({ label: "Rebuild the game", icon: "build", run: () => void run(scope, build) });
+    if (next?.kind === "return") {
+      items.push({ label: "Stop the game", icon: "x", danger: true, run: () => void gameWindow(true) });
+    }
+    // From scratch: everything built before is deleted first (tools/build_port.py --clean).
+    const again = rebuild?.runnable ? rebuild : build;
+    if (again?.runnable && built && next?.kind === "play") {
+      items.push({ label: "Rebuild the game", icon: "build", run: () => void run(scope, again) });
     }
     if (playGodot?.runnable) {
       items.push({ label: "Preview a level in Godot", icon: "play", run: () => void run(scope, playGodot) });
@@ -187,36 +179,34 @@
           </div>
         {/if}
 
-        <FolderPrompt />
+        <FolderPrompt primary={false} />
         {#if app.library?.actionsError}
           <div class="panel notice">
             <Icon name="warn" />
             <p class="grow">The games show, but no actions: {app.library.actionsError}</p>
           </div>
         {/if}
+        {#if updateReady && rebuild}
+          <!-- Recommended, never forced: Play still starts the build there is. -->
+          <div class="panel notice" role="status">
+            <Icon name="warn" />
+            <p class="grow">
+              An update is ready. Rebuild {v.title} to play the latest version: it takes a few minutes, and your saves and
+              levels are kept.
+            </p>
+            <button class="primary" onclick={() => void run(scope, rebuild)}>Rebuild now</button>
+          </div>
+        {/if}
         {#if app.stopped?.game === v.game}
           <CrashNotice notice={app.stopped} title={v.title} />
         {/if}
 
-        <section class="hero" aria-label={v.title} in:fly={enter()} bind:this={hero}>
-          {#if art ?? clip}
+        <!-- |global like the rest of the page: a local intro inside {#key} could leave the band at its
+             starting opacity when the key changed (switching discs), so the band stayed invisible. -->
+        <section class="hero" aria-label={v.title} in:fly|global={enter()}>
+          {#if art}
             <div class="hero-backdrop" aria-hidden="true">
-              {#if art}
-                <img src={art} alt="" class="hero-bg" decoding="async" fetchpriority="high" onerror={hideMissing} />
-              {/if}
-              {#if clipOn && clip}
-                {@const id = v.game}
-                <img
-                  src={clip}
-                  alt=""
-                  class="hero-clip"
-                  decoding="async"
-                  onload={(e) => {
-                    e.currentTarget.classList.add("shown");
-                  }}
-                  onerror={() => (noClip[id] = true)}
-                />
-              {/if}
+              <img src={art} alt="" class="hero-bg" decoding="async" fetchpriority="high" onerror={hideMissing} />
               <div class="hero-overlay"></div>
             </div>
           {/if}
@@ -304,6 +294,10 @@
             {#if setUp}<ReportsBlock game={v.game} program={choice ? programOf(v.key) : null} />{/if}
           </div>
         {/if}
+        {#if portReady}
+          <!-- What the port does otherwise than the PS2 game; the game fixes switch back. -->
+          <DifferencesBlock version={v} />
+        {/if}
       </div>
     {/key}
   {/if}
@@ -318,7 +312,7 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    font-size: 13px;
+    font-size: 0.8125rem;
     color: var(--tx2);
   }
 
@@ -353,10 +347,10 @@
     position: relative;
     max-width: 920px;
     margin: 0 auto;
-    padding: 20px 28px 60px;
+    padding: var(--page-top, 20px) var(--page-x, 28px) var(--page-bottom, 60px);
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: var(--page-gap, 20px);
   }
 
   .page-ambient-bg {
@@ -427,21 +421,7 @@
     }
   }
 
-  /* The clip fades in over the picture once its first frame is there. */
-  .hero-clip {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    opacity: 0;
-    transition: opacity 0.35s ease-out;
-  }
-
-  .hero-clip:global(.shown) {
-    opacity: 0.55;
-  }
-
+  /* The picture behind the page fades in. */
   .page-ambient-bg img {
     animation: ambient 0.8s ease-out both;
   }
@@ -484,7 +464,7 @@
   .title small {
     display: block;
     margin-top: 6px;
-    font-size: 13px;
+    font-size: 0.8125rem;
     letter-spacing: 0.04em;
     color: var(--tx2);
   }
@@ -506,7 +486,7 @@
 
   .big {
     white-space: nowrap;
-    font-size: 22px;
+    font-size: 1.375rem;
     font-weight: 700;
     padding: 16px 46px;
     border-radius: 999px;
@@ -554,12 +534,12 @@
     align-items: center;
     gap: 4px 8px;
     margin: 0;
-    font-size: 13px;
+    font-size: 0.8125rem;
     color: var(--err);
   }
 
   .stopped .link {
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 
   /* A game without a port yet: what is happening, how far it is, and where to follow it. */
@@ -580,13 +560,13 @@
     display: flex;
     align-items: baseline;
     gap: 12px;
-    font-size: 14px;
+    font-size: 0.875rem;
     color: var(--soft);
   }
 
   .coming .progress strong {
     font-family: var(--font-head);
-    font-size: 18px;
+    font-size: 1.125rem;
     color: var(--gold);
     font-variant-numeric: tabular-nums;
   }
@@ -610,7 +590,7 @@
   }
 
   .chip {
-    font-size: 11.5px;
+    font-size: 0.75rem;
     color: var(--soft);
     background: var(--panel-hi);
     border: 1px solid var(--line-strong);
@@ -642,7 +622,7 @@
   }
 
   .line {
-    font-size: 14px;
+    font-size: 0.875rem;
     color: var(--tx2);
     text-align: center;
     max-width: 640px;

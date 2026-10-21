@@ -79,35 +79,35 @@ extern float D_L00_0017E3A0[];
 extern float D_L00_0017E400[];
 extern s32 truncate_float_to_s32(f32) __asm__("FUN_001fa6d0");
 
-void FUN_L00_00235ad8(HudElem *e, int *x, int *y, int t, int d) {
+void FUN_L00_00235ad8(HudElem *hud_element, int *x, int *y, int slide_index, int slide_step) {
     int dx = 0;
     int dy = 0;
-    float s;
+    float slide_scale;
 
-    if (e->unk7C != 0) {
-        t -= d;
+    if (hud_element->unk7C != 0) {
+        slide_index -= slide_step;
     } else {
-        t += d;
+        slide_index += slide_step;
     }
-    if (t < 0) {
-        t = 0;
+    if (slide_index < 0) {
+        slide_index = 0;
     }
-    if (t > 23) {
-        t = 23;
+    if (slide_index > 23) {
+        slide_index = 23;
     }
-    if (e->unk7C != 0) {
-        s = D_L00_0017E3A0[t];
+    if (hud_element->unk7C != 0) {
+        slide_scale = D_L00_0017E3A0[slide_index];
     } else {
-        s = D_L00_0017E400[t];
+        slide_scale = D_L00_0017E400[slide_index];
     }
-    if (e->flags & 1) {
-        dy = -truncate_float_to_s32(s * (convert_integer_to_float(e->h) + 52.0f) + 0.5f);
-    } else if (e->flags & 2) {
-        dy = truncate_float_to_s32(s * (convert_integer_to_float(e->h) + 52.0f) + 0.5f);
-    } else if (e->flags & 4) {
-        dx = -truncate_float_to_s32(s * (convert_integer_to_float(e->w) + 20.0f) + 0.5f);
-    } else if (e->flags & 8) {
-        dx = truncate_float_to_s32(s * (convert_integer_to_float(e->w) + 20.0f) + 0.5f);
+    if (hud_element->flags & 1) {
+        dy = -truncate_float_to_s32(slide_scale * (convert_integer_to_float(hud_element->h) + 52.0f) + 0.5f);
+    } else if (hud_element->flags & 2) {
+        dy = truncate_float_to_s32(slide_scale * (convert_integer_to_float(hud_element->h) + 52.0f) + 0.5f);
+    } else if (hud_element->flags & 4) {
+        dx = -truncate_float_to_s32(slide_scale * (convert_integer_to_float(hud_element->w) + 20.0f) + 0.5f);
+    } else if (hud_element->flags & 8) {
+        dx = truncate_float_to_s32(slide_scale * (convert_integer_to_float(hud_element->w) + 20.0f) + 0.5f);
     }
     *x += dx;
     *y += dy;
@@ -117,35 +117,35 @@ void FUN_L00_00235ad8(HudElem *e, int *x, int *y, int t, int d) {
 /* updates numeric HUD values and dimensions from digit count */
 /* Ported from rac1-decomp (src/overlays/shared/hud_00235960.c: func_L00_00236610), where it is exact; names translated to the US level program. */
 
-void FUN_L00_00235c80(HudElem *e) {
-    int *value = e->unk0C;
+void FUN_L00_00235c80(HudElem *hud_element) {
+    int *value = hud_element->unk0C;
     int digits;
     int v, flags, width;
     if (value && !((int)value & 3)) {
-        e->unk78 = *value;
-        if (e->unk08 < e->unk78)
-            e->unk78 = e->unk08;
-        e->unk74 = e->unk78;
+        hud_element->unk78 = *value;
+        if (hud_element->unk08 < hud_element->unk78)
+            hud_element->unk78 = hud_element->unk08;
+        hud_element->unk74 = hud_element->unk78;
     } else {
-        e->unk78 = 99999;
-        e->unk74 = 99999;
+        hud_element->unk78 = 99999;
+        hud_element->unk74 = 99999;
     }
-    v = e->unk08;
+    v = hud_element->unk08;
     digits = 0;
-    flags = e->flags;
-    width = e->h;
+    flags = hud_element->flags;
+    width = hud_element->h;
     while (v >= 10) {
         v /= 10;
         digits++;
     }
     if (!(flags & 3) && (flags & 12)) {
-        e->h = width + (digits + 1) * 12;
-        if (e->w < 14)
-            e->w = 14;
+        hud_element->h = width + (digits + 1) * 12;
+        if (hud_element->w < 14)
+            hud_element->w = 14;
     } else {
         if (width < 12)
-            e->h = 12;
-        e->w += (digits + 1) * 14;
+            hud_element->h = 12;
+        hud_element->w += (digits + 1) * 14;
     }
 }
 /* Resets a HUD element: a timer of 30 + func_001F9850(180) (+0x7C),
@@ -156,23 +156,23 @@ extern int scale_game_frames(int) __asm__("FUN_001f96f8");
 extern void FUN_L00_00235c80(HudElem *);
 
 /* Sets unk7C to scale_game_frames(0xB4) + 0x1E, clears 0x48/0x4A, calls FUN_L00_00235c80. */
-void FUN_L00_00235d80(HudElem *e) {
-    e->unk7C = scale_game_frames(0xB4) + 0x1E;
-    e->unk48 = 0;
-    e->unk4A = 0;
-    FUN_L00_00235c80(e);
+void FUN_L00_00235d80(HudElem *hud_element) {
+    hud_element->unk7C = scale_game_frames(0xB4) + 0x1E;
+    hud_element->unk48 = 0;
+    hud_element->unk4A = 0;
+    FUN_L00_00235c80(hud_element);
 }
 /* func_L00_00236710 for a 32 x 32 element. */
 /* Ported from rac1-decomp (src/overlays/shared/hud_00235960.c: func_L00_00236750), where it is exact; names translated to the US level program. */
 
 /* Sets unk7C to scale_game_frames(0xB4) + 0x1E, clears 0x48/0x4A, w/h 0x20, calls 00235c80. */
-void FUN_L00_00235dc0(HudElem *e) {
-    e->unk7C = scale_game_frames(0xB4) + 0x1E;
-    e->unk48 = 0;
-    e->unk4A = 0;
-    e->w = 0x20;
-    e->h = 0x20;
-    FUN_L00_00235c80(e);
+void FUN_L00_00235dc0(HudElem *hud_element) {
+    hud_element->unk7C = scale_game_frames(0xB4) + 0x1E;
+    hud_element->unk48 = 0;
+    hud_element->unk4A = 0;
+    hud_element->w = 0x20;
+    hud_element->h = 0x20;
+    FUN_L00_00235c80(hud_element);
 }
 typedef struct {
     u8 pad[0x64];
@@ -187,15 +187,15 @@ s32 hud_keep_visible(s32 key, s32 val) __asm__("FUN_L00_00235e18");
 s32 hud_keep_visible(s32 key, s32 val) {
     s32 i;
     s32 r;
-    T_235e18 *e;
+    T_235e18 *hud_element;
     r = 1;
     for (i = 0; i < 13; i++) {
         if (D_L00_0017DC50_235e18[i].key == key)
             break;
     }
     if (i < 13 && D_L00_0017DC50_235e18[i].f68 == 0) {
-        e = D_L00_0017DC50_235e18 + i;
-        e->v = (val < e->v) ? e->v : val;
+        hud_element = D_L00_0017DC50_235e18 + i;
+        hud_element->v = (val < hud_element->v) ? hud_element->v : val;
         return 0;
     }
     return 1;
@@ -274,29 +274,29 @@ void FUN_L00_00235ea0(e) HudElem *e;
 
 extern void FUN_L00_0023aaa8(void *);
 
-void FUN_L00_00236128(HudElem *e) {
-    unsigned char *c = e->cnt;
+void FUN_L00_00236128(HudElem *hud_element) {
+    unsigned char *c = hud_element->cnt;
     int v;
     int cap;
 
-    if (e->unk0C != 0) {
-        v = *e->unk0C;
-        cap = e->unk08;
+    if (hud_element->unk0C != 0) {
+        v = *hud_element->unk0C;
+        cap = hud_element->unk08;
         if (v < 0) {
             v = 0;
         }
-        e->unk78 = v;
+        hud_element->unk78 = v;
         if (cap < v) {
-            e->unk78 = cap;
+            hud_element->unk78 = cap;
         }
     }
-    if (e->unk74 != e->unk78) {
-        e->unk7C = scale_game_frames(0xB4);
-        if (e->unk6C >= 0x18) {
-            e->unk74 = e->unk78;
+    if (hud_element->unk74 != hud_element->unk78) {
+        hud_element->unk7C = scale_game_frames(0xB4);
+        if (hud_element->unk6C >= 0x18) {
+            hud_element->unk74 = hud_element->unk78;
         }
     }
-    if (e->unk7C >= scale_game_frames(5)) {
+    if (hud_element->unk7C >= scale_game_frames(5)) {
         if (c[0] < scale_game_frames(8)) {
             c[0]++;
         } else if (c[1] < scale_game_frames(8)) {
@@ -304,7 +304,7 @@ void FUN_L00_00236128(HudElem *e) {
         }
     } else {
         if (c[1] != 0 || c[0] != 0) {
-            e->unk6C = 1;
+            hud_element->unk6C = 1;
         }
         if (c[1] != 0) {
             c[1]--;
@@ -312,7 +312,7 @@ void FUN_L00_00236128(HudElem *e) {
             c[0]--;
         }
     }
-    FUN_L00_0023aaa8((char *)e + 0x40);
+    FUN_L00_0023aaa8((char *)hud_element + 0x40);
 }
 extern float star_init_limit0_gp __asm__("D_L00_0015F750") __attribute__((sda));
 extern float star_init_limit1_gp __asm__("D_L00_0015F754") __attribute__((sda));
@@ -405,249 +405,267 @@ void FUN_L00_00236458(HudElem *e) {
     }
 }
 
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_002365a8.s", FUN_L00_002365a8);
-#else
+/* Ported from rac1-decomp (src/overlays/shared/hud_00235960.c: func_L00_00236F38). */
+
 extern int D_L00_0015F760 __attribute__((sda));
 extern int D_L00_0015F764 __attribute__((sda));
 extern float D_L00_0015F768 __attribute__((sda));
 extern float D_L00_0015F76C __attribute__((sda));
-extern void FUN_L00_0023caa8(int, int, int, int, unsigned long, int) __asm__("FUN_00200e08");
-extern int FUN_001fef20(int) __asm__("FUN_001f96f8");
-extern float FUN_001fef10(float) __asm__("FUN_001f96b0");
+extern void append_screen_rect_packet(s32, s32, s32, s32, u64, s32) __asm__("FUN_00200e08");
+extern float scale_game_seconds(float) __asm__("FUN_001f96b0");
 extern void FUN_L00_00216de8(int, int);
-extern void *FUN_0023b208(int, int) __asm__("FUN_001ff960");
-extern void FUN_L00_0023bac0(void *, int, int, int, int, int);
-extern void FUN_L00_0023bd20(void *, int, int, int, int, int) __asm__("FUN_00200080");
+extern s32 get_icon_frame(s32, s32) __asm__("FUN_001ff960");
+extern void FUN_L00_0023bac0(int, int, int, int, int, int);
 extern void FUN_L00_001ff348(void *, void *, void *);
-extern void FUN_001ff260(void *) __asm__("FUN_001f99f8");
-extern void FUN_001ff2a8(void *, void *, void *) __asm__("FUN_001f9a28");
-extern void FUN_001ff278(void *, void *, void *) __asm__("FUN_001f9a10");
+extern void fast_vec_add(void *, void *, void *) __asm__("FUN_001f9a10");
+extern void fast_vec_sub(void *, void *, void *) __asm__("FUN_001f9a28");
+extern void clear_u64_value(void *) __asm__("FUN_001f99f8");
+extern void draw_hud_sprite_subpixel(s32, s32, s32, s32, s32, s32) __asm__("FUN_00200080");
 
-typedef struct { float x, y, z, w; } HudStarVec;
+int FUN_L00_002365a8(HudElem *element) {
+    int x, y, i, previous, current, frames, image, star_width;
+    float origin[4], direction[4], first_step[4], second_step[4], third_step[4], star_position[4];
+    float seconds, sixteen, offset, thirty_two;
 
-int FUN_L00_002365a8(HudElem *e) {
-    int x = e->unk50, y = e->unk54;
-    int w, h, left, top, right, bottom, xbase, ybase;
-    int previous, current, period, threshold;
-    int size, i, star_width;
-    float fade, half_w, half_h, offset;
-    HudStarVec origin, direction, first_step, second_step, third_step, star_position;
-    void *image;
+    {
+        int width = D_L00_0015F760;
+        x = element->unk50;
+        y = element->unk54;
+        element->w = width;
+        element->h = D_L00_0015F764;
+    }
+    hud_screen_position(element, &x, &y);
+    FUN_L00_00235ad8(element, &x, &y, element->unk6C, 0);
 
-    e->w = D_L00_0015F760;
-    e->h = D_L00_0015F764;
-    hud_screen_position(e, &x, &y);
-    FUN_L00_00235ad8(e, &x, &y, e->unk6C, 0);
-    w = D_L00_0015F760;
-    h = D_L00_0015F764;
-    xbase = (x + e->unk48) << 4;
-    ybase = (y + e->unk4A) << 4;
-    left = xbase + (w * 0xd0) / 64;
-    top = ybase + (h * 0xa0) / 256;
-    right = left + (w * 0x260) / 64;
-    bottom = top + (h * 0xea0) / 256;
-    FUN_L00_0023caa8(left, top, right, bottom, 0x80684c2fUL, 1);
+    {
+        int left_inset = D_L00_0015F760 * 0xD0;
+        int top_inset = D_L00_0015F764 * 0xA0;
+        int bar_width = D_L00_0015F760 * 0x260;
+        int bottom = D_L00_0015F764 * 0xEA0;
+        int left = (x + element->unk48) << 4;
+        int top = (y + element->unk4A) << 4;
+        int right;
+        left += left_inset / 64;
+        top += top_inset / 256;
+        right = left + bar_width / 64;
+        bottom = top + bottom / 256;
+        append_screen_rect_packet(left, top, right, bottom, 0x80684C2F, 1);
+    }
 
-    if (e->unk74 * 3 < 10001) {
-        size = FUN_001fef20(1);
-        half_w = FUN_001fef10(0.75f);
-        previous = (D_L00_0015F3F8 - 1) % (int)((float)size * 60.0f) <
-                   (int)(half_w * 60.0f);
+    if (element->unk74 * 3 < 10001) {
+        frames = scale_game_frames(1);
+        seconds = scale_game_seconds(0.75f);
+        previous = (D_L00_0015F3F8 - 1) % (int)((float)frames * 60.0f) < (int)(seconds * 60.0f);
     } else {
         previous = 0;
     }
-    if (e->unk74 * 3 < 10001) {
-        size = FUN_001fef20(1);
-        half_w = FUN_001fef10(0.75f);
-        current = D_L00_0015F3F8 % (int)((float)size * 60.0f) <
-                  (int)(half_w * 60.0f);
+    if (element->unk74 * 3 < 10001) {
+        frames = scale_game_frames(1);
+        seconds = scale_game_seconds(0.75f);
+        current = D_L00_0015F3F8 % (int)((float)frames * 60.0f) < (int)(seconds * 60.0f);
     } else {
         current = 0;
     }
-    if (!previous && current == 1) FUN_L00_00216de8(11, 0);
-    image = FUN_0023b208(*(int *)e, current);
-    FUN_L00_0023bac0(image, x + e->unk48, y + e->unk4A,
-                       D_L00_0015F760, D_L00_0015F764, 0x80);
-
-    origin.z = 1.0f;
-    origin.w = 1.0f;
-    half_h = (float)D_L00_0015F764 * D_L00_0015F76C * 0.5f;
-    offset = (float)(10000 - e->unk74) / 10000.0f;
-    half_w = (float)D_L00_0015F760 * D_L00_0015F768 * 0.5f;
-    origin.x = half_w / 17.0f;
-    origin.y = -half_h / 116.0f;
-    direction.z = 0.0f;
-    direction.w = 0.0f;
-    direction.y = half_h + (float)(e->unk4A + y);
-    direction.x = half_w + (float)(x + e->unk48);
-    direction.x += (1.0f - D_L00_0015F768) * 0.5f * (float)D_L00_0015F760;
-    direction.y += (1.0f - D_L00_0015F76C) * 0.5f * (float)D_L00_0015F764;
-    direction.x *= 16.0f;
-    direction.y *= 16.0f;
-    origin.x *= 16.0f;
-    origin.y *= 16.0f;
-    offset = 116.0f - (offset + offset) * 116.0f;
-    image = FUN_0023b208(*(int *)e, 2);
-    FUN_001ff260(&first_step);
-    FUN_001ff260(&second_step);
-    FUN_001ff260(&third_step);
-    first_step.y = first_step.x = star_init_limit0_gp * 16.0f;
-    second_step.y = second_step.x = (star_init_limit1_gp - star_init_limit0_gp) * 16.0f;
-    third_step.y = third_step.x = (star_init_limit2_gp - star_init_limit1_gp) * 16.0f;
+    if (!previous && current == 1) {
+        FUN_L00_00216de8(0xB, 0);
+    }
     star_width = 0;
+    image = get_icon_frame(*(int *)element, current);
+    sixteen = 16.0f;
+    thirty_two = 32.0f;
+    FUN_L00_0023bac0(image, x + element->unk48, y + element->unk4A, D_L00_0015F760, D_L00_0015F764, 0x80);
+
+    {
+        float center_x, center_y, half_w, half_h;
+        half_w = (D_L00_0015F760 * D_L00_0015F768 * 0.5f) / 17.0f;
+        half_h = -(D_L00_0015F764 * D_L00_0015F76C * 0.5f) / 116.0f;
+        origin[2] = 1.0f;
+        origin[3] = 1.0f;
+        center_x = D_L00_0015F760 * D_L00_0015F768 * 0.5f + (x + element->unk48);
+        center_y = D_L00_0015F764 * D_L00_0015F76C * 0.5f + (y + element->unk4A);
+        direction[0] = (center_x + (1.0f - D_L00_0015F768) * 0.5f * D_L00_0015F760) * sixteen;
+        direction[1] = (center_y + (1.0f - D_L00_0015F76C) * 0.5f * D_L00_0015F764) * sixteen;
+        direction[2] = 0.0f;
+        direction[3] = 0.0f;
+        origin[0] = half_w * sixteen;
+        origin[1] = half_h * sixteen;
+    }
+    offset = (float)(10000 - element->unk74) / 10000.0f;
+    offset = 116.0f - (offset + offset) * 116.0f;
+    image = get_icon_frame(*(int *)element, 2);
+
+    clear_u64_value(first_step);
+    clear_u64_value(second_step);
+    clear_u64_value(third_step);
+    {
+        float limit0 = star_init_limit0_gp;
+        float limit1 = star_init_limit1_gp;
+        float limit2 = star_init_limit2_gp;
+        float first = limit0 * sixteen;
+        limit0 = limit1 - limit0;
+        limit2 = limit2 - limit1;
+        first_step[0] = first;
+        first_step[1] = first;
+        limit0 = limit0 * sixteen;
+        second_step[0] = limit0;
+        second_step[1] = limit0;
+        limit2 = limit2 * sixteen;
+        third_step[0] = limit2;
+        third_step[1] = limit2;
+    }
+
     for (i = 0; i < 100; i++) {
         if (i == 0) {
-            FUN_001ff2a8(&direction, &direction, &first_step);
-            offset += star_init_limit0_gp;
-            star_width = (int)(star_init_limit0_gp * 32.0f);
+            float limit;
+            fast_vec_sub(direction, direction, first_step);
+            limit = star_init_limit0_gp;
+            star_width = (int)(limit * thirty_two);
+            offset = offset + limit;
         } else if (i == 10) {
-            FUN_001ff2a8(&direction, &direction, &second_step);
-            star_width = (int)(star_init_limit1_gp * 32.0f);
-            offset += star_init_limit1_gp - star_init_limit0_gp;
+            float limit, previous_limit, width;
+            fast_vec_sub(direction, direction, second_step);
+            limit = star_init_limit1_gp;
+            previous_limit = star_init_limit0_gp;
+            width = limit * thirty_two;
+            limit = limit - previous_limit;
+            star_width = (int)width;
+            offset = offset + limit;
         } else if (i == 30) {
-            FUN_001ff2a8(&direction, &direction, &third_step);
-            star_width = (int)(star_init_limit2_gp * 32.0f);
-            offset += star_init_limit2_gp - star_init_limit1_gp;
+            float limit, previous_limit, width;
+            fast_vec_sub(direction, direction, third_step);
+            limit = star_init_limit2_gp;
+            previous_limit = star_init_limit1_gp;
+            width = limit * thirty_two;
+            limit = limit - previous_limit;
+            star_width = (int)width;
+            offset = offset + limit;
         }
-        if (!(offset < D_L00_0017E660[i].y)) {
-            FUN_L00_001ff348(&star_position, &D_L00_0017E660[i], &origin);
-            FUN_001ff278(&star_position, &star_position, &direction);
-            FUN_L00_0023bd20(image, (int)star_position.x, (int)star_position.y,
-                              star_width, star_width, 0x80);
-        }
+        if (offset < D_L00_0017E660[i].y) continue;
+        FUN_L00_001ff348(star_position, &D_L00_0017E660[i], origin);
+        fast_vec_add(star_position, star_position, direction);
+        draw_hud_sprite_subpixel(image, (int)star_position[0], (int)star_position[1], star_width, star_width, 0x80);
     }
-    return e->w;
+    return element->w;
 }
-#endif
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_00236e50.s", FUN_L00_00236e50);
-#else
+/* Ported from rac1-decomp (src/overlays/shared/hud_00235960.c: func_L00_002377E0), where it is exact; names translated to the US level program. */
+
+
 extern int D_L00_0015F760 __attribute__((sda));
 extern int D_L00_0015F764 __attribute__((sda));
 extern float D_L00_0015F768 __attribute__((sda));
 extern float D_L00_0015F76C __attribute__((sda));
-extern void *FUN_0023b208(int, int) __asm__("FUN_001ff960");
-extern void FUN_L00_0023bac0(void *, int, int, int, int, int);
-extern void FUN_L00_0023bd20(void *, int, int, int, int, int) __asm__("FUN_00200080");
+extern s32 get_icon_frame(s32, s32) __asm__("func_001FF960");
+extern void FUN_L00_0023bac0(int, int, int, int, int, int);
 extern void FUN_L00_001ff348(void *, void *, void *);
-extern void FUN_001ff260(void *) __asm__("FUN_001f99f8");
-extern void FUN_001ff2a8(void *, void *, void *) __asm__("FUN_001f9a28");
-extern void FUN_001ff278(void *, void *, void *) __asm__("FUN_001f9a10");
-int FUN_L00_00236e50(HudElem *e) {
-    int x = e->unk50, y = e->unk54;
-    int i, star_width = 0;
-    float half_h, offset, half_w;
-    int xbase, ybase;
-    struct { float x, y, z, w; } origin, direction, first_step, second_step, third_step, star_position;
-    void *image;
+extern void fast_vec_add(void *, void *, void *) __asm__("FUN_001f9a10");
+extern void fast_vec_sub(void *, void *, void *) __asm__("FUN_001f9a28");
+extern void clear_u64_value(void *) __asm__("func_001F99F8");
+extern void draw_hud_sprite_subpixel(s32, s32, s32, s32, s32, s32) __asm__("func_00200080");
 
-    e->w = D_L00_0015F760;
-    e->h = D_L00_0015F764;
-    hud_screen_position(e, &x, &y);
-    FUN_L00_00235ad8(e, &x, &y, e->unk6C, 0);
-    image = FUN_0023b208(*(int *)e, 0);
-    FUN_L00_0023bac0(image, x + e->unk48, y + e->unk4A,
-                       D_L00_0015F760, D_L00_0015F764, 0x80);
-    origin.z = 1.0f;
-    origin.w = 1.0f;
-    half_h = (float)D_L00_0015F764 * D_L00_0015F76C * 0.5f;
-    offset = (float)(10000 - e->unk74) / 10000.0f;
-    half_w = (float)D_L00_0015F760 * D_L00_0015F768 * 0.5f;
-    xbase = x + e->unk48;
-    ybase = y + e->unk4A;
-    origin.x = half_w / 17.0f;
-    origin.y = -half_h / 116.0f;
-    direction.z = 0.0f;
-    direction.w = 0.0f;
-    direction.y = half_h + (float)ybase;
-    direction.x = half_w + (float)xbase;
-    direction.x += (1.0f - D_L00_0015F768) * 0.5f * (float)D_L00_0015F760;
-    direction.y += (1.0f - D_L00_0015F76C) * 0.5f * (float)D_L00_0015F764;
-    direction.x *= 16.0f;
-    direction.y *= 16.0f;
-    origin.x *= 16.0f;
-    origin.y *= 16.0f;
+int FUN_L00_00236e50(HudElem *hud_element) {
+    float origin[4], direction[4], first_step[4], second_step[4], third_step[4], star_position[4];
+    int x, y;
+    float offset;
+    s32 image;
+    int star_width, i;
+
+    x = hud_element->unk50;
+    y = hud_element->unk54;
+    hud_element->w = D_L00_0015F760;
+    hud_element->h = D_L00_0015F764;
+    hud_screen_position(hud_element, &x, &y);
+    FUN_L00_00235ad8(hud_element, &x, &y, hud_element->unk6C, 0);
+    image = get_icon_frame(*(int *)hud_element, 0);
+    FUN_L00_0023bac0(image, x + hud_element->unk48, y + hud_element->unk4A, D_L00_0015F760, D_L00_0015F764, 0x80);
+    {
+        float center_x, center_y, half_w, half_h;
+        half_w = (D_L00_0015F760 * D_L00_0015F768 * 0.5f) / 17.0f;
+        half_h = -(D_L00_0015F764 * D_L00_0015F76C * 0.5f) / 116.0f;
+        origin[2] = 1.0f;
+        origin[3] = 1.0f;
+        center_x = D_L00_0015F760 * D_L00_0015F768 * 0.5f + (x + hud_element->unk48);
+        center_y = D_L00_0015F764 * D_L00_0015F76C * 0.5f + (y + hud_element->unk4A);
+        direction[0] = (center_x + (1.0f - D_L00_0015F768) * 0.5f * D_L00_0015F760) * 16.0f;
+        direction[1] = (center_y + (1.0f - D_L00_0015F76C) * 0.5f * D_L00_0015F764) * 16.0f;
+        direction[2] = 0.0f;
+        direction[3] = 0.0f;
+        origin[0] = half_w * 16.0f;
+        origin[1] = half_h * 16.0f;
+    }
+    offset = (10000 - hud_element->unk74) / 10000.0f;
     offset = 116.0f - (offset + offset) * 116.0f;
-    image = FUN_0023b208(*(int *)e, 1);
-    FUN_001ff260(&first_step);
-    FUN_001ff260(&second_step);
-    FUN_001ff260(&third_step);
-    first_step.y = first_step.x = star_init_limit0_gp * 16.0f;
-    second_step.y = second_step.x = (star_init_limit1_gp - star_init_limit0_gp) * 16.0f;
-    third_step.y = third_step.x = (star_init_limit2_gp - star_init_limit1_gp) * 16.0f;
+    image = get_icon_frame(*(int *)hud_element, 1);
+    clear_u64_value(first_step);
+    clear_u64_value(second_step);
+    clear_u64_value(third_step);
+    first_step[1] = first_step[0] = star_init_limit0_gp * 16.0f;
+    second_step[1] = second_step[0] = (star_init_limit1_gp - star_init_limit0_gp) * 16.0f;
+    third_step[1] = third_step[0] = (star_init_limit2_gp - star_init_limit1_gp) * 16.0f;
+    star_width = 0;
     for (i = 0; i < 100; i++) {
         if (i == 0) {
-            FUN_001ff2a8(&direction, &direction, &first_step);
-            offset += star_init_limit0_gp;
+            fast_vec_sub(direction, direction, first_step);
             star_width = (int)(star_init_limit0_gp * 32.0f);
+            offset += star_init_limit0_gp;
         }
-        if (!(offset < D_L00_0017E660[i].y)) {
-            FUN_L00_001ff348(&star_position, &D_L00_0017E660[i], &origin);
-            FUN_001ff278(&star_position, &star_position, &direction);
-            FUN_L00_0023bd20(image, (int)star_position.x, (int)star_position.y,
-                              star_width, star_width, 0x80);
-        }
+        if (offset < D_L00_0017E660[i].y) continue;
+        FUN_L00_001ff348(star_position, &D_L00_0017E660[i], origin);
+        fast_vec_add(star_position, star_position, direction);
+        draw_hud_sprite_subpixel(image, (int)star_position[0], (int)star_position[1], star_width, star_width, 0x80);
     }
-    return e->w;
+    return hud_element->w;
 }
-#endif
 void FUN_L00_00235ea0();
 /* Calls FUN_L00_00235ea0. */
 void mine_blend_color(void) __asm__("FUN_L00_002371e0");
 void mine_blend_color(void) {
     FUN_L00_00235ea0();
 }
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_00237200.s", FUN_L00_00237200);
-#else
-extern int pal_mode __asm__("D_0015ED80");
-extern int current_level_index_sda __asm__("D_0015ED84") __attribute__((sda));
-extern int D_L00_0015F770 __attribute__((sda));
-extern unsigned char D_L00_0017E530[];
-extern int freeze_stats_time_ref[] __asm__("D_0015EE58");
-extern int freeze_stats_score_ref_a[] __asm__("D_0015EE68");
-extern float D_0013F3D0[];
-extern void *memcpy(void *, const void *, unsigned int);
+#include "eetypes.h"
+#include "qcopy.h"
+#include "rnc/math/vector.h"
+extern s32 D_L00_0015F770_gp __asm__("D_L00_0015F770") __attribute__((sda));
+extern s32 D_L00_0015F648_macro __asm__("D_L00_0015F648") MACRO_ADDR;
+extern u8 D_L00_0017E530[] NOT_SDA;
+extern char D_0013F3D0[];
+extern s32 freeze_stats_time_ref[] __asm__("D_0015EE58") __attribute__((section(".sdata")));
+extern s32 freeze_stats_score_ref_a[] __asm__("D_0015EE68") __attribute__((section(".sdata")));
+extern char freeze_stats_time_format[] __asm__("D_L00_001E84C0") NOT_SDA;
+extern char freeze_stats_score_format[] __asm__("D_L00_0015F778") NOT_SDA;
+extern s32 pal_mode __asm__("D_0015ED80");
+extern s32 current_level_index __asm__("D_0015ED84");
+extern s32 measure_text_width_regular(u8 *, s32) __asm__("FUN_001f6250");
+extern void draw_hud_sprite(s32, s32, s32, s32, s32, s32) __asm__("FUN_001ffc30");
+extern void draw_hud_sprite_flipped(s32, s32, s32, s32, s32, s32) __asm__("FUN_001ffe18");
+extern s32 font_print_center(s32, s32, s32, s32, s32) __asm__("FUN_001f6af0");
+extern f32 fast_vec_dist(void *, void *) __asm__("FUN_001f9b48");
+extern char *get_help_message_text(s32) __asm__("FUN_001fdd10");
+extern s32 sprintf(char *, const char *, ...) __asm__("FUN_00116248");
+extern void draw_framed_text(s32, s32, s32, char *) __asm__("FUN_00201200");
 
-extern float FUN_00200240(unsigned int) __asm__("FUN_001fa6c0");
-extern float FUN_001fef10(float) __asm__("FUN_001f96b0");
-extern int FUN_00200250(float) __asm__("FUN_001fa6d0");
-extern int FUN_001fb090(const char *, int) __asm__("FUN_L00_001fb090");
-extern void *FUN_0023b208(int, int) __asm__("FUN_001ff960");
-extern void FUN_0023b4d8(void *, int, int, int, int, int) __asm__("FUN_001ffc30");
-extern void FUN_0023b860(void *, int, int, int, int, int) __asm__("FUN_001ffe18");
-extern void FUN_001fb9a8(int, int, int, const char *, int) __asm__("FUN_001f6af0");
-extern float FUN_001ff450(float *, float *) __asm__("FUN_001f9b48");
-extern const char freeze_stats_score_format[] __asm__("D_L00_0015F778");
-extern const char freeze_stats_time_format[] __asm__("D_L00_001E84C0");
-extern char *FUN_00203ad8(int) __asm__("FUN_001fdd10");
-extern int sprintf(char *, const char *, ...) __asm__("FUN_00116248");
-extern void FUN_0023cf80(int, int, int, char *) __asm__("FUN_00201200");
-
-typedef struct { float x, y, z, w; } __attribute__((aligned(16))) HudPoint_237200;
-int FUN_L00_00237200(HudElem *e) {
-    int y, i, width, left, other_width, other_left;
-    int alpha, color, level, elapsed, extra, interval, minute_scale, remainder, seconds;
+int FUN_L00_00237200(HudElem *hud_element) {
+    int y, i;
+    int alpha, color, level;
     float fade;
-    HudPoint_237200 points[2];
-    HudPoint_237200 point;
+    Vec4 points[2];
+    Vec4 point;
     char text[64];
-    const char *line;
-    unsigned char *opacity = (unsigned char *)e + 0x70;
+    u8 *opacity = hud_element->cnt;
     int text_y;
+    int text_color;
+    int never = 0;
 
     if (pal_mode != 0) {
-        y = D_L00_0015F770 + 0xa;
+        y = D_L00_0015F770_gp + 0xa;
     } else {
-        y = D_L00_0015F770 + 0x12;
+        y = D_L00_0015F770_gp + 0x12;
     }
-    fade = FUN_00200240(*opacity);
-    fade /= FUN_001fef10(8.0f);
+    fade = convert_integer_to_float(*opacity);
+    fade /= scale_game_seconds(8.0f);
     if (fade < 0.0f) fade = 0.0f;
     if (fade > 1.0f) fade = 1.0f;
     text_y = y + 8;
-    alpha = FUN_00200250(fade * 128.0f);
+    alpha = truncate_float_to_s32(fade * 128.0f);
     color = (alpha << 24) | 0x40f040;
     i = 0;
     if (D_L00_0017E530[0] > 1) {
@@ -656,79 +674,77 @@ int FUN_L00_00237200(HudElem *e) {
         } while (D_L00_0017E530[i] > 1 && i < 0x80);
     }
     if (D_L00_0017E530[i] == 1) {
+        int width, left, second_width, second_left, x, w, right;
+        s32 frame;
         D_L00_0017E530[i] = 0;
-        width = FUN_001fb090((const char *)D_L00_0017E530, -1);
+        width = measure_text_width_regular(D_L00_0017E530, -1);
         left = 0xe0 - (width >> 1);
-        {
-            int other_width = FUN_001fb090((const char *)&D_L00_0017E530[1] + i, -1);
-            other_left = 0xe0 - (other_width >> 1);
-            if (left >= other_left) {
-                width = other_width;
-            } else {
-                other_left = left;
-            }
-            left = other_left;
+        second_width = measure_text_width_regular(&D_L00_0017E530[1] + i, -1);
+        second_left = 0xe0 - (second_width >> 1);
+        if (left >= second_left) {
+            x = second_left;
+            w = second_width;
+        } else {
+            x = left;
+            w = width;
         }
-        other_left = left + 0x20;
-        FUN_0023b4d8(FUN_0023b208(0x7580, 0), other_left, y, width, 0x36, alpha);
-        other_left = color;
-        FUN_0023b4d8(FUN_0023b208(0x7580, 1), left, y, 0x20, 0x36, alpha);
-        FUN_0023b860(FUN_0023b208(0x7580, 1), (width + 0x20) + left, y, 0x20, 0x36, alpha);
-        FUN_001fb9a8(0x100, text_y, other_left, (const char *)D_L00_0017E530, -1);
-        FUN_001fb9a8(0x100, y + 0x1b, other_left, (const char *)&D_L00_0017E530[1] + i, -1);
-        level = current_level_index_sda;
+        draw_hud_sprite(get_icon_frame(0x7580, 0), x + 0x20, y, w, 0x36, alpha);
+        text_color = color;
+        draw_hud_sprite(get_icon_frame(0x7580, 1), x, y, 0x20, 0x36, alpha);
+        frame = get_icon_frame(0x7580, 1);
+        right = w + 0x20;
+        draw_hud_sprite_flipped(frame, x + right, y, 0x20, 0x36, alpha);
+        font_print_center(0x100, text_y, text_color, (s32)D_L00_0017E530, -1);
+        font_print_center(0x100, y + 0x1b, text_color, (s32)(&D_L00_0017E530[1] + i), -1);
     } else {
-        int width, left;
-        width = FUN_001fb090((const char *)D_L00_0017E530, -1);
+        int width, left, right;
+        s32 frame;
+        width = measure_text_width_regular(D_L00_0017E530, -1);
         left = 0xe0 - (width >> 1);
-        FUN_0023b4d8(FUN_0023b208(0x7580, 1), left, y, 0x20, 0x20, alpha);
-        FUN_0023b4d8(FUN_0023b208(0x7580, 0), left + 0x20, y, width, 0x20, alpha);
-        line = FUN_0023b208(0x7580, 1);
-        width += 0x20;
-        FUN_0023b860((void *)line, left + width, y, 0x20, 0x20, alpha);
-        FUN_001fb9a8(0x100, text_y, color, (const char *)D_L00_0017E530, -1);
-        level = *(int *)0x15ed84;
+        draw_hud_sprite(get_icon_frame(0x7580, 1), left, y, 0x20, 0x20, alpha);
+        draw_hud_sprite(get_icon_frame(0x7580, 0), left + 0x20, y, width, 0x20, alpha);
+        frame = get_icon_frame(0x7580, 1);
+        right = width + 0x20;
+        draw_hud_sprite_flipped(frame, left + right, y, 0x20, 0x20, alpha);
+        font_print_center(0x100, text_y, color, (s32)D_L00_0017E530, -1);
     }
+    level = current_level_index;
     if (level == 5 || level == 0x10) {
-        typedef unsigned int quadword __attribute__((mode(TI), aligned(16)));
-        *(quadword *)&points[0] = 0;
-        *(quadword *)&points[1] = 0;
-        points[0].x = 294.5f;
-        points[0].y = 225.4f;
-        points[0].z = 100.0f;
-        points[1].x = 115.7f;
-        points[1].y = 287.0f;
-        points[1].z = 119.5f;
-        {
-            float *point_data;
-            line = level == 5 ? memcpy(&point, &points[0], 16) : memcpy(&point, &points[1], 16);
-            point_data = (float *)line;
-            if (FUN_001ff450(D_0013F3D0, point_data) < 5.0f) {
-                *(int *)0x15f648 = y + 100;
-                extra = current_level_index_sda == 0x10 ? 1 : 0;
-                elapsed = freeze_stats_time_ref[extra];
-                extra = freeze_stats_score_ref_a[extra];
-                if (elapsed != 0) {
-                    const char *message;
-                    interval = pal_mode != 0 ? 3000 : 3600;
-                    seconds = elapsed / interval;
-                    other_width = interval;
-                    interval /= 60;
-                    remainder = elapsed - seconds * other_width;
-                    other_left = remainder / interval;
-                    remainder = (remainder - other_left * interval) * 100 / interval;
-                    line = freeze_stats_time_format;
-                    message = FUN_00203ad8(0x531b);
-                    sprintf(text, line, message, seconds, other_left, remainder);
-                    FUN_0023cf80(0x100, y + 0x28, color, text);
-                    if (extra != 0) {
-                        sprintf(text, freeze_stats_score_format, FUN_00203ad8(0x531c), extra);
-                        FUN_0023cf80(0x100, y + 0x48, color, text);
-                    }
+        points[0].q = 0;
+        points[1].q = 0;
+        points[0].f[0] = 294.5f;
+        points[0].f[1] = 225.4f;
+        points[0].f[2] = 100.0f;
+        points[1].f[0] = 115.7f;
+        points[1].f[1] = 287.0f;
+        points[1].f[2] = 119.5f;
+        if (level == 5) {
+            qcopy(&point, &points[0]);
+        } else {
+            qcopy(&point, &points[1]);
+        }
+        if (fast_vec_dist(D_0013F3D0, &point) < 5.0f) {
+            int elapsed, score, interval, unit, minutes, rest, seconds, hundredths;
+            D_L00_0015F648_macro = y + 100;
+            elapsed = freeze_stats_time_ref[current_level_index == 0x10];
+            score = freeze_stats_score_ref_a[current_level_index == 0x10];
+            if (elapsed != 0) {
+                interval = pal_mode != 0 ? 3000 : 3600;
+                unit = interval / 60;
+                minutes = elapsed / interval;
+                rest = elapsed - minutes * interval;
+                seconds = rest / unit;
+                rest = rest - seconds * unit;
+                hundredths = rest * 100 / unit;
+                sprintf(text, freeze_stats_time_format, get_help_message_text(0x531b), minutes, seconds, hundredths);
+                draw_framed_text(0x100, y + 0x28, color, text);
+                if (score != 0) {
+                    sprintf(text, freeze_stats_score_format, get_help_message_text(0x531c), score);
+                    draw_framed_text(0x100, y + 0x48, color, text);
                 }
             }
         }
     }
-    return *(int *)((char *)e + 0x58);
+    /* Fakematch: the never-taken text_color use keeps the then-branch color copy in its own register. */
+    return hud_element->w + (text_color & never);
 }
-#endif

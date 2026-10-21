@@ -47,7 +47,7 @@ extern void FUN_L00_00212ff0(void);
 void FUN_L01_00233de0(void)
 {
     Vec4 old_pos;
-    Vec4 tmp;
+    Vec4 movement_vector_scratch;
     Vec4 projection_velocity;
     f32 limit;
     f32 d;
@@ -107,15 +107,15 @@ void FUN_L01_00233de0(void)
     }
     normalize_vector_xyz(&hero.motion.unk110, &hero.motion.velocity, d);
 
-    qcopy(&tmp, &hero.motion.velocity);
-    gravity_flatten(&tmp, &tmp);
+    qcopy(&movement_vector_scratch, &hero.motion.velocity);
+    gravity_flatten(&movement_vector_scratch, &movement_vector_scratch);
     gravity_flatten(&hero.motion.unk130, &hero.motion.unk130);
     normalize_vector_xyz(&hero.motion.unk130, &hero.motion.unk130, 1.0f);
-    d = dot_vectors_xyz(&hero.motion.unk130, &tmp);
+    d = dot_vectors_xyz(&hero.motion.unk130, &movement_vector_scratch);
     if (d < 0.0f) {
         d = 0.0f;
     }
-    normalize_vector_xyz(&hero.motion.unk130, &tmp, d);
+    normalize_vector_xyz(&hero.motion.unk130, &movement_vector_scratch, d);
 
     qcopy(&projection_velocity, &hero.motion.velocity);
     FUN_L00_00233ba0((float *)&projection_velocity, (float *)&projection_velocity, 0.0f);
@@ -130,14 +130,14 @@ void FUN_L01_00233de0(void)
     hero.motion.speed_xy = vector_length_xyz(&hero.motion.unk110);
     hero.motion.unk164 = vector_length_xy(&hero.motion.unk110);
     /* read through the address, as retail reloads the base register here */
-    tmp.q = (&hero.motion.unk110)->q;
-    hero.motion.unk168 = forward_component(&tmp);
+    movement_vector_scratch.q = (&hero.motion.unk110)->q;
+    hero.motion.unk168 = forward_component(&movement_vector_scratch);
     if (hero.motion.unk168 < 0.0f) {
         hero.motion.unk168 = 0.0f;
     }
 
     /* apply the push, keeping its w */
-    qcopy(&tmp, &hero.motion.pos);
+    qcopy(&movement_vector_scratch, &hero.motion.pos);
     if (vector_length_xyz(&hero.motion.platform_delta) > 0.0001f) {
         add_vector_xyz(&hero.motion.pos, &hero.motion.pos, &hero.motion.platform_delta);
         w = hero.motion.platform_delta.f[3];
@@ -148,7 +148,7 @@ void FUN_L01_00233de0(void)
         subtract_vector_xyz(&hero.motion.displacement, &hero.motion.pos, &old_pos);
         FUN_L00_00212ff0();
     }
-    subtract_vector_xyz(&hero.motion.platform_carry, &hero.motion.pos, &tmp);
+    subtract_vector_xyz(&hero.motion.platform_carry, &hero.motion.pos, &movement_vector_scratch);
     {
         /* push w moves to unk140.w; a block-local keeps retail's order */
         f32 push_w = hero.motion.platform_delta.f[3];
@@ -203,10 +203,10 @@ extern void fast_vec_add(void *, void *, void *) __asm__("FUN_001f9a10");
 extern void air_accel(f32) __asm__("FUN_L01_00234358");
 
 void FUN_L01_00234b40(void) {
-    HopVec tmp;
+    HopVec added_velocity;
     f32 speed;
-    f32 a;
-    f32 d;
+    f32 additional_planar_speed;
+    f32 speed_decay_step;
     f32 arg;
     s32 state;
 
@@ -258,9 +258,9 @@ void FUN_L01_00234b40(void) {
         }
         hero.motion.velocity.f[0] = fast_cos(hero.unk438) * hero.unk458;
         hero.motion.velocity.f[1] = fast_sin(hero.unk438) * hero.unk458;
-        a = hero.unk454 * fast_sin(fast_difference_between_rotations(hero.unk43C, hero.unk438));
-        hero.motion.velocity.f[0] += fast_cos(hero.unk43C) * a;
-        hero.motion.velocity.f[1] += fast_sin(hero.unk43C) * a;
+        additional_planar_speed = hero.unk454 * fast_sin(fast_difference_between_rotations(hero.unk43C, hero.unk438));
+        hero.motion.velocity.f[0] += fast_cos(hero.unk43C) * additional_planar_speed;
+        hero.motion.velocity.f[1] += fast_sin(hero.unk43C) * additional_planar_speed;
         FUN_L00_002132b8(0.7f, frame_time * 0.0f);
         qcopy(&hero.motion.unk150, &hero.move_impulse);
     } else if (state == 0x11) {
@@ -275,8 +275,8 @@ void FUN_L01_00234b40(void) {
                 hero.motion.velocity.f[1] = fast_sin(hero.motion.move_yaw) * (frame_time * 4.9f);
             } else {
                 FUN_L00_00233ba0_u(&hero.motion.velocity, &hero.motion.velocity, 0.0f);
-                fast_vec_normalize(&tmp, &hero.motion.unk170, frame_time * 4.9f);
-                fast_vec_add(&hero.motion.velocity, &hero.motion.velocity, &tmp);
+                fast_vec_normalize(&added_velocity, &hero.motion.unk170, frame_time * 4.9f);
+                fast_vec_add(&hero.motion.velocity, &hero.motion.velocity, &added_velocity);
             }
         }
         hero.ground_speed = hero.motion.unk164;
@@ -287,9 +287,9 @@ void FUN_L01_00234b40(void) {
         arg = frame_time_sq * 20.0f;
         if (hero.target_speed < D_L01_0017C250[0] * frame_time * 0.2f) {
             if (hero.state.control_mode == 2) {
-                d = hero.unk944;
+                speed_decay_step = hero.unk944;
                 speed = vector_length_xy(&hero.motion.velocity);
-                approach_value(0.0f, d, &speed);
+                approach_value(0.0f, speed_decay_step, &speed);
                 FUN_001f9c48_u(hero.motion.velocity.f, hero.motion.velocity.f, speed);
                 return;
             }
@@ -512,6 +512,15 @@ extern void transform_vector_by_basis(void *, void *, void *);
 extern s32 D_0013CB14[];
 
 void FUN_L01_002370b8(void) {
+    enum {
+        HERO_STATE_MOVE_TOWARD_PROBE_POSITION = 0x18,
+        HERO_STATE_MOVE_VIA_POSITIVE_LATERAL_PROBE = 0x1A,
+        HERO_STATE_MOVE_VIA_NEGATIVE_LATERAL_PROBE = 0x1B,
+        HERO_STATE_FALL_WITH_LIMITED_DESCENT = 0x55,
+        HERO_STATE_DOWNHILL_SLIDE = 0x58,
+        HERO_STATE_MOVE_TO_TARGET_POSITION = 0x65,
+        HERO_STATE_BRAKE_AT_TARGET_POSITION = 0x66
+    };
     FVec4 vec[6];
     Moby *moby;
     int prevState;
@@ -523,15 +532,15 @@ void FUN_L01_002370b8(void) {
     prevState = hero.state.step;
     prevAnim = moby->f53;
     switch (hero.state.current) {
-    case 0x0:
-    case 0x1:
-    case 0x3:
-    case 0x4:
+    case HERO_STATE_IDLE:
+    case HERO_STATE_LOOK:
+    case HERO_STATE_STOP:
+    case HERO_STATE_CROUCH:
     case 0x17:
     case 0x1D:
     case 0x1E:
     case 0x1F:
-    case 0x3D:
+    case HERO_STATE_DYING:
     case 0x70:
     case 0x71:
     case 0x72:
@@ -667,7 +676,7 @@ void FUN_L01_002370b8(void) {
             }
         }
     } break;
-    case 0x7F:
+    case HERO_STATE_SINK:
         if (((Moby *)hero.unk6A4) == 0) {
             Moby *m;
 
@@ -1203,7 +1212,7 @@ void FUN_L01_002370b8(void) {
             }
         }
     } break;
-    case 0x14: {
+    case HERO_STATE_WRENCH_SLAM: {
         int t0;
         int t1;
         float v;
@@ -1274,7 +1283,7 @@ void FUN_L01_002370b8(void) {
             }
         }
     } break;
-    case 0x15: {
+    case HERO_STATE_CROUCH_SWING: {
         int skip;
 
         hero.target_speed = 0.0f;
@@ -1338,7 +1347,7 @@ void FUN_L01_002370b8(void) {
             FUN_L00_002334d0(hero.motion.velocity.f, hero.motion.velocity.f, frame_time_sq * 54.0f);
         }
     } break;
-    case 0x13: {
+    case HERO_STATE_WRENCH_COMBO: {
         HeroTableRow2C *r;
 
         if (hero.unkA9C != 0 || hero.anim_frame < D_L01_0017C0A8[hero.attack_record].f20) {
@@ -1372,14 +1381,14 @@ void FUN_L01_002370b8(void) {
             }
             e = d - off;
             if (absolute_float(e) < range + 3.0f) {
-                float q;
+                float approach_speed_scale;
 
-                q = e / 0.9f;
-                if (q > cap) {
-                    q = cap;
+                approach_speed_scale = e / 0.9f;
+                if (approach_speed_scale > cap) {
+                    approach_speed_scale = cap;
                 }
-                if (q > 1.0f) {
-                    hero.speed_scale = q;
+                if (approach_speed_scale > 1.0f) {
+                    hero.speed_scale = approach_speed_scale;
                 }
             }
         }
@@ -1438,7 +1447,7 @@ void FUN_L01_002370b8(void) {
         FUN_L00_00217118(3.7f, 0.0f);
     } break;
     case 0x21:
-    case 0x7A:
+    case HERO_STATE_WALL_BONK:
         fast_cos_cf(&hero.ground_speed, 0.0f, frame_time_sq * 24.0f);
         hero.motion.velocity.f[0] = FUN_L00_0020a1e0_cf(hero.unkA68) * hero.ground_speed;
         hero.motion.velocity.f[1] = FUN_L00_002121c0_cf(hero.unkA68) * hero.ground_speed;
@@ -1552,7 +1561,7 @@ void FUN_L01_002370b8(void) {
             hero.motion.velocity.f[2] -= frame_time_sq * 54.0f;
         }
         break;
-    case 0x2:
+    case HERO_STATE_RUN:
     case 0x73: {
         int quiet;
         float k;
@@ -1716,7 +1725,7 @@ void FUN_L01_002370b8(void) {
             D_L01_0017AB00[1].f60[0] = lean * 3.5f;
         }
         break;
-    case 0x18:
+    case HERO_STATE_MOVE_TOWARD_PROBE_POSITION:
     case 0x19:
         hero.motion.move_yaw = build_spherical_offset_cf(hero.unk4E4, 3.1415927f);
         turn_to(0, frame_scale_sq * 0.04f, frame_scale_sq * 0.2f, frame_time * 6.2831855f);
@@ -1725,8 +1734,8 @@ void FUN_L01_002370b8(void) {
         FUN_L00_0025f730(hero.motion.velocity.f, frame_time * 4.0f);
         fast_cos_cf(&hero.unk4F0, hero.motion.pos.f[2], frame_time * 3.0f);
         break;
-    case 0x1A:
-    case 0x1B: {
+    case HERO_STATE_MOVE_VIA_POSITIVE_LATERAL_PROBE:
+    case HERO_STATE_MOVE_VIA_NEGATIVE_LATERAL_PROBE: {
         float original_probe_yaw;
         float offset_probe_yaw;
 
@@ -1781,13 +1790,13 @@ void FUN_L01_002370b8(void) {
             }
         }
     } break;
-    case 0x79:
+    case HERO_STATE_SLIP:
         hero.motion.move_yaw = hero.downhill_yaw;
         hero.target_speed = frame_time * 5.5f;
         air_accel(frame_time_sq * 25.0f);
         FUN_L00_002334d0(hero.motion.velocity.f, hero.motion.unk120.f, frame_time_sq * 18.0f);
         break;
-    case 0x6:
+    case HERO_STATE_FALL:
     case 0x2D:
         FUN_L01_00232290();
         if (hero.unk1C4 == 0) {
@@ -1861,7 +1870,7 @@ void FUN_L01_002370b8(void) {
                              frame_scale_sq * 0.02f, frame_scale_sq * 0.35f, frame_time * 2.5f);
         }
     } break;
-    case 0x8: {
+    case HERO_STATE_LAND: {
         float v;
 
         if (hero_slot_item_id(3) == 2) {
@@ -1901,15 +1910,15 @@ void FUN_L01_002370b8(void) {
         }
         FUN_L00_00216de8_cf();
     } break;
-    case 0x7:
-    case 0x9:
-    case 0xA:
-    case 0xB:
+    case HERO_STATE_JUMP:
+    case HERO_STATE_RUN_JUMP:
+    case HERO_STATE_PACK_JUMP:
+    case HERO_STATE_HIGH_JUMP:
     case 0xC:
     case 0xD:
     case 0xE:
     case 0xF:
-    case 0x10:
+    case HERO_STATE_PACK_LONG_JUMP:
     case 0x11:
     case 0x12:
     case 0x1C:
@@ -2065,7 +2074,7 @@ void FUN_L01_002370b8(void) {
         FUN_L00_0020b5b8_cf();
         FUN_L00_00216de8_cf();
         break;
-    case 0x16: {
+    case HERO_STATE_HURT: {
         float len;
         float dec;
 
@@ -2084,7 +2093,7 @@ void FUN_L01_002370b8(void) {
         set_vector_length_xy(hero.motion.velocity.f, hero.motion.velocity.f, len);
         FUN_L00_002334d0(hero.motion.velocity.f, hero.motion.velocity.f, 0.004f);
     } break;
-    case 0x65: {
+    case HERO_STATE_MOVE_TO_TARGET_POSITION: {
         float len;
         float k;
 
@@ -2138,7 +2147,7 @@ void FUN_L01_002370b8(void) {
             FUN_L00_002334d0(hero.motion.velocity.f, hero.motion.velocity.f, frame_time_sq * 54.0f);
         }
     } break;
-    case 0x66: {
+    case HERO_STATE_BRAKE_AT_TARGET_POSITION: {
 
         subtract_vector_xyz(vec[0], hero.unk1640.f, hero.motion.pos.f);
         if (dot_vectors_xyz(vec[0], hero.motion.unk150.f) < 0.0f) {
@@ -2154,7 +2163,7 @@ void FUN_L01_002370b8(void) {
             FUN_L00_002334d0(hero.motion.velocity.f, hero.motion.velocity.f, frame_time_sq * 54.0f);
         }
     } break;
-    case 0x40:
+    case HERO_STATE_FIDGET:
     case 0x67:
         clear_vector(hero.motion.velocity.f);
         break;
@@ -2175,13 +2184,13 @@ void FUN_L01_002370b8(void) {
             FUN_L00_002334d0(hero.motion.velocity.f, hero.motion.velocity.f, frame_time_sq * 54.0f);
         }
         break;
-    case 0x58:
+    case HERO_STATE_DOWNHILL_SLIDE:
         hero.motion.move_yaw = hero.downhill_yaw;
         hero.target_speed = frame_time * 5.5f;
         air_accel(frame_time_sq * 25.0f);
         FUN_L00_002334d0(hero.motion.velocity.f, hero.motion.unk120.f, frame_time_sq * 18.0f);
         break;
-    case 0x55:
+    case HERO_STATE_FALL_WITH_LIMITED_DESCENT:
         stick_target(frame_time * 1.5f, 0);
         if (hero.unk1C4 == 0) {
             FUN_L01_00234b40();

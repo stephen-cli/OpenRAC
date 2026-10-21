@@ -6,9 +6,6 @@
 #include "qcopy.h"
 #include "rnc/math/vector.h"
 
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L00_00268900.s", FUN_L00_00268900);
-#else
 extern void FUN_L00_00268d48();
 extern void FUN_L00_00268fe8();
 extern void FUN_L00_00269290(void);
@@ -94,66 +91,67 @@ extern void FUN_L00_00275eb0(void);
 extern u32 effect_handlers[] __asm__("D_L00_001B1E80");
 
 void register_part_types(void) __asm__("FUN_L00_00268900");
-void register_part_types(void)
-{
+
+void register_part_types(void) {
     u32 *handlers = effect_handlers;
+
     handlers[0] = (u32)FUN_L00_00268d48;
+    handlers[1] = (u32)FUN_L00_00268fe8;
+    handlers[2] = (u32)FUN_L00_00269290;
+    handlers[3] = (u32)FUN_L00_002694f8;
+    handlers[4] = (u32)FUN_L00_00269a70;
+    handlers[5] = (u32)FUN_L00_00269c70;
     handlers[6] = (u32)FUN_L00_00269d20;
+    handlers[7] = (u32)FUN_L00_0026a418;
     handlers[8] = (u32)FUN_L00_0026a5b8;
     handlers[9] = (u32)FUN_L00_0026a6f0;
     handlers[10] = (u32)FUN_L00_0026a880;
     handlers[11] = (u32)FUN_L00_0026ac78;
     handlers[12] = (u32)FUN_L00_0026b500;
-    handlers[7] = (u32)FUN_L00_0026a418;
-    handlers[21] = (u32)FUN_L00_0026ccb0;
-    handlers[23] = (u32)FUN_L00_0026d1b0;
-    handlers[1] = (u32)FUN_L00_00268fe8;
-    handlers[2] = (u32)FUN_L00_00269290;
-    handlers[28] = (u32)FUN_L00_0026e150;
-    handlers[3] = (u32)FUN_L00_002694f8;
-    handlers[4] = (u32)FUN_L00_00269a70;
-    handlers[5] = (u32)FUN_L00_00269c70;
-    handlers[20] = (u32)FUN_L00_0026c860;
     handlers[13] = (u32)FUN_L00_0026b910;
     handlers[14] = (u32)FUN_L00_0026ba68;
     handlers[15] = (u32)FUN_L00_0026bca8;
     handlers[16] = (u32)FUN_L00_0026c088;
-    handlers[24] = (u32)FUN_L00_0026d470;
     handlers[17] = (u32)FUN_L00_0026c3c8;
     handlers[18] = (u32)FUN_L00_0026c558;
-    handlers[26] = (u32)FUN_L00_0026dbe0;
     handlers[19] = (u32)FUN_L00_0026c7f0;
+    handlers[20] = (u32)FUN_L00_0026c860;
+    handlers[21] = (u32)FUN_L00_0026ccb0;
     handlers[22] = (u32)FUN_L00_00267b10;
+    handlers[23] = (u32)FUN_L00_0026d1b0;
+    handlers[24] = (u32)FUN_L00_0026d470;
+    handlers[25] = (u32)FUN_L00_0026d700;
+    handlers[26] = (u32)FUN_L00_0026dbe0;
     handlers[27] = (u32)FUN_L00_0026de00;
-    handlers[33] = (u32)FUN_L00_0026f048;
+    handlers[28] = (u32)FUN_L00_0026e150;
     handlers[29] = (u32)FUN_L00_0026e3a8;
     handlers[30] = (u32)FUN_L00_0026e670;
     handlers[31] = (u32)FUN_L00_0026eb88;
     handlers[32] = (u32)FUN_L00_0026ee48;
-    handlers[25] = (u32)FUN_L00_0026d700;
-    handlers[56] = (u32)FUN_L00_00272838;
-    handlers[52] = (u32)FUN_L00_00271fc0;
+    handlers[33] = (u32)FUN_L00_0026f048;
+    handlers[34] = (u32)FUN_L00_0026f280;
+    handlers[35] = (u32)FUN_L00_0026f660;
     handlers[36] = (u32)FUN_L00_0026f898;
     handlers[37] = (u32)FUN_L00_0026fa00;
     handlers[38] = (u32)FUN_L00_0026fb00;
     handlers[39] = (u32)FUN_L00_0026fc38;
     handlers[40] = (u32)FUN_L00_0026ff10;
     handlers[41] = (u32)FUN_L00_00270710;
-    handlers[55] = (u32)FUN_L00_002726d8;
+    handlers[42] = (u32)FUN_L00_00270948;
     handlers[43] = (u32)FUN_L00_002710a0;
-    handlers[35] = (u32)FUN_L00_0026f660;
-    handlers[34] = (u32)FUN_L00_0026f280;
-    handlers[46] = (u32)FUN_L00_002719f0;
     handlers[44] = (u32)FUN_L00_00271450;
-    handlers[47] = (u32)FUN_L00_00271be8;
     handlers[45] = (u32)FUN_L00_00271748;
-    handlers[49] = (u32)FUN_L00_00271d20;
+    handlers[46] = (u32)FUN_L00_002719f0;
+    handlers[47] = (u32)FUN_L00_00271be8;
     handlers[48] = (u32)FUN_L00_00271c88;
-    handlers[51] = (u32)FUN_L00_00271ec8;
+    handlers[49] = (u32)FUN_L00_00271d20;
     handlers[50] = (u32)FUN_L00_00271df8;
+    handlers[51] = (u32)FUN_L00_00271ec8;
+    handlers[52] = (u32)FUN_L00_00271fc0;
     handlers[53] = (u32)FUN_L00_002721f0;
     handlers[54] = (u32)FUN_L00_00272438;
-    handlers[42] = (u32)FUN_L00_00270948;
+    handlers[55] = (u32)FUN_L00_002726d8;
+    handlers[56] = (u32)FUN_L00_00272838;
     handlers[57] = (u32)FUN_L00_002728e8;
     handlers[58] = (u32)FUN_L00_00272bc0;
     handlers[59] = (u32)FUN_L00_00273088;
@@ -179,7 +177,6 @@ void register_part_types(void)
     handlers[79] = (u32)FUN_L00_00275d68;
     handlers[80] = (u32)FUN_L00_00275eb0;
 }
-#endif
 /*
  * Falling effect particle (one kind of the pool behind FUN_L00_002678b8; its
  * slot is freed by FUN_L00_00267a08). Each frame both points move by the
@@ -209,38 +206,38 @@ extern void add_vector_xyz(void *, void *, void *) __asm__("FUN_001f9a10");
 extern f32 ground_height_at(Vec4 *) __asm__("FUN_L00_00263468");
 extern void free_effect_particle(FallingParticle *) __asm__("FUN_L00_00267a08");
 
-void FUN_L00_00268d48(FallingParticle *p)
+void FUN_L00_00268d48(FallingParticle *particle)
 {
     Vec4 step;
     Vec4 ground_test_probe;
     Vec4 ground_sample_probe;
-    Vec4 *vel = &p->vel;
+    Vec4 *vel = &particle->vel;
     f32 ground = vel->f[3];
     s32 cell_x;
     s32 cell_y;
 
-    if (p->pos.f[2] < ground || p->pos.f[0] < 0.0f || p->pos.f[1] < 0.0f
-        || 512.0f < p->pos.f[0] || 512.0f < p->pos.f[1])
+    if (particle->pos.f[2] < ground || particle->pos.f[0] < 0.0f || particle->pos.f[1] < 0.0f
+        || 512.0f < particle->pos.f[0] || 512.0f < particle->pos.f[1])
         goto die;
 
-    cell_x = p->probe.f[0];
-    cell_y = p->probe.f[1];
+    cell_x = particle->probe.f[0];
+    cell_y = particle->probe.f[1];
     add_vector_xyz(&step, vel, &particle_drift);
-    add_vector_xyz(&p->probe, &p->probe, &step);
-    add_vector_xyz(&p->pos, &p->pos, &step);
-    if (p->unk0A != 2) {
-        if (cell_x != (s32)p->probe.f[0] || cell_y != (s32)p->probe.f[1]) {
-            ground_test_probe.q = p->probe.q;
+    add_vector_xyz(&particle->probe, &particle->probe, &step);
+    add_vector_xyz(&particle->pos, &particle->pos, &step);
+    if (particle->unk0A != 2) {
+        if (cell_x != (s32)particle->probe.f[0] || cell_y != (s32)particle->probe.f[1]) {
+            ground_test_probe.q = particle->probe.q;
             if (ground_height_at(&ground_test_probe) < particle_min_ground) {
                 ground = particle_min_ground;
             } else {
-                ground_sample_probe.q = p->probe.q;
+                ground_sample_probe.q = particle->probe.q;
                 ground = ground_height_at(&ground_sample_probe);
             }
-            if (p->probe.f[2] < ground) {
+            if (particle->probe.f[2] < ground) {
                 /* shared exit; retail has one call site for all kill paths */
             die:
-                free_effect_particle(p);
+                free_effect_particle(particle);
                 return;
             }
         }
@@ -253,34 +250,34 @@ unsigned char *create_part(int) __asm__("FUN_L00_002678b8");
 int truncate_float_to_s32(float) __asm__("FUN_001fa6d0");
 int scale_game_frames(int) __asm__("FUN_001f96f8");
 void FUN_L00_00268f10(Vec4 *v, int c) {
-    unsigned char *m = create_part(1);
-    if (m) {
+    unsigned char *particle = create_part(1);
+    if (particle) {
         v->f[2] += 0.1f;
-        qcopy(m + 0x10, v);
-        *(int *)(m + 4) = (c << 24) | 0x907070;
-        m[9] = truncate_float_to_s32(2.0f) + 0x40;
-        m[3] = 0x48;
-        m[1] = 0;
-        m[2] = *D_L00_001B2084;
-        *(float *)(m + 0xc) = 31500.002f;
-        m[8] = 0xa0;
-        *(short *)(m + 0xa) = scale_game_frames(0x1b);
-        *(int *)(m + 0x20) = c;
+        qcopy(particle + 0x10, v);
+        *(int *)(particle + 4) = (c << 24) | 0x907070;
+        particle[9] = truncate_float_to_s32(2.0f) + 0x40;
+        particle[3] = 0x48;
+        particle[1] = 0;
+        particle[2] = *D_L00_001B2084;
+        *(float *)(particle + 0xc) = 31500.002f;
+        particle[8] = 0xa0;
+        *(short *)(particle + 0xa) = scale_game_frames(0x1b);
+        *(int *)(particle + 0x20) = c;
     }
 }
 int scale_game_frames(int) __asm__("FUN_001f96f8");
 int fast_dec_timer_s16(void *) __asm__("FUN_001f9770");
 void FUN_L00_00267a08(unsigned char *);
-void FUN_L00_00268fe8(unsigned char *p) {
+void FUN_L00_00268fe8(unsigned char *particle) {
     int r = scale_game_frames(0x1b);
-    int k = *(short *)(p + 0xa) * *(int *)(p + 0x20) / r;
-    *(int *)(p + 4) = (*(int *)(p + 4) & 0xffffff) | (k << 24);
-    if (fast_dec_timer_s16(p + 0xa))
-        FUN_L00_00267a08(p);
+    int k = *(short *)(particle + 0xa) * *(int *)(particle + 0x20) / r;
+    *(int *)(particle + 4) = (*(int *)(particle + 4) & 0xffffff) | (k << 24);
+    if (fast_dec_timer_s16(particle + 0xa))
+        FUN_L00_00267a08(particle);
     else {
-        int a = scale_game_frames(0x1b);
+        int lifetime_frames = scale_game_frames(0x1b);
         int b = scale_game_frames(0x1b);
-        p[2] = D_L00_001B2084[(a - *(short *)(p + 0xa)) * 9 / b];
+        particle[2] = D_L00_001B2084[(lifetime_frames - *(short *)(particle + 0xa)) * 9 / b];
     }
 }
 

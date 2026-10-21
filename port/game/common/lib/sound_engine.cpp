@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -30,6 +31,18 @@ using namespace openrac;
 std::mutex g_lock;
 // openrac_stream_read_at_once: streams read on the caller's thread.
 bool g_read_at_once = false;
+// The threads reading a track, and the flag that tells them the program is leaving. A track of
+// minutes is read on a thread of its own, and the player may close the window while one is
+// reading: the program then waits for them (openrac_sound_stop_readers), so that the globals
+// this file has are not taken away under a thread that is using them.
+// A reader that has finished says so (done), and the next track's start joins it: a thread
+// that ended is not left unjoined, holding its stack, for the rest of the session.
+struct Reader {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done;
+};
+std::vector<Reader> g_readers;
+bool g_stopping = false;
 
 // A place on the disc image, which is larger than 2 GB: fseek takes a long, 32 bits on Windows,
 // where a sector past the first million (the music) would wrap.
@@ -61,6 +74,9 @@ std::array<std::int32_t, audio::kVolumeGroups> g_master = [] {
 struct Track {
     std::vector<std::int16_t> samples;
     std::uint32_t rate = 44100;
+    // The samples the header announces (28 per 16-byte frame), known when the stream starts: the
+    // time left before the decode has ended (openrac_stream_remaining_ms).
+    std::size_t length = 0;
     bool ready = false;
     bool failed = false;
 };
@@ -96,19 +112,44 @@ Stream* find_stream(std::uint32_t handle) {
 }
 
 // A mono VAG file at `sector`: {"VAGp", version, pad, data size, rate, ...} big-endian, 0x30 bytes.
+constexpr std::size_t kVagHeader = 0x30;
+
+// The body's size and the rate from the header at `sector`, or false.
+bool read_vag_header(std::FILE* disc, std::uint32_t sector, std::uint32_t& size, std::uint32_t& rate) {
+    std::uint8_t header[kVagHeader];
+    if (!seek_disc(disc, static_cast<std::uint64_t>(sector) * 2048)
+        || std::fread(header, 1, sizeof header, disc) != sizeof header
+        || std::memcmp(header, "VAGp", 4) != 0) {
+        return false;
+    }
+    const auto be32 = [&](int at) {
+        return static_cast<std::uint32_t>(header[at]) << 24
+               | static_cast<std::uint32_t>(header[at + 1]) << 16
+               | static_cast<std::uint32_t>(header[at + 2]) << 8 | header[at + 3];
+    };
+    size = be32(12);
+    rate = be32(16);
+    return true;
+}
+
 void read_track(std::uint32_t sector, std::shared_ptr<Track> track) {
+    // The program is leaving: nothing to read for.
+    {
+        std::lock_guard lock(g_lock);
+        if (g_stopping) {
+            track->failed = true;
+            return;
+        }
+    }
     std::vector<std::int16_t> samples;
     std::uint32_t rate = 0;
     if (std::FILE* disc =
             openrac_game_disc_image ? std::fopen(openrac_game_disc_image, "rb") : nullptr) {
         const std::uint64_t at = static_cast<std::uint64_t>(sector) * 2048;
-        std::uint8_t header[0x30];
-        if (seek_disc(disc, at)
-            && std::fread(header, 1, sizeof header, disc) == sizeof header
-            && std::memcmp(header, "VAGp", 4) == 0) {
-            const std::uint32_t size = static_cast<std::uint32_t>(header[12]) << 24
-                                       | header[13] << 16 | header[14] << 8 | header[15];
-            std::vector<std::uint8_t> file(sizeof header + size);
+        std::uint32_t size = 0;
+        std::uint32_t header_rate = 0;
+        if (read_vag_header(disc, sector, size, header_rate)) {
+            std::vector<std::uint8_t> file(kVagHeader + size);
             if (size > 0 && size < 64u * 1024 * 1024 && seek_disc(disc, at)
                 && std::fread(file.data(), 1, file.size(), disc) == file.size()) {
                 try {
@@ -380,6 +421,18 @@ uint32_t openrac_stream_play(
         return 0;
     }
     auto track = std::make_shared<Track>();
+    // The header now, the body on the reader's thread: the game asks how long the stream has left
+    // from the next frame on, long before a track of minutes is read and decoded.
+    if (std::FILE* disc =
+            openrac_game_disc_image ? std::fopen(openrac_game_disc_image, "rb") : nullptr) {
+        std::uint32_t size = 0;
+        std::uint32_t rate = 0;
+        if (read_vag_header(disc, sector, size, rate) && rate != 0) {
+            track->length = static_cast<std::size_t>(size / 16) * 28;
+            track->rate = rate;
+        }
+        std::fclose(disc);
+    }
     std::uint32_t handle;
     {
         std::lock_guard lock(g_lock);
@@ -402,9 +455,47 @@ uint32_t openrac_stream_play(
     if (g_read_at_once) {
         read_track(sector, track);
     } else {
-        std::thread(read_track, sector, track).detach();
+        std::lock_guard lock(g_lock);
+        if (g_stopping) {
+            // The program is leaving: the track is not read, and no thread is left behind.
+            track->failed = true;
+            return handle;
+        }
+        // The readers that have finished are joined (their work is done: the join only waits for
+        // the thread to end); the others are kept.
+        std::erase_if(g_readers, [](Reader& reader) {
+            if (!reader.done->load()) {
+                return false;
+            }
+            reader.thread.join();
+            return true;
+        });
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        g_readers.push_back({std::thread([sector, track, done] {
+                                 read_track(sector, track);
+                                 done->store(true);
+                             }),
+                             done});
     }
     return handle;
+}
+
+// Stops the threads reading a track and waits for them: the program calls this before it
+// exits, so that nothing they use is taken away while they are still working (a reader that
+// locks g_lock after the static destructors have run is a crash at quit).
+void openrac_sound_stop_readers() {
+    std::vector<Reader> readers;
+    {
+        std::lock_guard lock(g_lock);
+        g_stopping = true;
+        readers.swap(g_readers);
+    }
+    // Outside the lock: a reader that is waiting for it must be able to take it and end.
+    for (auto& reader : readers) {
+        if (reader.thread.joinable()) {
+            reader.thread.join();
+        }
+    }
 }
 
 void openrac_stream_read_at_once(int at_once) {
@@ -429,10 +520,15 @@ int32_t openrac_stream_remaining_ms(uint32_t stream) {
         return 0;
     }
     const Track& t = *s->parts.front().track;
-    if (!t.ready) {
-        return 60000;  // not read yet: the game only needs it to be playing
+    // Not decoded yet: all of it is left, as its header gives it (the stream holds silent at its
+    // start until then). RAC1's crossfade measures the old music's fade against the first answer
+    // it gets for the transition (music_Update, case 2), so a made-up length there cut the old
+    // music at once and started the next track with it.
+    const std::size_t length = t.ready ? t.samples.size() : t.length;
+    if (!t.ready && length == 0) {
+        return 60000;  // no header either: the game only needs it to be playing
     }
-    const double left = static_cast<double>(t.samples.size()) - s->position;
+    const double left = static_cast<double>(length) - s->position;
     return static_cast<int32_t>(std::max(0.0, left) * 1000.0 / t.rate);
 }
 

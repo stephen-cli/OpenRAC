@@ -4,20 +4,27 @@
 import {
   api,
   pickIso,
+  onDiscCopy,
+  onAndroid,
   errorText,
   onJobEvent,
   type ActionView,
+  type DiscCopy,
   type AppInfo,
   type Config,
   type DiscChoice,
   type FoundDisc,
+  type GameStatus,
   type Library,
   type RunInputs,
   type Scope,
   type Started,
+  type UpdateChannel,
   type VersionView,
+  updateChannelOf,
 } from "./api";
 import { Queue, type Job } from "./queue";
+import { backgroundStatus } from "./progress";
 import { lastLines, PLAY_ACTIONS, unseenRecent, type StopNotice } from "./reports";
 import { checkForUpdate, type UpdateInfo } from "./updates";
 
@@ -29,6 +36,9 @@ interface AppState {
   library: Library | null;
   /** Why the library could not be read (no checkout set, a broken game.json). */
   libraryError: string | null;
+  /** Why the launcher could not start (a command that failed at start-up); the start-up
+   *  screen says it, and offers to try again. */
+  startError: string | null;
   /** The games found in the player's games folder (api.scanDiscs). */
   discs: FoundDisc[];
   /** Developers only: the games whose disc can be switched (core/src/disc_choice.rs). */
@@ -47,6 +57,12 @@ interface AppState {
   reportsChanged: number;
   /** Each set-up game's crash reports: how many, and how many in the last three days (the tiles' mark). */
   crashes: Record<string, { total: number; recent: number }>;
+  /** A disc image being copied into the Android app's storage, or a .chd being unpacked. */
+  discCopy: DiscCopy | null;
+  /** Android: the game running beside the launcher (readGame). */
+  game: GameStatus | null;
+  /** Android: the tools the launcher carries being unpacked, after an install or an update. */
+  preparing: boolean;
 }
 
 export const app = $state<AppState>({
@@ -54,6 +70,7 @@ export const app = $state<AppState>({
   config: null,
   library: null,
   libraryError: null,
+  startError: null,
   discs: [],
   discChoices: [],
   page: "library",
@@ -65,7 +82,36 @@ export const app = $state<AppState>({
   stopped: null,
   reportsChanged: 0,
   crashes: {},
+  discCopy: null,
+  game: null,
+  preparing: false,
 });
+
+/** Android: whether the game still runs beside the launcher, read when the launcher comes back
+ *  in front and after a start. */
+export async function readGame() {
+  if (!onAndroid) return;
+  try {
+    app.game = await api.gameStatus();
+  } catch {
+    app.game = null;
+  }
+}
+
+/** After a start: the game's activity takes a moment to be there. */
+async function readGameSoon() {
+  for (const wait of [500, 1500, 3000]) {
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    await readGame();
+    if (app.game?.running) return;
+  }
+}
+
+/** Android: back to the running game, or end it. */
+export async function gameWindow(stop: boolean) {
+  await guard(api.gameWindow(stop));
+  if (stop) app.game = { running: false, library: null };
+}
 
 /** The time, once a second: what a running job's elapsed time is counted against. One timer for
  *  the whole app (started in `start`), so a page shows it moving however it was reached. */
@@ -75,18 +121,95 @@ export const clock = $state({ now: Date.now() });
 export const jobs = $state<{ list: Job[]; selected: number | null }>({ list: [], selected: null });
 const queue = new Queue(jobs.list);
 
+// ---- Android: the set-up goes on in the background -----------------------------------------
+
+/** How long the notification stays after the work ends: the next job of a chain starts within it,
+ *  and Android starts the service that keeps the process alive only while the launcher is in front. */
+const BACKGROUND_LINGER_MS = 3000;
+
+/** While a disc is copied or a game is set up, Android shows its status in a notification and
+ *  keeps the launcher running with its window closed (SetupService.kt). */
+function keepAliveInBackground() {
+  let sent = "null";
+  let stopping: ReturnType<typeof setTimeout> | undefined;
+  const send = (status: ReturnType<typeof backgroundStatus>) => {
+    const text = JSON.stringify(status);
+    if (text === sent) return;
+    sent = text;
+    void api.backgroundStatus(status).catch(() => undefined);
+  };
+  $effect.root(() => {
+    $effect(() => {
+      const status = backgroundStatus(runningJob(), pendingJobs(), app.discCopy);
+      clearTimeout(stopping);
+      if (status) send(status);
+      else
+        stopping = setTimeout(() => {
+          send(null);
+        }, BACKGROUND_LINGER_MS);
+    });
+  });
+}
+
 // ---- toasts ---------------------------------------------------------------------------
 
 let toastId = 0;
+/** The time an information toast has left, paused while the pointer or the focus is on the toasts. */
+// Not state: nothing is drawn from it.
+// eslint-disable-next-line svelte/prefer-svelte-reactivity
+const toastTimers = new Map<number, { left: number; since: number; handle: ReturnType<typeof setTimeout> | null }>();
+let toastsHeld = false;
+
+function expire(id: number) {
+  const t = toastTimers.get(id);
+  if (t?.handle) clearTimeout(t.handle);
+  toastTimers.delete(id);
+  app.toasts = app.toasts.filter((t) => t.id !== id);
+}
+
+/** Says something for a moment; an error stays until it is dismissed, as it may need reading twice. */
 export function toast(text: string, kind: "info" | "error" = "info") {
   const id = ++toastId;
   app.toasts.push({ id, text, kind });
-  setTimeout(
-    () => {
-      app.toasts = app.toasts.filter((t) => t.id !== id);
-    },
-    kind === "error" ? 8000 : 4000,
-  );
+  // No more than four errors at once: the oldest gives way.
+  const errors = app.toasts.filter((t) => t.kind === "error");
+  if (errors.length > 4 && errors[0]) expire(errors[0].id);
+  if (kind === "info") {
+    toastTimers.set(id, {
+      left: 4000,
+      since: Date.now(),
+      handle: toastsHeld
+        ? null
+        : setTimeout(() => {
+            expire(id);
+          }, 4000),
+    });
+  }
+}
+
+/** Puts a toast away. */
+export function dismissToast(id: number) {
+  expire(id);
+}
+
+/** While the pointer or the focus is on the toasts, they wait to be read. */
+export function holdToasts(held: boolean) {
+  toastsHeld = held;
+  for (const [id, t] of toastTimers) {
+    if (held && t.handle) {
+      clearTimeout(t.handle);
+      t.handle = null;
+      t.left -= Date.now() - t.since;
+    } else if (!held && !t.handle) {
+      t.since = Date.now();
+      t.handle = setTimeout(
+        () => {
+          expire(id);
+        },
+        Math.max(t.left, 1500),
+      );
+    }
+  }
 }
 
 /** Runs `work`; a failure becomes an error toast and `undefined`. */
@@ -101,36 +224,94 @@ export async function guard<T>(work: Promise<T>): Promise<T | undefined> {
 
 // ---- loading ----------------------------------------------------------------------------
 
+/** Whether the launcher is already listening for its job's events: the start-up can fail and
+ *  be tried again, and the events must not be handled twice. */
+let listening = false;
+/** The clock's timer, so that a second start leaves only one running. */
+let clockTimer: ReturnType<typeof setInterval> | undefined;
+
 export async function start() {
-  setInterval(() => (clock.now = Date.now()), 1000);
-  await onJobEvent((event) => {
-    queue.apply(event);
-    if (event.type === "exit") {
-      const job = queue.jobs.find((j) => j.id === event.id);
-      const played = !!job && PLAY_ACTIONS.includes(job.actionId) && job.scope.kind === "version";
-      if (played) {
-        app.reportsChanged++;
-        void countCrashes();
+  app.startError = null;
+  try {
+    if (!listening) {
+      await onJobEvent((event) => {
+        queue.apply(event);
+        // A job that ended: the exit event, whether it came before the start call
+        // returned (the queue kept it until the id was known) or after it.
+        const ended = queue.takeEnded();
+        if (ended) handleExit(ended);
+      });
+      listening = true;
+      // The time, once a second: what a running job's elapsed time is counted against.
+      if (clockTimer) clearInterval(clockTimer);
+      clockTimer = setInterval(() => (clock.now = Date.now()), 1000);
+      if (onAndroid) {
+        keepAliveInBackground();
+        void readGame();
+        // Back in front (from the game, or from Home): is the game still running?
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") void readGame();
+        });
       }
-      // The game stopping on its own is not a failed task: the Play page says what happened.
-      if (job?.state === "failed" && played) void gameStopped(job);
-      else if (job?.state === "failed") toast(`${job.title} failed`, "error");
-      if (job) settle(job.key, job.state === "succeeded");
-      void refresh();
-      updateDiscordPresence();
-      pump();
     }
-  });
-  app.info = await api.appInfo();
-  app.config = await firstRun(await api.getConfig());
-  if (app.config.lastVersion) app.version = app.config.lastVersion;
+    app.info = await api.appInfo();
+    app.config = await firstRun(await api.getConfig());
+  } catch (e) {
+    // The launcher could not read what it needs to start: it says so, and the player may
+    // try again. Without this the window waits for a spinner that never goes away.
+    app.startError = errorText(e);
+    return;
+  }
+  if (onAndroid) await prepareTools();
+  // The version the launcher showed last; a version named in the address (the browser
+  // preview's ?version=) is kept.
+  if (!app.version && app.config.lastVersion) app.version = app.config.lastVersion;
   await refresh();
   void syncProgressWeb();
   void adoptGodot();
   // A new launcher is looked for at start unless the player turned that off (Settings).
   if (app.info.version && app.config.checkUpdates) {
-    void lookForUpdate();
+    lookForUpdate().catch(() => undefined); // told only when the player asks (Settings' "Check now")
   }
+}
+
+/** Android: the tools the launcher carries are unpacked after each install or update, beside the
+ *  page; nothing reads them before they are there. A second's wait shows why. */
+async function prepareTools() {
+  const shown = setTimeout(() => (app.preparing = true), 1000);
+  try {
+    await api.toolsReady();
+  } catch (e) {
+    toast(String(e), "error");
+  } finally {
+    clearTimeout(shown);
+    app.preparing = false;
+  }
+}
+
+/**
+ * A job ended: what the launcher does about it. Called once per job, whether
+ * its exit event came before the start call returned or after it (the queue
+ * keeps the end until it is taken).
+ */
+function handleExit(job: Job) {
+  const version = job.scope.kind === "version" ? job.scope.key : null;
+  const played = version !== null && PLAY_ACTIONS.includes(job.actionId);
+  if (played) {
+    app.reportsChanged++;
+    void countCrashes();
+  }
+  // The game stopping on its own is not a failed task: the Play page says what happened.
+  if (job.state === "failed" && played) void gameStopped(job);
+  else if (job.state === "failed") toast(`${job.title} failed`, "error");
+  // Played to the end since: the notice folds to a line (CrashNotice), the report still a click away.
+  if (job.state === "succeeded" && played && app.stopped && version.startsWith(`${app.stopped.game}/`)) {
+    app.stopped = { ...app.stopped, playedSince: true };
+  }
+  settle(job.key, job.state === "succeeded");
+  void refresh();
+  updateDiscordPresence();
+  pump();
 }
 
 /** The game ended with an error status or a signal: find its crash report and show the notice. */
@@ -142,14 +323,25 @@ async function gameStopped(job: Job) {
   // No install folder: the notice still says it stopped.
   const crash = await api.latestCrash(game, since).catch(() => null);
   app.stopped = { game, versionKey, code: job.code, at: job.endedAt ?? Date.now(), crash, lines: lastLines(job.lines) };
-  // On another page, the player is told where to look.
+  // On another page, the player is told where to look. A crash is worth a message to us; a game
+  // that was closed is not.
   if (app.page !== "game" || currentVersion()?.game !== game) {
-    toast("The game stopped unexpectedly. Its page has a report you can send us.", "error");
+    if (crash) toast("The game crashed. Its page has a report you can send us.", "error");
+    else toast("The game was closed. Its page has what happened.", "info");
   }
 }
 
+// The reads of the state that are in flight. Several run at once (a job ends while the
+// window gets the focus, the settings change, the figures are fetched from the site), and
+// the answers can come back in any order: only the newest one is used, so that an older
+// answer cannot put an out-of-date library, disc list or crash count back.
+let librarySeq = 0;
+let discsSeq = 0;
+let crashesSeq = 0;
+
 /** How many crash reports each set-up game has, for the tiles and the Play page's badge. */
 export async function countCrashes() {
+  const seq = ++crashesSeq;
   const counts: AppState["crashes"] = {};
   const recent = Date.now() / 1000 - 3 * 86400;
   for (const g of app.library?.games ?? []) {
@@ -162,7 +354,8 @@ export async function countCrashes() {
       // no install folder: nothing to count
     }
   }
-  app.crashes = counts;
+  // A count that is not the newest one is not put in: it would undo a newer one.
+  if (seq === crashesSeq) app.crashes = counts;
 }
 
 /**
@@ -191,18 +384,15 @@ export function dismissStopped() {
   if (game) void dismissCrashes(game);
 }
 
-/** Looks for a new launcher now (at start, or Settings' "Check now"); true when one is out. */
-/** Asks whether a newer launcher is out: "found" (app.update holds it), "latest", or "failed"
- *  when the question could not be asked (no connection), which is never read as "latest". */
-export async function lookForUpdate(): Promise<"found" | "latest" | "failed"> {
-  if (!app.info?.version) return "failed";
-  try {
-    const up = await checkForUpdate(app.info.version);
-    app.update = up;
-    return up ? "found" : "latest";
-  } catch {
-    return "failed";
-  }
+/** Looks for a new launcher now (at start, or Settings' "Check now") on CHANNEL, by default the
+ *  player's; true when one is out. Throws when there was nothing to compare with (no release where
+ *  the launcher looks, no network). */
+export async function lookForUpdate(channel?: UpdateChannel): Promise<boolean> {
+  if (!app.info?.version) return false;
+  channel ??= updateChannelOf(app.info, app.config);
+  const up = await checkForUpdate(app.info.version, app.info.updateChannels[channel], channel);
+  app.update = up;
+  return !!up;
 }
 
 /** Reads the library again: after a job, on focus, after settings change. */
@@ -228,31 +418,39 @@ export async function refresh() {
     app.libraryError = "Choose your OpenRAC folder in Settings.";
     return;
   }
+  const library = ++librarySeq;
   try {
-    setLibrary(await api.library());
-    app.libraryError = null;
+    const read = await api.library();
+    if (library === librarySeq) {
+      setLibrary(read);
+      app.libraryError = null;
+    }
   } catch (e) {
-    app.libraryError = errorText(e);
+    if (library === librarySeq) app.libraryError = errorText(e);
   }
   void countCrashes();
+  const discs = ++discsSeq;
   let scan: { found: FoundDisc[]; choices: DiscChoice[] } = { found: [], choices: [] };
   try {
     if (app.config.discsDir) scan = await api.scanDiscs();
   } catch {
     // A folder that went away: the game pages ask for an image as before.
   }
-  if (!same("discs", scan)) {
+  if (discs === discsSeq && !same("discs", scan)) {
     app.discs = scan.found;
     app.discChoices = scan.choices;
   }
 }
 
 /** Fetches every game's latest progress from bytematch.dev (the matched figures and the functional
- *  C beside them); the Rust side fetches and keeps a copy under build/ for offline use. */
+ *  C beside them); the Rust side fetches and keeps a copy in the launcher's own folder, for
+ *  offline use. */
 export async function syncProgressWeb() {
   if (!app.config?.root) return;
+  const library = ++librarySeq;
   try {
-    setLibrary(await api.syncProgressFromWeb());
+    const read = await api.syncProgressFromWeb();
+    if (library === librarySeq) setLibrary(read);
   } catch {
     // Offline: keep what was read at start (the kept copy)
   }
@@ -271,12 +469,14 @@ async function adoptGodot() {
   }
 }
 
-export async function saveConfig(config: Config) {
+/** Saves the settings. False when the write failed: the page then keeps what was typed
+ *  and says so, instead of going back to the settings that were saved. */
+export async function saveConfig(config: Config): Promise<boolean> {
   const saved = await guard(api.saveConfig(config));
-  if (saved) {
-    app.config = saved;
-    await refresh();
-  }
+  if (!saved) return false;
+  app.config = saved;
+  await refresh();
+  return true;
 }
 
 // ---- navigation ---------------------------------------------------------------------------
@@ -312,8 +512,9 @@ function taskOf(actionId: string): string | null {
 }
 
 export function updateDiscordPresence(page: Page = app.page, version: string | null = app.version) {
-  // While the game (the native port) runs, the status stays PlayingGame:
-  const playingJob = jobs.list.find((j) => j.actionId === "play" && j.state === "running");
+  // While the game (the native port) runs, the status stays PlayingGame. The game with
+  // the player's mods is the same program, so it counts too.
+  const playingJob = jobs.list.find((j) => PLAY_ACTIONS.includes(j.actionId) && j.state === "running");
   if (playingJob?.scope.kind === "version") {
     const scope = playingJob.scope;
     const versions = app.library?.games.flatMap((g) => g.versions) ?? [];
@@ -428,8 +629,24 @@ export async function runChain(scope: Scope, actions: ActionView[], given?: numb
  */
 export async function installGame(game: string, title: string, found?: string): Promise<boolean> {
   // An image the games folder holds needs no picking.
-  const image = found ?? (await pickIso(`Select your legitimately obtained ISO file of ${title}`));
-  if (!image) return false;
+  const picked =
+    found ??
+    (await copyingDisc((progress) => pickIso(`Select your legitimately obtained disc image of ${title}`, progress)));
+  if (!picked) return false;
+  // A .chd is unpacked into a plain image first (on Android the picker already did).
+  let image = picked;
+  if (/\.chd$/i.test(picked)) {
+    const plain = await copyingDisc(async (progress) => {
+      const off = await onDiscCopy(progress);
+      try {
+        return await guard(api.prepareDisc(picked));
+      } finally {
+        off();
+      }
+    });
+    if (!plain) return false;
+    image = plain;
+  }
   const job = queue.add({ kind: "repository" }, `install:${game}`, `Set up ${title} from your disc`);
   starters[job.key] = () => api.installGame(game, image);
   jobs.selected = job.key;
@@ -443,6 +660,24 @@ export async function installGame(game: string, title: string, found?: string): 
     ok ? "info" : "error",
   );
   return ok;
+}
+
+/** Runs a disc image's copy into the Android app's storage, or a .chd's unpacking, with its
+ *  progress in a toast at each quarter and in `app.discCopy` (Android's notification). */
+export async function copyingDisc<T>(run: (progress: (progress: DiscCopy) => void) => Promise<T>): Promise<T> {
+  let shown = -1;
+  try {
+    return await run((progress) => {
+      const { name, copied, total } = progress;
+      app.discCopy = progress;
+      const quarter = total > 0 ? Math.floor((copied / total) * 4) : 0;
+      if (quarter === shown) return;
+      shown = quarter;
+      toast(quarter >= 4 ? `${name} is ready.` : `Preparing ${name}: ${quarter * 25}%`);
+    });
+  } finally {
+    app.discCopy = null;
+  }
 }
 
 /** Removes what setting GAME up made, after the player confirmed. */
@@ -494,8 +729,20 @@ function pump() {
   start().then(
     (started) => {
       job.title = started.title;
+      if (started.detached) {
+        queue.launched(job, started.command);
+        settle(job.key, true);
+        if (PLAY_ACTIONS.includes(job.actionId)) void readGameSoon();
+        updateDiscordPresence();
+        pump();
+        return;
+      }
       queue.started(job, started.id, started.command);
-      updateDiscordPresence();
+      // The job may have ended before the start call returned: its exit event was kept
+      // until the id was known, and the end is acted on now.
+      const ended = queue.takeEnded();
+      if (ended) handleExit(ended);
+      else updateDiscordPresence();
     },
     (e: unknown) => {
       queue.refused(job, errorText(e));

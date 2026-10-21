@@ -129,7 +129,7 @@ extern void func_001F9BD8(void *, void *, void *);
 extern void func_L18_002D6A00(void *, void *);
 extern float func_001F9878(float);
 extern void func_001F49B0(void (*)(void), void *);
-extern void func_L18_002D6B58(void);
+extern void func_L18_002D6B58();
 extern int D_L18_0015F6A8 MACRO_ADDR;
 extern float D_0015EE6C MACRO_ADDR;
 extern short D_L18_001619F4;
@@ -306,8 +306,7 @@ extern float D_L18_001D3900[];
 extern float D_L18_001D3940[];
 
 /* Builds a 4-vertex textured quad packet from a moby's angle and draws it. */
-void impl_2D6B58(char *moby) __asm__("func_L18_002D6B58");
-void impl_2D6B58(char *moby) {
+void func_L18_002D6B58(char *moby) {
     char *data = *(char **)(moby + 0x78);
     float v[16];
     int col[4];
@@ -627,9 +626,13 @@ typedef struct {
    straight through. */
 extern int func_L00_002DCFD0(Level18VendorMoby *, void *);
 
+extern int func_L00_002DCFD0_h(Level18VendorMoby *, void *, void *, float) __asm__("func_L00_002DCFD0");
 /* Switch to state four while active, then restore the saved state. */
-int Moby_HoldStateWhileActive(Level18VendorMoby *moby, void *arg) {
-    int active = PlaceCarriedMoby(moby, arg);
+/* One of a class's Suck Cannon hooks (grab, place or fire), which the catalogue folds: each copy
+   calls its own one, the fire with (moby, velocity, target, height), so the arguments go on as
+   they came (retail touches none of a1, a2 and $f12 before its call). */
+int Moby_HoldStateWhileActive(Level18VendorMoby *moby, void *arg, void *t, float h) {
+    int active = func_L00_002DCFD0_h(moby, arg, t, h);
     if (active != 0) {
         moby->state = 4;
     } else if (moby->state == 4) {
@@ -3245,8 +3248,7 @@ extern short D_L18_001622F4;
 extern short D_L18_001622F8;
 extern short D_L18_001622FC;
 
-void impl_2F1AB0(char *moby) __asm__("func_L18_002F1AB0");
-void impl_2F1AB0(char *moby) {
+void func_L18_002F1AB0(char *moby) {
     short *p;
     float a, b;
     if (*(int *)&D_L18_001622C8 != 0) {
@@ -3256,7 +3258,7 @@ void impl_2F1AB0(char *moby) {
     a = *(float *)&D_L18_001622E8 * 0.017453292f * D_0015EE6C;
     b = *(float *)&D_L18_001622EC * 0.017453292f * D_0015EE6C;
     do {
-        char *o = D_L18_00160058_m + (*(unsigned short *)p & 0x7FFF) * 256;
+        char *o = D_L18_00160058 + (*(unsigned short *)p & 0x7FFF) * 256;
         if (*(short *)(o + 0xA6) == 0x54B) {
             char *data = *(char **)(o + 0x78);
             int t = FastTweenColor(*(int *)&D_L18_001622F0, *(int *)&D_L18_001622F4,
@@ -3282,7 +3284,7 @@ void impl_2F1AB0(char *moby) {
 }
 extern short D_L18_001622C0;
 extern void func_L18_002F1780(struct Moby *);
-extern void func_L18_002F1AB0(void);
+extern void func_L18_002F1AB0();
 
 /* Advance a ring of recorded positions, store the moby's position, and register draw callbacks once per frame. */
 void Moby1355_RecordTrail(char *moby) {

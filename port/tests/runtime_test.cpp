@@ -3,10 +3,17 @@
 //
 // Game memory, the guest contract and the executable loader.
 
+#include <cfenv>
+#include <chrono>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <vector>
 
 #include "check.h"
+#include "openrac/ee.h"
 #include "openrac/elf.h"
 #include "openrac/guest.h"
 #include "openrac/memory.h"
@@ -104,6 +111,77 @@ void code_in_copy_jal() {
     openrac_guest_set_overlay(OPENRAC_OVERLAY_EXE);
 }
 
+// The address of a folded wrapper a function takes: the place its own code forms (rac1's Umbris sea
+// classes each register their own wrapper of the liquid grid's draw, one name in the catalogue).
+void folded_address() {
+    const auto jal = [](gaddr target) { return 0x0C000000u | ((target & 0x0FFFFFFFu) >> 2); };
+    // lui a0, 0x0035; jal register; addiu a0, a0, -0x7FF0 (0x00348010): the level 5 wrapper at
+    // 0x00348010, not the first place 0x00340000. Then a second address, with ori: 0x00350020.
+    const std::uint32_t code[] = {0x3C040035u, jal(0x00310000u), 0x24848010u, 0x3C050035u, 0x34A50020u, 0x03E00008u};
+    std::memcpy(G(0x00360000u), code, sizeof code);
+    const std::uint32_t places[] = {0x01200000u, 0x06340000u, 0x06348010u, 0x06350020u, 0x07340000u};
+    openrac_guest_set_overlay(5);
+    CHECK(openrac_folded_address(places, 5, 0x00360000u, sizeof code, 0, 0x00340000u) == 0x00348010u);
+    CHECK(openrac_folded_address(places, 5, 0x00360000u, sizeof code, 1, 0x00340000u) == 0x00350020u);
+    // No third one formed, or no size known: the fallback.
+    CHECK(openrac_folded_address(places, 5, 0x00360000u, sizeof code, 2, 0x00340000u) == 0x00340000u);
+    CHECK(openrac_folded_address(places, 5, 0x00360000u, 0, 0, 0x00340000u) == 0x00340000u);
+    openrac_guest_set_overlay(OPENRAC_OVERLAY_EXE);
+}
+
+int folded_measure(int a) {
+    return a;
+}
+
+int font_printer(int a) {
+    return a;
+}
+
+// An executable global relocated into a level whose program has three copies of the function that
+// names it (rac1: the measurers of the regular, small and large fonts, one name in the catalogue),
+// each on a table of its own: the copies disagree on it, so none of them decides where it went;
+// the function with a single copy (the printer of the regular font) does, whatever order the
+// copies were registered or are kept in.
+void relocation_with_folded_copies() {
+    const auto words = [](gaddr at, std::initializer_list<std::uint32_t> w) {
+        std::memcpy(G(at), w.begin(), w.size() * 4);
+    };
+    // Executable: the measurer at 0x104000 and the printer at 0x104100, both forming 0x150000.
+    std::vector<std::uint8_t> exe(0x200, 0);
+    const std::uint32_t measure[] = {0x3C040015u, 0x24840000u, 0x03E00008u, 0};
+    const std::uint32_t print[] = {0x3C060015u, 0x24C60000u, 0x03E00008u, 0};
+    std::memcpy(exe.data(), measure, sizeof measure);
+    std::memcpy(exe.data() + 0x100, print, sizeof print);
+    // The level: the three measurer copies on 0x160000, 0x160200 and 0x160100 (the regular one's
+    // table at 0x160000, the others' after it), the printer's copy on 0x160000.
+    words(0x00180000u, {0x3C040016u, 0x24840000u, 0x03E00008u, 0});
+    words(0x00180020u, {0x3C040016u, 0x24840200u, 0x03E00008u, 0});
+    words(0x00180040u, {0x3C040016u, 0x24840100u, 0x03E00008u, 0});
+    words(0x00180100u, {0x3C060016u, 0x24C60000u, 0x03E00008u, 0});
+    const auto fn = [](auto f) { return reinterpret_cast<openrac_host_fn>(f); };
+    static const openrac_fn_entry exe_fns[] = {
+        {0x00104000u, fn(folded_measure), "measure"},
+        {0x00104100u, fn(font_printer), "print"},
+    };
+    static const openrac_fn_entry level_fns[] = {
+        {0x00180040u, fn(folded_measure), "measure"},
+        {0x00180000u, fn(folded_measure), "measure"},
+        {0x00180020u, fn(folded_measure), "measure"},
+        {0x00180100u, fn(font_printer), "print"},
+    };
+    openrac_guest_register(OPENRAC_OVERLAY_EXE, exe_fns, 2);
+    openrac_guest_register(7, level_fns, 4);
+    openrac_guest_set_relocation(0x00140000u, 0x00170000u, 0, exe.data(), 0x00104000u,
+                                 static_cast<std::uint32_t>(exe.size()));
+    openrac_guest_set_overlay(7);
+    CHECK(OPENRAC_DATA(0x00150000u) == 0x00160000u);
+    CHECK(OPENRAC_DATA(0x00150004u) == 0x00160004u);  // a field of it, from the same pair
+    CHECK(OPENRAC_CODE(0x00104100u) == 0x00180100u);
+    CHECK(OPENRAC_CODE(0x00104000u) == 0x00180000u);  // a folded one: its lowest copy
+    openrac_guest_set_overlay(OPENRAC_OVERLAY_EXE);
+    openrac_guest_set_relocation(0, 0, 0, exe.data(), 0, 0);
+}
+
 void put32(std::vector<std::uint8_t>& f, std::size_t at, std::uint32_t v) {
     for (int i = 0; i < 4; i++) {
         f[at + i] = static_cast<std::uint8_t>(v >> (8 * i));
@@ -189,6 +267,36 @@ volatile bool g_asked = false;
     g_asked = true;
 }
 
+void reach_report_updates() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() /
+                         ("openrac-reach-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const bool created = fs::create_directory(dir);
+    CHECK(created);
+    if (!created) {
+        return;
+    }
+    const std::string path = (dir / "reach.json").string();
+    const auto read = [&] {
+        std::ifstream f(path);
+        return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    };
+    CHECK(openrac_guest_write_reach(path.c_str(), "runtime-test", 600) == 1);
+    CHECK(read().find("\"frames\": 600") != std::string::npos);
+    CHECK(openrac_guest_write_reach(path.c_str(), "runtime-test", 1200) == 1);
+    CHECK(read().find("\"frames\": 1200") != std::string::npos);
+    CHECK(!fs::exists(path + ".part"));
+
+    // A failed replacement must leave the destination and its contents alone.
+    const fs::path blocked = dir / "blocked";
+    CHECK(fs::create_directory(blocked));
+    std::ofstream(blocked / "keep.txt") << "keep";
+    CHECK(openrac_guest_write_reach(blocked.string().c_str(), "runtime-test", 1800) == 0);
+    CHECK(fs::is_regular_file(blocked / "keep.txt"));
+    CHECK(openrac_guest_write_reach((dir / "absent/reach.json").string().c_str(), "runtime-test", 2400) == 0);
+    fs::remove_all(dir);
+}
+
 void host_stack() {
     char text[160] = "";
     ask_caller(text, sizeof(text));
@@ -207,13 +315,38 @@ void host_stack() {
 
 }  // namespace
 
+// The game thread's floating point (docs/port/HARDWARE_SEMANTICS.md, item 1): toward zero, so
+// the animation code's 12582912.0 takes the fraction off 1.5 as the EE does, and no denormals.
+static void ee_float_mode() {
+    std::fenv_t saved;
+    std::fegetenv(&saved);
+    openrac_ee_float_mode(0, 0);
+    volatile float magic = 12582912.0f, x = 1.5f, one = 1.0f, three = 3.0f;
+    const float whole = (x + magic) - magic;
+    CHECK(whole == 1.0f);  // 2.0 rounded to nearest: the animation ran backwards
+    const float third = one / three;
+    std::uint32_t bits;
+    std::memcpy(&bits, &third, 4);
+    CHECK(bits == 0x3EAAAAAAu);  // 0x3EAAAAAB to nearest
+    volatile float tiny = 1e-39f;  // a denormal: zero to the EE
+    const float product = tiny * one;
+    const float sum = tiny + tiny;
+    CHECK(product == 0.0f);
+    CHECK(sum == 0.0f);
+    std::fesetenv(&saved);
+}
+
 int main() {
     Memory::create();
+    ee_float_mode();
     memory_map();
     frames_and_strings();
     functions();
     code_in_copy_jal();
+    folded_address();
+    relocation_with_folded_copies();
     elf();
+    reach_report_updates();
     host_stack();
     return openrac::test::result();
 }

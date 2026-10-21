@@ -23,10 +23,12 @@ The decompilation is never changed; hostgen works on prepared copies under
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -36,10 +38,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import asmc  # noqa: E402
 import clangast  # noqa: E402
+import derived  # noqa: E402
 import ctype  # noqa: E402
 import prep  # noqa: E402
 from lower import Unit, UnitReport  # noqa: E402
-from program import Function, Program, Signature, canon, cname, index_unit, prototype, inherit_results, merge, read_places, read_split_places, read_symbols  # noqa: E402
+from program import Function, Program, Signature, canon, cname, index_unit, prototype, inherit_results, merge, read_places, read_split_places, read_symbols, read_catalogue  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PROGRAM_FILES = ["stubs.c", "functions.c", "libraries.c", "game_info.c", "game_protos.h"]
@@ -135,11 +138,17 @@ def read_hand(config_dir: Path, cfg: dict) -> dict[str, str]:
 
 def read_aliases(source: Path, cfg: dict) -> dict[str, str]:
     """The decompilation's readable names, each a macro for an address name (hostgen.json
-    "aliases": headers in the decompilation of `#define NAME func_ADDR` lines), or none."""
+    "aliases": headers in the decompilation of `#define NAME func_ADDR` lines), or none.
+    A `.json` entry is a table of values its own build derived ({"values": {name: "0x..."}},
+    Going Commando's build/boot/placed.json), read for its carried names only (prep.py,
+    read_carried_aliases)."""
     out: dict[str, str] = {}
     for header in cfg.get("aliases", []):
-        if (source / header).is_file():
-            out.update(prep.read_aliases((source / header).read_text(encoding="utf-8", errors="surrogateescape")))
+        path = source / header
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="surrogateescape")
+        out.update(prep.read_carried_aliases(text) if path.suffix == ".json" else prep.read_aliases(text))
     return out
 
 
@@ -279,22 +288,10 @@ def write_program_files(program: Program, out: Path, game: str) -> dict:
     _write(out / "stubs.c", "\n".join(stubs))
 
     # Every function with a code address, per overlay.
-    tables: dict[int, list[tuple[int, str]]] = {}
-    for sym, f in sorted(program.functions.items()):
-        if prototype(f, program.typedefs) is None:
-            continue
-        # Two spellings of one address (FUN_0020c828, func_0020C828): the one with C answers a
-        # call through the address too, not whichever sorts first.
-        own = program.canonical(sym)
-        if own != sym and prototype(program.functions[own], program.typedefs) is not None:
-            continue
-        for overlay, addr in program.code_places(sym):
-            tables.setdefault(overlay, []).append((addr, sym))
-            # hostgen.json "entries": a function whose C starts this many bytes into its
-            # catalogue place answers calls through that address too.
-            offset = getattr(program, "entries", {}).get(sym)
-            if offset:
-                tables[overlay].append((addr + offset, sym))
+    # (The translation's calls through a code address take the type of the function found there:
+    # Program.function_at, from the same tables.)
+    program._code_tables = None
+    tables = program.code_tables()
     fn = head + ["#include \"openrac/guest.h\"", "#include \"game_protos.h\"", ""]
     for overlay in sorted(tables):
         name = "exe" if overlay < 0 else f"overlay_{overlay:02d}"
@@ -598,6 +595,60 @@ def boot_frontier(fns, program: Program, roots: list[str]) -> dict:
     return {"roots": roots, "reachable": len(seen), "missing": missing}
 
 
+def _files(path: Path):
+    if path.is_file():
+        yield path
+    elif path.is_dir():
+        yield from (p for p in path.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+
+
+def inputs_digest(source: Path, config: Path, cfg: dict, options: list[str]) -> str:
+    """A fingerprint of everything hostgen reads: the decompilation's C and tables, the game's
+    configuration, hostgen's own code, the Clang it parses with and the options. Equal
+    fingerprints write the same files, so a build whose generated C is already in place (a CI
+    cache, a second configure) skips the translation."""
+    paths = [source / d for d in sorted(set(cfg["sources"] + cfg["includes"]))]
+    paths += [source / t for t in cfg["symbols"]]
+    # An alias table outside the include directories (a build's derived values) counts too.
+    paths += [source / t for t in cfg.get("aliases", []) if Path(t).suffix == ".json"]
+    for key in ("places", "candidates"):
+        if cfg.get(key):
+            paths.append(source / cfg[key])
+    table = source / cfg["candidates"] if cfg.get("candidates") else None
+    if table and table.is_file():
+        for line in table.read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                paths.append(source / line.partition("\t")[2].strip())
+    # The game's own folder and the tables every game shares (port/game/<id>, port/game/common).
+    paths += [config.parent, config.parent.parent / "common", HERE / "include"]
+    paths += sorted(HERE.glob("*.py"))
+    h = hashlib.sha256()
+    for root in paths:
+        for f in sorted(_files(root)):
+            h.update(str(f.relative_to(root) if f != root else f.name).encode() + b"\0")
+            h.update(hashlib.sha256(f.read_bytes()).digest())
+    # The assembly the setup wrote and the player's disc (hostgen.json "asm", --asm, --asm-source,
+    # --retail-*): C is translated from them too, so a new setup or a disc set up after a build
+    # changes the output. They are large (thousands of files, a disc image), so each file counts
+    # by its path, size and time rather than its bytes.
+    a = asmc.asm_config(cfg)
+    if a:
+        h.update(json.dumps(a, sort_keys=True, default=str).encode())
+        base = Path(a["source"]) if a.get("source") else source
+        stat_roots = [base / d for d in a.get("dirs", [])]
+        stat_roots += [Path(v) for v in (a.get("retail") or {}).values() if v]
+        for root in stat_roots:
+            for f in sorted(_files(root)):
+                st = f.stat()
+                h.update(f"{f}\0{st.st_size}\0{st.st_mtime_ns}\0".encode())
+    try:
+        clang = subprocess.run([clangast.clang_binary(), "--version"], capture_output=True, text=True).stdout
+    except (OSError, SystemExit):
+        clang = ""
+    h.update((clang + sys.platform + "\0".join(options)).encode())
+    return h.hexdigest()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--game", type=Path, required=True, help="the game's hostgen.json")
@@ -640,6 +691,17 @@ def main(argv: list[str] | None = None) -> int:
                                              ("dump", args.retail_dump)) if v}}
     source = args.source.resolve()
     out = args.out.resolve()
+    # The names the decompilation's build derives (hostgen.json "derived"): its build's table, or
+    # the port's copy; read as aliases and as symbols. Neither there stops here, at configure, not
+    # in a program whose functions that use them are stubs.
+    try:
+        derived_table = derived.resolve(source, args.game.resolve().parent, cfg)
+    except derived.Missing as e:
+        print(f"hostgen: error: {e}", file=sys.stderr)
+        return 1
+    if derived_table is not None:
+        cfg["aliases"] = cfg.get("aliases", []) + [str(derived_table)]
+        cfg["symbols"] = cfg["symbols"] + [str(derived_table)]
     if args.list:
         for u in units_of(source, cfg):
             print(generated_name(u))
@@ -648,7 +710,28 @@ def main(argv: list[str] | None = None) -> int:
         for name in PROGRAM_FILES:
             print(name)
         return 0
+    # The translation is skipped when what it reads is what it last wrote from.
+    stamp = out / "inputs.sha256"
+    digest = inputs_digest(source, args.game.resolve(), cfg, args.only + ["--allow-unreadable"] * args.allow_unreadable)
+    expected = [generated_name(u) for u in units_of(source, cfg)] + PROGRAM_FILES + ["report.json"]
+    if stamp.is_file() and stamp.read_text().strip() == digest and all((out / f).is_file() for f in expected):
+        if not args.quiet:
+            print(f"hostgen: {out} is up to date")
+        return 0
+    stamp.unlink(missing_ok=True)
+    if derived_table is not None and not derived_table.is_relative_to(source):
+        # The port's copy was written from a build of an earlier commit of the decompilation: the
+        # names the C has started to use since have no value, and their functions become stubs.
+        missing = derived.uncovered(source, cfg, json.loads(derived_table.read_text()))
+        if missing:
+            print(f"hostgen: warning: {derived_table} has no value for {len(missing)} names the C uses "
+                  f"({', '.join(missing[:8])}{', ...' if len(missing) > 8 else ''}); the functions that use "
+                  f"them are stubs. Build the decompilation, then run port/tools/hostgen/derived.py "
+                  f"--game {args.game} --source <it>.", file=sys.stderr)
     root = out / "prep"
+    # The lock the units take to rewrite a prepared header (clangast.drop_superseded_declarations),
+    # left behind by a translation that was stopped.
+    shutil.rmtree(root / ".openrac-header.lock", ignore_errors=True)
     started = time.time()
     # The port's own C for hand-written assembly first; a decompilation's
     # candidate for the same function stands aside.
@@ -693,10 +776,35 @@ def main(argv: list[str] | None = None) -> int:
     # Stubs of the executable that every level program fills with a function of its own.
     program.level_hooks = set(cfg.get("level_hooks", []))
     with ProcessPoolExecutor(args.jobs, initializer=_init, initargs=(state,)) as ex:
-        for rel, part, probs, _fixes in ex.map(_index_one, units):
-            problems += [f"{rel}: {p}" for p in probs]
-            if part is not None:
-                problems += merge(program, part)
+        indexed = list(ex.map(_index_one, units))
+    # A unit read while another rewrote a header they share can fail to read, and its definitions
+    # would be missing from the program (the prototypes then said what a caller's declaration
+    # said, and the unit's own definition, read again by the lowering, contradicted them). The
+    # headers are settled now: such a unit is read once more, alone.
+    _init(state)
+    indexed = [_index_one(rel) if part is None else (rel, part, probs, fixes)
+               for rel, part, probs, fixes in indexed]
+    for rel, part, probs, _fixes in indexed:
+        problems += [f"{rel}: {p}" for p in probs]
+        if part is not None:
+            problems += merge(program, part)
+    # C a game translates from the function's instructions instead (hostgen.json "from_assembly"):
+    # matching C whose declaration leaves out what its callers pass in registers it forwards (a
+    # wrapper that hands its second and third arguments on without naming them). Its definition
+    # is left out and the function is a stub, which the assembly stage then writes, reading those
+    # registers as parameters.
+    program.from_assembly = set(cfg.get("from_assembly", []))
+    for sym in sorted(program.from_assembly):
+        f = program.functions.get(sym)
+        if f is not None and f.unit is not None and not f.static:
+            program.functions[sym] = Function(sym, f.sig, None, asm=True, declared=f.declared)
+    for table in cfg.get("catalogues", []):
+        read_catalogue(source / table, program)
+    # A verified indirect entry can be absent even from the catalogue.
+    # Keeping roots as declarations lets retail-backed translation find it.
+    for sym in cfg.get("roots", []):
+        program.functions.setdefault(sym, Function(
+            sym, Signature(ctype.Base("int"), (), False, False), asm=True))
     for sym, text in host_sigs.items():
         if text:
             # The port's own version decides the signature its callers are matched to.
@@ -712,6 +820,11 @@ def main(argv: list[str] | None = None) -> int:
     host_dirs = [args.game.parent / "host", args.game.parent.parent / str(cfg.get("game", "")) / "host"]
     host_text = "".join(p.read_text(errors="replace") for d in host_dirs if d.is_dir()
                         for p in sorted(d.glob("*.c")))
+    # The results C wrappers pass on from their tail calls, before the assembly stage: a translated
+    # caller reads such a wrapper's result in $v0 as the EE's did (Going Commando's menu read its
+    # selection through a `void` wrapper and lost it). Only C callees count, so the assembly stage
+    # changes nothing of this.
+    inherited_early = inherit_results(program)
     asm_stage, asm_results = asmc.run(program, cfg, source, host_text)
     if args.asm_console:
         names = None
@@ -720,7 +833,7 @@ def main(argv: list[str] | None = None) -> int:
                      if l.strip() and not l.startswith("#")]
         for name, why in sorted(asmc.write_console(asm_stage, args.asm_console.resolve(), names).items()):
             print(f"hostgen: {name}: no console form: {why}", file=sys.stderr)
-    inherited = inherit_results(program)
+    inherited = inherited_early + inherit_results(program)
     state["program"] = program
     with ProcessPoolExecutor(args.jobs, initializer=_init, initargs=(state,)) as ex:
         reports = list(ex.map(_lower_one, units))
@@ -752,6 +865,7 @@ def main(argv: list[str] | None = None) -> int:
               "with all its functions. Fix the declarations named above (--allow-unreadable builds without them).",
               file=sys.stderr)
         return 1
+    stamp.write_text(digest + "\n")
     return 0
 
 

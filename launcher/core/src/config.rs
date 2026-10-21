@@ -40,6 +40,9 @@ pub struct Config {
     /// Look for a new launcher when it starts (default true). Off, it looks only when asked
     /// (Settings, "Check now"); an update is never installed without the player's click.
     pub check_updates: bool,
+    /// Which builds the launcher updates to (update::Channel): the releases, or the newest
+    /// development build. Unset: the one it was built from (a release's build, the releases).
+    pub update_channel: Option<crate::update::Channel>,
     /// Custom Discord application ID (optional).
     pub discord_client_id: Option<String>,
     /// The page layout: "compact" (default) or "classic", the original design (src/layouts/).
@@ -47,6 +50,12 @@ pub struct Config {
     /// The game writes a detailed log (OPENRAC_LOG=verbose): level loads, controller changes,
     /// what the port is missing. Off by default, so a log stays small.
     pub detailed_game_log: bool,
+    /// What the game draws with on Windows, Linux and macOS: "opengl" (OpenGL 4.1, the default)
+    /// or "vulkan", the port's experimental Vulkan renderer (OPENRAC_GL_API=vulkan; on macOS the
+    /// MoltenVK its bundle carries). Where Vulkan cannot start, the game draws with OpenGL
+    /// (port/platform/window.cpp). Not used on Android, which keeps its own choice
+    /// (src-tauri/src/android.rs).
+    pub renderer: String,
     /// For each game, the time (seconds since 1970) of the newest crash report the player has
     /// dismissed: crashes up to then are seen, and no notice, button or mark is shown for them.
     pub crashes_seen: BTreeMap<String, u64>,
@@ -54,6 +63,12 @@ pub struct Config {
     /// game's page plays (`rac1` -> `rac1/ntsc`). Used only with developer tools on
     /// (disc_choice.rs); without one, the disc set up, as for a player.
     pub disc_choice: BTreeMap<String, String>,
+    /// Where the launcher keeps its own copy of the figures it fetched from bytematch.dev: in
+    /// the per-user folder beside its settings, which the launcher can always write (a
+    /// checkout it does not own, as an installed launcher carries one, is read-only).
+    /// Not saved with the settings: the app sets it at every start.
+    #[serde(skip)]
+    pub progress_cache: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -71,11 +86,14 @@ impl Default for Config {
             last_version: None,
             discord_rpc: true,
             check_updates: true,
+            update_channel: None,
             discord_client_id: None,
             layout: "compact".into(),
             detailed_game_log: false,
+            renderer: "opengl".into(),
             crashes_seen: BTreeMap::new(),
             disc_choice: BTreeMap::new(),
+            progress_cache: None,
         }
     }
 }
@@ -100,8 +118,15 @@ pub fn save(path: &Path, config: &Config) -> Result<(), String> {
     }
     let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("cannot write {}: {e}", path.display()))
+    if let Err(e) = std::fs::write(&tmp, text) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot write {}: {e}", tmp.display()));
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot write {}: {e}", path.display()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -137,5 +162,16 @@ mod tests {
         save(&path, &Config { check_updates: false, ..Config::default() }).unwrap();
         assert!(!load(&path).check_updates);
         assert!(std::fs::read_to_string(&path).unwrap().contains("\"checkUpdates\": false"));
+    }
+
+    /// A settings file from before the renderer choice draws with OpenGL; Vulkan, chosen, is kept.
+    #[test]
+    fn renderer_defaults_to_opengl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("launcher.json");
+        std::fs::write(&path, r#"{"setupComplete": true}"#).unwrap();
+        assert_eq!(load(&path).renderer, "opengl");
+        save(&path, &Config { renderer: "vulkan".into(), ..Config::default() }).unwrap();
+        assert_eq!(load(&path).renderer, "vulkan");
     }
 }

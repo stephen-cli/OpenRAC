@@ -51,6 +51,7 @@
 #include "assets/disc/disc.h"
 #endif
 #include "common/stats.h"
+#include "openrac/ee.h"
 #include "openrac/elf.h"
 #include "openrac/game_host.h"
 #include "openrac/guest.h"
@@ -62,6 +63,7 @@
 #include "settings.h"
 #include "openrac/sound_engine.h"
 #include "platform/audio.h"
+#include "platform/performance_hint.h"
 #include "platform/pump.h"
 #include "renderer/direct.h"
 #include "renderer/texture.h"
@@ -71,6 +73,12 @@
 #ifdef OPENRAC_MOVIES
 #include "media/movie.h"
 #include "platform/audio.h"
+#endif
+#if defined(OPENRAC_ANDROID_ACTIVITY)
+// The game as Android's activity loads it (libopenrac-<id>.so): main is SDL_main, which SDL's
+// activity calls with the arguments the launcher gave it. The executable beside it
+// (libopenrac-<id>-cli.so) keeps its main.
+#include <SDL3/SDL_main.h>
 #endif
 
 extern "C" {
@@ -86,6 +94,8 @@ int (*openrac_game_skip_buttons)(void) = nullptr;
 void (*openrac_game_skip)(void) = nullptr;
 int (*openrac_game_mode)(uint32_t* mode) = nullptr;
 int (*openrac_game_hero_position)(float xyz[3]) = nullptr;
+int (*openrac_game_camera_position)(float xyz[3]) = nullptr;
+int (*openrac_game_updating_moby)(openrac_game_moby* out) = nullptr;
 int (*openrac_game_hero)(float position[3], float rotation[3], int32_t* state) = nullptr;
 const openrac_front_end* openrac_game_front_end = nullptr;
 }
@@ -272,6 +282,22 @@ std::string command_line(int argc, char** argv) {
     return line;
 }
 
+// The moby being updated, asked by the report itself (common/crash.h, set_moby_source).
+bool updating_moby(crash::Moby& out) {
+    openrac_game_moby m{};
+    if (openrac_game_updating_moby == nullptr || openrac_game_updating_moby(&m) == 0) {
+        return false;
+    }
+    out.address = m.address;
+    out.oclass = m.oclass;
+    for (int i = 0; i < 3; ++i) {
+        out.position[i] = m.position[i];
+    }
+    out.has_uid = m.uid >= 0;
+    out.uid = m.uid;
+    return true;
+}
+
 // This run's log (common/log.h: the earlier runs' moved along) and its header; crash reports go
 // to <data>/crashes (common/crash.h).
 void open_session(int argc, char** argv) {
@@ -282,6 +308,7 @@ void open_session(int argc, char** argv) {
         log::warn("the log cannot be written in {}", g_options.data.string());
     }
     crash::configure(g_options.data / "crashes", program_name(), started);
+    crash::set_moby_source(updating_moby);
     const char* level = log::level() <= log::Level::Debug     ? "debug"
                         : log::level() <= log::Level::Verbose ? "verbose"
                                                               : "info (OPENRAC_LOG=verbose, or verbose_log = 1 in the settings, for more)";
@@ -307,6 +334,9 @@ void sample_state() {
     }
     if (openrac_game_hero_position != nullptr) {
         s.has_hero = openrac_game_hero_position(s.hero) != 0;
+    }
+    if (openrac_game_camera_position != nullptr) {
+        s.has_camera = openrac_game_camera_position(s.camera) != 0;
     }
     crash::set_state(s);
 }
@@ -377,6 +407,86 @@ void finish() {
     log::info("{} frames", g_frame);
 }
 
+#ifdef OPENRAC_FRONTEND
+// The game's sounds (openrac/sound_engine.h), rendered on the output's thread.
+std::unique_ptr<platform::AudioOutput> g_sound;
+long g_sound_retry_frame = 0;
+
+// Every way out runs this (at exit, or in leave): the output's thread stops before the globals it
+// renders from go (its callback ran on into their destruction, a crash at quit).
+void close_sound() {
+    g_sound.reset();
+}
+
+// The window was closed: the player quit, or Android ended the game's activity (closed from
+// Recents, or the launcher's Stop). On a desktop that is std::exit. On Android the game is often
+// in the background then, its surface already gone, and exit's destructors would tear the renderer
+// and the window down against a driver that lost it, while SDL's onDestroy frees its own state a
+// second after asking the game to quit; a close from Recents was written down as a crash. There
+// the game runs exit's handlers itself and ends at once; the system frees the rest.
+[[noreturn]] void leave() {
+#if defined(__ANDROID__)
+    finish();
+    stats::close_dump();
+    close_sound();
+    openrac_sound_stop_readers();
+    std::_Exit(0);
+#else
+    // The threads reading a track are stopped first, while the globals they use are still
+    // there: a reader that is still working when the program exits is a crash at quit.
+    openrac_sound_stop_readers();
+    std::exit(0);
+#endif
+}
+
+// REPORT: whether a device that cannot be opened is logged (the first try is; the retries,
+// every few seconds on a machine without sound, are not).
+void open_sound(bool report = true) {
+    std::string why;
+    g_sound = platform::AudioOutput::open(why, [](std::span<std::int16_t> samples) {
+        openrac_sound_render(samples.data(), samples.size() / 2);
+        // The player's volume (settings.h): at 0 the output is silence itself.
+        if (const float gain = settings::output_gain(); gain < 1.0f) {
+            for (std::int16_t& sample : samples) {
+                sample = static_cast<std::int16_t>(static_cast<float>(sample) * gain);
+            }
+        }
+    });
+    if (!g_sound && report) {
+        log::warn("no sound: {}", why);
+    }
+}
+
+// Once a frame: a device that stalled is opened again, and one that could not be opened is tried
+// again every few seconds (a phone's audio can be busy with a call or another app at the start).
+void watch_sound() {
+    if (!g_window || audio_ticked()) {
+        return;
+    }
+    if (!g_sound) {
+        if (g_frame >= g_sound_retry_frame) {
+            g_sound_retry_frame = g_frame + 300;
+            open_sound(false);
+            if (g_sound) {
+                log::info("sound is back");
+            }
+        }
+        return;
+    }
+    std::string why;
+    static bool reported = false;
+    if (!g_sound->watch(why)) {
+        if (!reported) {
+            log::warn("sound stopped and the device could not be opened again: {}", why);
+            reported = true;
+        }
+    } else if (reported) {
+        log::info("sound is back");
+        reported = false;
+    }
+}
+#endif
+
 }  // namespace
 
 // ---- What the library replacements call (openrac/game_host.h) ----
@@ -391,6 +501,10 @@ void openrac_game_crash(const char* reason) {
     log::error("{}", reason);
     crash::report(reason, crash::Kind::Trap);
     std::_Exit(3);
+}
+
+void openrac_game_warn(const char* message) {
+    log::warn("{}", message);
 }
 
 void openrac_game_draw(unsigned layers) {
@@ -476,8 +590,9 @@ int openrac_game_vsync(void) {
         const std::uint32_t draws = g_reports_draws ? g_draws : ~0u;
         g_draws = 0;
         if (!frontend::frame(std::span<const std::uint8_t>(ram, 32u * 1024 * 1024), g_chain, draws)) {
-            std::exit(0);
+            leave();
         }
+        watch_sound();
     }
 #endif
     g_frame++;
@@ -585,7 +700,7 @@ int openrac_game_vsync(void) {
     if (g_window && frontend::wants_between()) {
         for (int drawn; (drawn = frontend::between(g_next_frame)) != 0;) {
             if (drawn < 0) {
-                std::exit(0);
+                leave();
             }
         }
     }
@@ -595,9 +710,10 @@ int openrac_game_vsync(void) {
         std::this_thread::sleep_until(g_next_frame);
     }
 #ifdef OPENRAC_FRONTEND
+    openrac::platform::work_resumed();  // the next tick's work counts from here (performance_hint.h)
     // [debug tools] A paused game stays here, its last tick drawn again (frontend.h, hold).
     if (g_window && !frontend::hold()) {
-        std::exit(0);
+        leave();
     }
 #endif
     return static_cast<int>(g_frame & 1);
@@ -629,11 +745,13 @@ void openrac_game_set_display(const openrac_game_display* d) {
         // the game's copy of the draw buffer into the display was drawn from an empty texture over
         // the picture (the PAL game in its 60 Hz mode showed its menus over black), and the frame
         // the pause menu reads back came out 32 lines short (a black band at the bottom).
+#ifdef OPENRAC_FRONTEND
         if (d->frame_width > 0 && d->height > 0) {
             renderer::set_draw_buffer_block(static_cast<std::uint32_t>(d->frame_base) * 32
                                                 + static_cast<std::uint32_t>(d->height * d->frame_width),
                                             d->height >= 512 ? 448 : 416);
         }
+#endif
     }
 }
 
@@ -786,7 +904,7 @@ int openrac_game_play_movie(uint32_t lsn, uint32_t bytes, int channel, int start
         if (shown) {
             media::frame_to_rgba(*shown, rgba);
             if (!frontend::show_picture(rgba.data(), int(shown->width), int(shown->height), 0.0f)) {
-                std::exit(0);
+                leave();
             }
         }
         // Start skips when pressed during the movie: what is held as it starts is not a press.
@@ -1137,13 +1255,12 @@ static int check_levels(const fs::path& levels) {
 
 // The game's code as the EE's floating point unit runs it: every operation rounds toward zero
 // (the EE has no other mode). A counter the game steps by 0.1 lands on the other side of zero
-// when rounded to nearest (a moby of rac1's level 6 shrank to a negative scale).
-// OPENRAC_ROUND_NEAREST=1 keeps the host's mode, to compare.
+// when rounded to nearest (a moby of rac1's level 6 shrank to a negative scale). Nor has it
+// denormals: they are zero (docs/port/HARDWARE_SEMANTICS.md, item 1).
+// OPENRAC_ROUND_NEAREST=1 and OPENRAC_DENORMALS=1 keep the host's ways, to compare.
 static int run_game_as_the_ee() {
     crash::prepare_thread();  // the game may run on a thread of its own (platform/pump.h)
-    if (std::getenv("OPENRAC_ROUND_NEAREST") == nullptr) {
-        std::fesetround(FE_TOWARDZERO);
-    }
+    openrac_ee_float_mode(std::getenv("OPENRAC_ROUND_NEAREST") != nullptr, std::getenv("OPENRAC_DENORMALS") != nullptr);
     return openrac_game_run();
 }
 
@@ -1161,6 +1278,9 @@ int main(int argc, char** argv) {
         log::fatalf("--check-levels needs a build with the window (it reads the levels as the window does)");
 #endif
     }
+    // The session's log first, so that a game that cannot start says why in it (on Android the
+    // only place the player can read it, through the launcher).
+    open_session(argc, argv);
     const fs::path iso = g_options.data / "iso_data" / openrac_game.game;
     const fs::path exe = iso / openrac_game.serial;
     const fs::path disc = iso / "disc.iso";
@@ -1174,11 +1294,14 @@ int main(int argc, char** argv) {
             g_options.data.string()
         );
     }
-    open_session(argc, argv);
     log::info("{}: {}", program_name(), openrac_game.title);
 
     runtime::Memory::create();
     runtime::install_crash_handler();
+    // The threads reading a track are stopped before the program exits, whichever way it ends
+    // (a window closed, a run of so many frames, an error): a reader that is still working
+    // when the globals it uses go is a crash at quit.
+    std::atexit(openrac_sound_stop_readers);
 
     std::vector<std::uint8_t> file;
     runtime::ElfImage image;
@@ -1225,21 +1348,12 @@ int main(int argc, char** argv) {
         }
         // The game's sounds (openrac/sound_engine.h), rendered on the output's thread; with
         // OPENRAC_AUDIO_TICKED, by the game's ticks instead (audio_tick).
-        static std::unique_ptr<platform::AudioOutput> sound_output =
-            audio_ticked() ? nullptr : platform::AudioOutput::open(why, [](std::span<std::int16_t> samples) {
-                openrac_sound_render(samples.data(), samples.size() / 2);
-                // The player's volume (settings.h): at 0 the output is silence itself.
-                if (const float gain = settings::output_gain(); gain < 1.0f) {
-                    for (std::int16_t& sample : samples) {
-                        sample = static_cast<std::int16_t>(static_cast<float>(sample) * gain);
-                    }
-                }
-            });
         if (audio_ticked()) {
             openrac_stream_read_at_once(1);
             log::info("OPENRAC_AUDIO_TICKED: no sound device; the sounds advance with the game's ticks");
-        } else if (!sound_output) {
-            log::warn("no sound: {}", why);
+        } else {
+            open_sound();
+            std::atexit(close_sound);
         }
     }
 #endif

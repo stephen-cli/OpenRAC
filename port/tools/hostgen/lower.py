@@ -275,22 +275,22 @@ class Unit:
             return "va_list"
         return ctype.host(self._rename_type(t))
 
-    _FOUR_BYTE_ELEMENTS = {"float", "int", "unsigned int", "unsigned", "signed int", "s32", "u32", "f32"}
-
-    def _frame_alignment(self, t: ctype.Type) -> str:
-        """A local array of 16 bytes or more, whole quadwords of 32-bit elements (a vector, a
-        matrix), starts on a quadword in the frame: the console's compiler placed such locals so,
-        and the game copies them with quadword loads (lq), which the host makes movaps."""
-        count = 1
-        t = self.resolve(t)
-        while isinstance(t, ctype.Arr):
-            if t.size is None:
-                return ""
-            count *= t.size
-            t = self.resolve(t.of)
-        if isinstance(t, ctype.Base) and t.name in self._FOUR_BYTE_ELEMENTS and count >= 4 and count % 4 == 0:
-            return " __attribute__((aligned(16)))"
-        return ""
+    def _frame_slot(self, t: ctype.Type, name: str) -> str:
+        """A frame field for a local, in the slot the console's compiler gave it. An array or
+        record with no machine mode of its own (a `float v[3]`, a `float m[4][4]`, a 12-byte
+        struct) gets a slot aligned to 16 and rounded up to 16 bytes (OPENRAC_FRAME_SIZE and
+        OPENRAC_FRAME_ALIGN, in openrac/guest.h): the game copies such locals with quadword
+        loads and stores (lq/sq, which the host makes movaps), and a 16-byte copy into a
+        `float v[3]` puts its fourth word in the slot's padding there, not in the next local."""
+        decl = self.declare(t, name)
+        r = self.resolve(t)
+        aggregate = isinstance(r, ctype.Arr) or (
+            isinstance(r, ctype.Base) and r.name.split(" ")[0] in ("struct", "union"))
+        if not aggregate or (isinstance(r, ctype.Base) and r.name in VA_NAMES):
+            return f"    {decl};"
+        tn = self.host(t)
+        return (f"    union {{ {decl}; char {name}_slot_[OPENRAC_FRAME_SIZE({tn})]; }}"
+                f" __attribute__((aligned(OPENRAC_FRAME_ALIGN({tn}))));")
 
     def declare(self, t: ctype.Type, name: str) -> str:
         if isinstance(t, ctype.Base) and t.name in VA_NAMES:
@@ -400,6 +400,8 @@ class Unit:
         if sym in BUILTINS:
             return False
         if sym in self.program.host and decl.get("storageClass") != "static":
+            return False
+        if sym in self.program.from_assembly and decl.get("storageClass") != "static":
             return False
         if decl.get("storageClass") != "static":
             first = self.program.functions.get(sym)
@@ -677,7 +679,7 @@ class Unit:
         lines = self.compound(body, 1, top=True)
         frame_decl = []
         if fn.frame:
-            fields = "\n".join(f"    {self.declare(t, f)}{self._frame_alignment(t)};" for f, t in fn.frame)
+            fields = "\n".join(self._frame_slot(t, f) for f, t in fn.frame)
             frame_decl = [f"struct openrac_frame_{fn.name} {{\n{fields}\n}};"]
             prologue.append(f"    GFRAME(frame_, sizeof(struct openrac_frame_{fn.name}));")
             for p, n in zip(params, names):
@@ -837,9 +839,14 @@ class Unit:
         if k == "ReturnStmt":
             kids = _inner(n)
             if not kids:
-                # In a definition that returns its last call's result, an earlier return leaves
-                # the register as it was: nothing a caller could use.
-                return [pad + ("return 0;" if self.fn.tail_id is not None else "return;")]
+                # A bare return in a function with a result (old GCC takes `return;` in an int
+                # function, the matching C keeps it, today's Clang refuses it), or in a definition
+                # that returns its last call's result: the register is left as it was, nothing a
+                # caller could use. Zero, for a scalar or a pointer.
+                ret = self.cls(self.fn.sig.ret)
+                if self.fn.tail_id is not None or ret in ("int", "ptr", "float", "double"):
+                    return [pad + "return 0;"]
+                return [pad + "return;"]
             if self.cls(self.fn.sig.ret) == "void":
                 return [pad + f"{self.rv(kids[0])};", pad + "return;"]
             return [pad + f"return {self.convert(kids[0], self.fn.sig.ret)};"]
@@ -1167,6 +1174,19 @@ class Unit:
             return f"(({host})({v}))"
         if kind in ("PointerToBoolean", "IntegralToBoolean", "FloatingToBoolean"):
             return f"(({v}) != 0)"
+        if kind == "FloatingToIntegral" and tc == "int":
+            # The EE's own conversion (guest.h): C leaves a value out of the target's range
+            # undefined, and the hosts differ there (x86 wraps a negative float into an unsigned
+            # int, ARM gives 0), so a HUD's alpha or offset computed below zero came out different
+            # on a phone.
+            host = self.host(ctype.strip_quals(t))
+            r = self.resolve(t)
+            name = r.name if isinstance(r, ctype.Base) else ""
+            if "long long" in name:
+                return f"(({host})({v}))"
+            if name.startswith("unsigned") and "char" not in name and "short" not in name:
+                return f"(({host})openrac_f2u({v}))"
+            return f"(({host})openrac_f2i({v}))"
         if kind in ("IntegralCast", "FloatingCast", "IntegralToFloating", "FloatingToIntegral", "BitCast"):
             if tc in ("rec", "arr"):
                 raise Unsupported(f"cast {kind} to an aggregate")
@@ -1214,7 +1234,26 @@ class Unit:
         if n.get("kind") == "DeclRefExpr" and (n["referencedDecl"].get("kind") == "FunctionDecl"
                                                or self._code_variable(n)):
             sym = self._callee_symbol(n)
-            return self.code_address(self._folded_place_name(n, sym))
+            named = self._folded_place_name(n, sym)
+            address = self.code_address(named)
+            places = self._folded_places(sym) if named == sym and self.fn is not None else []
+            own_size = getattr(self.program, "sizes", {}).get(self.fn.name) or 0 if places else 0
+            if places and own_size:
+                # A name the catalogue folded, whose places in one program are other functions (each
+                # wrapper calls its own; split_places.tsv): the place the caller's own code forms,
+                # its k-th address of any of them (openrac_folded_address), this one when it forms
+                # none. The first place in the level was taken before: Umbris's sea classes
+                # registered a wrapper of another routine as their draw callback, and the sea was
+                # never drawn.
+                literal = ", ".join(f"0x{(o + 1) << 24 | a:08X}u" for o, a in places)
+                taken = getattr(self.fn, "folded_addresses", None)
+                if taken is None:
+                    taken = self.fn.folded_addresses = {}
+                k = taken.get(sym, 0)
+                taken[sym] = k + 1
+                return (f"openrac_folded_address((const uint32_t[]){{{literal}}}, {len(places)}, "
+                        f"{self._own_address()}, {own_size}u, {k}, {address})")
+            return address
         if n.get("kind") == "UnaryOperator" and n["opcode"] == "*":
             return self.rv(_inner(n)[0])
         raise Unsupported(f"function designator {n.get('kind')}")
@@ -1684,10 +1723,12 @@ class Unit:
         c = _strip_parens(callee)
         if c.get("kind") == "ImplicitCastExpr" and c.get("castKind") == "BuiltinFnToFnPtr":
             return self.builtin_call(_strip_parens(_inner(c)[0]), args)
+        named = None  # the function a call by name reaches through a code address
         if c.get("kind") == "ImplicitCastExpr" and c.get("castKind") == "FunctionToPointerDecay":
             target = _strip_parens(_inner(c)[0])
             if target.get("kind") == "DeclRefExpr" and target["referencedDecl"].get("kind") == "FunctionDecl":
                 sym = self._callee_symbol(target)
+                named = sym
                 # Calls to a folded function and to the variants split off it (split_places.tsv)
                 # are counted together, in the order they come: retail's k-th call to any of the
                 # function's places is the k-th of them all (openrac_folded_call). Counted per name,
@@ -1704,6 +1745,17 @@ class Unit:
                     family[parent] = family_k + 1
                 places = self._folded_places(sym)
                 copy = self._small_folded()
+                if copy is None and not places:
+                    # A larger level function the catalogue placed twice in one program: its copies
+                    # are the same instructions, and may call different functions all the same.
+                    # rac1's func_L02_002D75F8 (76 bytes) is both of the circular saw's (class 340)
+                    # Suck Cannon hooks on Eudora: the one at 0x2C53B0 calls the grab, the one at
+                    # 0x2C5400 places the moby in the cannon. Called as the C names it, the second
+                    # ran the grab with garbage for its position and owner, and the saw's next
+                    # update read the cannon's joints through that owner.
+                    copies = self._copies_in_one_program()
+                    if copies is not None and any(o == copies[0] for o, _ in self.program.code_places(sym)):
+                        copy = copies
                 callee_places = self.program.code_places(sym) if copy is not None and not places else []
                 hook = self._level_hook(sym) if not places and not callee_places else None
                 if hook is not None:
@@ -1717,14 +1769,16 @@ class Unit:
                     calls[sym] = k + 1
                     self.fn.report.calls.add(sym)
                     fp = f"openrac_hook_in_copy({hexaddr(exe_fn)}, {size}u, {home}, {hexaddr(home_fn)}, {hexaddr(stub)}, {k}u)"
+                    named = None  # each level fills the hook with its own function: the call site's type
                 elif not places and callee_places:
-                    # Inside a small function the catalogue folded (copies that differ in what they
+                    # Inside a function the catalogue folded (copies that differ in what they
                     # call): the function this copy's own call at that place calls (guest.h).
                     home, canon, size = copy
                     own = next((a for o, a in callee_places if o == home), callee_places[0][1])
                     self.fn.report.calls.add(sym)
                     self.fn.uses_self = True
                     fp = f"openrac_call_in_copy({home}, {hexaddr(canon)}, {size}u, openrac_self_, {hexaddr(own)})"
+                    named = self._function_at(home, own) or sym
                 elif not places and (variant := self._variant_call(sym)) is not None:
                     # Engine code several levels carry, calling a level function some of those levels
                     # have another of in its place: the function this copy's own call calls.
@@ -1732,12 +1786,14 @@ class Unit:
                     self.fn.report.calls.add(sym)
                     self.fn.uses_self = True
                     fp = f"openrac_call_in_copy({home}, {hexaddr(canon)}, {size}u, openrac_self_, {hexaddr(own)})"
+                    named = self._function_at(home, own) or sym
                 elif not places and (cross := self._cross_level(sym)) is not None:
                     # A function of one level's program calling, by name, a function the catalogue
                     # lists in other levels only (the decompilation names the copy by its twin):
                     # the loaded level's own copy of it (OPENRAC_LCODE, guest.h).
                     self.fn.report.calls.add(sym)
                     fp = f"OPENRAC_LCODE({cross[0]}, {hexaddr(cross[1])})"
+                    named = self._function_at(cross[0], cross[1]) or sym
                 elif not places:
                     return self.direct_call(sym, args, result_t)
                 elif (sym in getattr(self.program, "splits", {})
@@ -1777,8 +1833,57 @@ class Unit:
         recast = self._recast_call(c, ft, args, result_t, fp)
         if recast is not None:
             return recast
+        if named is not None:
+            defined = self._call_as_defined(named, fp, args, result_t)
+            if defined is not None:
+                return defined
         values = [self.rv(a) for a in args]
         return f"GFN({ctype.fn_pointer(hostft)}, {fp})({', '.join(values)})"
+
+    def _function_at(self, overlay: int, address: int) -> str | None:
+        """The function a call through that place finds (Program.function_at), or None."""
+        at = getattr(self.program, "function_at", None)
+        return at(overlay, address) if at is not None else None
+
+    def _call_as_defined(self, sym: str, fp: str, args: list, result_t: ctype.Type) -> str | None:
+        """A call by name that goes through a code address (a folded name's place, a level's copy,
+        another level's function): through the definition's own type, its arguments matched to its
+        parameters as the EE passes them (each kind in its order, as a direct call), when the call
+        site's declaration puts a kind at another position or reads another kind of result. On the
+        EE, System V and AArch64 integers and floats travel in registers of their own, so the
+        declaration's order did not matter there; on Windows x64 a position decides the register
+        whatever the type, and `f(float, void *, void *)` reaching `f(void *, void *, float)` read
+        its pointers from registers nobody set (rac1/ntsc's Rilgar, 0.8.0). None when the call
+        site's type already lines up with the definition, or the definition cannot be matched so."""
+        f = self.program.lookup(self.unit, sym)
+        if f is None or not f.sig.prototyped or f.sig.variadic:
+            return None
+        sig = f.sig
+        classes = [self._arg_class(a) for a in args]
+        pcls = [("agg" if self.sig_cls(p) == "rec" else self._reg_class(self.sig_cls(p))) for p in sig.params]
+        if "agg" in classes or "agg" in pcls or any(self.cls(p) == "valist" for p in sig.params):
+            return None
+        result_cls = self.cls(result_t)
+        ret_cls = self.sig_cls(sig.ret)
+        if ret_cls == "rec":
+            return None
+        common = min(len(classes), len(pcls))
+        same_ret = result_cls == "void" or (ret_cls != "void"
+                                            and self._reg_class(ret_cls) == self._reg_class(result_cls))
+        if classes[:common] == pcls[:common] and same_ret:
+            return None  # the call site's own type passes them alike
+        self.fn.report.calls.add(sym)
+        self._note_mismatch(sym, sig, args, result_cls, ret_cls)
+        own = ctype.Func(self._canon_type(sig.ret), tuple(self._canon_type(p) for p in sig.params), False, True)
+        text = f"GFN({ctype.fn_pointer(own)}, {fp})({', '.join(self._match_args(sym, sig, args))})"
+        if result_cls == "void":
+            return text
+        if ret_cls == "void" or self._reg_class(ret_cls) != self._reg_class(result_cls):
+            # On the console the caller read a register the callee did not set.
+            return f"({text}, ({self.host(ctype.strip_quals(result_t))})0)"
+        if result_cls == "ptr":
+            return f"(gaddr)({text})"
+        return f"(({self.host(ctype.strip_quals(result_t))})({text}))"
 
     def _recast_call(self, callee: dict, ft: ctype.Func, args: list, result_t: ctype.Type, fp: str) -> str | None:
         """A call through a named function cast to another prototype, `((void (*)(void *, float,
@@ -1786,8 +1891,8 @@ class Unit:
         arguments in another order. On the EE the integers and the floats go in registers of their
         own, each kind in order, so the call is f's own; the host's ABI may not assign them that way
         (Windows x64 gives each argument a slot by position), so the call goes through f's own
-        type with each kind's arguments in its order, as a direct call matches them. None when the
-        callee is not such a cast or the kinds do not line up."""
+        type with each kind's arguments in its order, as a direct call matches them (_call_as_defined).
+        None when the callee is not such a cast or the cast's type already lines up."""
         if callee.get("kind") != "CStyleCastExpr" or not ft.prototyped or ft.variadic:
             return None
         inner = _strip_parens(_inner(callee)[0])
@@ -1795,28 +1900,18 @@ class Unit:
             inner = _strip_parens(_inner(inner)[0])
         if inner.get("kind") != "DeclRefExpr" or inner["referencedDecl"].get("kind") != "FunctionDecl":
             return None
+        # Also a cast to fewer arguments of one kind (`((s32 (*)(f32))f)(1.0f)` for an
+        # `f(u8 *, s32, f32)`, rac3's text width): f's own type, the parameters the call does not
+        # pass taken as a direct call takes them (the caller's own, passed through).
         sym = self._callee_symbol(inner)
-        f = self.program.lookup(self.unit, sym)
-        if f is None or not f.sig.prototyped or f.sig.variadic:
-            return None
-        sig = f.sig
-        classes = [self._arg_class(a) for a in args]
-        pcls = [("agg" if self.sig_cls(p) == "rec" else self._reg_class(self.sig_cls(p))) for p in sig.params]
-        if "agg" in classes or "agg" in pcls or len(classes) != len(pcls):
-            return None
-        if [c for c in classes if c == "i"] != [c for c in pcls if c == "i"]:
-            return None
-        if classes == pcls:
-            return None  # the same order: the cast's own type passes them alike
-        result_cls = self.cls(result_t)
-        ret_cls = self.sig_cls(sig.ret)
-        if result_cls != "void" and self._reg_class(ret_cls) != self._reg_class(result_cls):
-            return None
-        own = ctype.Func(self._canon_type(sig.ret), tuple(self._canon_type(p) for p in sig.params), False, True)
-        text = f"GFN({ctype.fn_pointer(own)}, {fp})({', '.join(self._match_args(sym, sig, args))})"
-        if result_cls == "void":
-            return text
-        return f"(({self.host(ctype.strip_quals(result_t))})({text}))"
+        if "__" in sym and self.program.group_of(self.unit) is None:
+            # A separate program's function standing in for one of the executable with no C
+            # (_callee_symbol): the address is the executable's too, and its function is found
+            # there while no other program is loaded over it.
+            base = sym.rsplit("__", 1)[0]
+            if base in self.program.functions:
+                sym = base
+        return self._call_as_defined(sym, fp, args, result_t)
 
     def _cross_level(self, sym: str) -> tuple[int, int] | None:
         """For a call from a function of some levels' programs to a level function placed in none

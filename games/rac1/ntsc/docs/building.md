@@ -72,8 +72,13 @@ every C unit below `GAME_TEXT_START` with the SDK compiler and every unit from
 there on with the game compiler. The game compiler's `cc1` output is assembled
 by `Ps2EeAs`, which pads short loops and `div` instructions itself; the game
 code is compiled without `-g`, whose line labels the assembler would take for
-branch targets. Pending `INCLUDE_ASM` wrappers are assembled by the game
-compiler's GNU `as` instead. The few units that do not reproduce on their
+branch targets. SDK code is compiled without `-g` too and assembled by
+`sdk-as`, the source archive's GNU `as` with binutils' fix of its `sync`
+test ([`0063`](../patches/sce-991111b/0063-gas-sync-no-swap.patch)) and
+[`0059`](../patches/sce-991111b/0059-gas-sdk-delay-slots.patch): where `cc1`
+left a jump or branch delay slot empty, retail's SDK assembler moved the
+instruction before it into the slot. Pending `INCLUDE_ASM` wrappers are
+assembled by the game compiler's GNU `as` instead. The few units that do not reproduce on their
 compiler yet are listed in `ROUTE_EXCEPTIONS` with the route that still builds
 them; that list only shrinks. It and every other per-unit compiler setting,
 including the overlay SN list, are in the compiler routes section at the top
@@ -90,22 +95,27 @@ includes `<stdarg.h>` cannot compile. Build it from the patch stack in
 pinned source archive, its SHA-256 and the host recipe that reproduces the
 expected `cc1`: `python3 scripts/build-game-compiler.py` downloads the
 archive, applies the stack and installs `cc1`, `cpp`, `xgcc`, the patched `as`,
-the `ee-gcc` wrapper and the headers into `tools/compilers/game-compiler`
-(about a minute; `--archive` reuses a local copy of the source archive). Or
+`sdk-as`, the `ee-gcc` wrapper and the headers into
+`tools/compilers/game-compiler` (about a minute; `--archive` reuses a local copy of the source archive). Or
 point `GAME_COMPILER_ROOT` at an existing build.
 
 The game code is assembled by the EE assembler of SN ProDG 3.01
 (`ps2eeas` 1.9.25.758, installed as `ee/bin/Ps2EeAs.exe` in the SN tree);
 the older assembler shipped in the ProDG 2.0 compiler archive pads loops
 differently and fails the gate.
-`setup.sh` installs it with one change, made by
+`setup.sh` prepares it with
 [`scripts/patch-ps2eeas.py`](../scripts/patch-ps2eeas.py): its divbug
 workaround, which puts up to two NOPs in front of a `div`/`div.s` near a branch
 or a label and refuses a `div.s` in a `.set nomacro` delay slot, is turned
 off. Retail has none of that padding (not one `nop; nop; div` among the
 executable's 346 div words or the overlays' 26,539), so the assembler retail
-used did not apply it. The patch is 6 bytes; the script checks the SHA-256 of
-the download and of the result.
+used did not apply it. The code patch is 6 bytes. The script also raises the PE stack reservation
+from 1 MiB to 64 MiB: large overlay assembly inputs overflow the original
+Windows guest stack under both Wibo and Wine. Raising the Linux `ulimit -s`
+does not enlarge that guest stack. This second change affects only PE loader
+metadata; executable and data sections are unchanged. The script checks the
+SHA-256 of both the download and the final result. Re-run `setup.sh` to update
+an older installed assembler.
 
 Some units in `ROUTE_EXCEPTIONS` build with a patched EE-GCC profile, built
 separately. See [patched-toolchain.md](patched-toolchain.md) for the build and

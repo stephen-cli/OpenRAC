@@ -58,8 +58,11 @@ OpenGOAL's flow, step for step ([docs/INTEGRATION.md](docs/INTEGRATION.md#settin
    `SYSTEM.CNF` names, whatever the file is called
    ([core/src/discs.rs](core/src/discs.rs)), and sets each playable one up
    without further questions. The folder can be changed in Settings; a game's
-   own **Set up from your disc** still asks for a single image (`.iso`) when
-   the folder holds none.
+   own **Set up from your disc** still asks for a single image (`.iso`, or a
+   `.chd` made with `chdman createdvd`) when the folder holds none. The
+   extractor and the game read a plain image by sector, so a `.chd` is
+   unpacked once into `<install>/discs/<name>.iso` first
+   ([core/src/chd.rs](core/src/chd.rs)).
 2. The launcher runs OpenRAC's extractor ([tools/extractor.py](../tools/extractor.py))
    as a job: it copies the disc's files into the install folder and checks
    the boot executable against the builds OpenRAC knows
@@ -72,8 +75,14 @@ OpenGOAL's flow, step for step ([docs/INTEGRATION.md](docs/INTEGRATION.md#settin
    check; levels that fail it are read from the disc again, once, and checked
    again. Without it an export cut short was a black world behind the HUD.
 4. In a checkout, **Build the game** runs [tools/build_port.py](../tools/build_port.py): it
-   compiles the native port for this computer (a few minutes the first time),
-   and **Rebuild** compiles again what changed after an update.
+   compiles the native port for this computer (a few minutes the first time).
+   **Rebuild the game**, in the game's menu, deletes what was built and
+   compiles everything again; Play never builds a game that is built. After
+   an update that changed what the game is built from (a new version, or a
+   `git pull` that touched `port/`, the game's decompilation or the build),
+   the game page recommends a rebuild in a notice with **Rebuild now**; Play
+   still starts the build there is. A pull of docs or of another game
+   changes nothing.
 5. **Play** starts the port with the set-up data.
 
 **Remove the set-up** deletes what set-up made, as OpenGOAL's uninstall does;
@@ -107,6 +116,15 @@ the disc image and saves are kept.
   beside the saves. A recent crash marks the game in the list.
   **Detailed logs** makes the game write more, for
   when we ask for it.
+- **Differences from the original**, for a game with a port: what it does
+  otherwise than the PS2 game, and why, in three groups. **Game fixes** have
+  a switch each: off, the game plays as the console does (the 4:3 culling at
+  the sides of a wide picture, for one). The switch is the port's own setting
+  (`fix_... = 1` in its settings file), the same the game's Options menu
+  changes, and it counts from the game's next start. **Kept from crashing**
+  are never switched off, and **Playing on a PC** is for the record. The list
+  is `port/game/<game>/differences.json` (the checkout's, else the copy the
+  launcher carries; [docs/port/SETTINGS.md](../docs/port/SETTINGS.md#8-game-fixes-and-the-differences-from-the-original)).
 - **Level editor**: under **Mods** (below), and in the game's menu.
 - **Two discs of a game, for developers**: with developer tools on and both
   a game's PAL and NTSC-U images in the games folder, a small **Disc** switch
@@ -122,14 +140,22 @@ the disc image and saves are kept.
 
 ## Mods
 
-The Mods tab has, for each game that can be edited (Ratchet & Clank, PAL, for
-now), the three steps of modding in order: **Open the editor** (choose a
+The Mods tab has, for each game that can be edited (Ratchet & Clank, PAL and
+NTSC-U), the three steps of modding in order: **Open the editor** (choose a
 level: each is a Godot 4 project of its own under `assets/levels/<game>`, so
 only that level loads; the first time they are read from the disc), **Pack** (turns the
 edits into the game's own level data, in `assets/packed/<game>`) and **Play**
 with them (the port's `--mods`). The disc image is never changed. With
 developer tools on, the page also shows the folders and the three commands
 behind the buttons ([editor/README.md](../editor/README.md#pack-your-edits)).
+
+Going Commando, Up Your Arsenal and Deadlocked (NTSC-U) are there in early
+access: their levels open in Godot to look around, and **Models and
+textures** works for them (their levels are read for it with **Read the
+levels**, since their game page has no Play yet). The page says what is not
+there: edits are not packed back into those games, and they are not
+playable, so their packs wait in Your mods until they are
+([editor/README.md](../editor/README.md#the-later-games-early-access)).
 
 Below them, **Models and textures**: export a level's models (glTF, with
 their skeletons) and textures (PNG) to a folder that opens when it is ready,
@@ -225,10 +251,13 @@ launcher/
   (`baserom/` inputs, build output, `assets/godot` for the level editor), all
   ignored by git.
 - **Progress from openrac.dev**: at start-up it fetches
-  `https://openrac.dev/progress.json` and keeps a copy in
-  `build/launcher/progress.json` for the next start without a network. A
-  version shows the site's figures only where they are ahead of the
-  checkout's own `progress/summary.json`, which the launcher never writes.
+  `https://openrac.dev/progress.json` and keeps a copy in the per-user
+  folder beside its settings (`progress.json` next to `launcher.json`), for
+  the next start without a network. That folder is the player's own to
+  write, unlike a checkout the launcher does not own (the copy an
+  installed launcher carries). A version shows the site's figures only
+  where they are ahead of the checkout's own `progress/summary.json`, which
+  the launcher never writes.
 - **Discord**: unless switched off in Settings, Discord's Rich Presence shows
   the game being viewed, set up, built or played. While a game plays, Discord
   says "Playing Ratchet & Clank", "Exploring Kerwan · Metropolis" and the

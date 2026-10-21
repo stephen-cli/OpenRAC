@@ -7,19 +7,40 @@
 // from ALPHA, the texture function and alpha as the direct renderer does (direct.frag). Depth is
 // tested against the world and not written, as the game's effect list draws. The strips the game
 // sends to its VU1 strip program (FrameInput::strips) are drawn first, the same way.
+//
+// The liquids (EffectPart::Liquids) are a pass of their own after the ties: the strips the game
+// draws as a solid surface (ALPHA 0x64, (Cs - Cd) FIX + Cd, with FIX above 0x60, which it pairs
+// with a Z-writing TEST: the liquid grid's seas and lava), with depth written. Retail draws them
+// from the draw callback list it runs after the ties, before the mobys; drawn with the effects,
+// after the mobys, a sea covered the mobys' glow faces and blended parts in front of it (Umbris's
+// lamps and the bolts' glints as black patches).
 
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "renderer/renderer.h"
 #include "renderer/shader.h"
 
 namespace openrac::renderer {
 
+// Which of the frame's strips and quads a pass draws.
+enum class EffectPart : std::uint8_t {
+    All,      // every strip, then every quad
+    Liquids,  // only the solid strips (liquid_strip), with depth written
+    Rest,     // the strips that are not, then every quad
+};
+
+// A strip drawn as a solid surface: ALPHA 0x64 ((Cs - Cd) FIX + Cd) with FIX above 0x60.
+bool liquid_strip(std::uint64_t alpha);
+
 class EffectRenderer : public BucketRenderer {
 public:
-    explicit EffectRenderer(std::string name = "effects") : BucketRenderer(std::move(name), Bucket::Particles) {}
+    explicit EffectRenderer(std::string name = "effects", EffectPart part = EffectPart::All,
+                            Bucket bucket = Bucket::Particles)
+        : BucketRenderer(std::move(name), bucket), m_part(part) {}
 
     bool init(RenderState& state, std::string& error) override;
     void render(const FrameInput& input, RenderState& state) override;
@@ -37,11 +58,26 @@ private:
         std::uint8_t r, g, b, a;
     };
 
+    // Whether this pass draws `strip` (m_part).
+    bool draws(const EffectStrip& strip) const;
+
+    struct AppliedState {
+        TextureHandle texture{};
+        std::uint64_t tex1_bits = ~0ull;
+        std::uint64_t clamp_bits = ~0ull;
+        std::uint64_t alpha_bits = ~0ull;
+        int tcc = -1;
+        int tfx = -1;
+        float alpha_scale = -1.0f;
+    } m_applied;
+
+    EffectPart m_part = EffectPart::All;
     Shader m_shader;
     int m_view_projection = -1;
     int m_textured = -1, m_tcc = -1, m_tfx = -1, m_tex_alpha_scale = -1;
     int m_fog_enable = -1, m_alpha_test = -1;
     unsigned m_vao = 0, m_vbo = 0;
+    std::vector<Vertex> m_vertices;  // the frame's triangles, kept for their storage
 };
 
 }  // namespace openrac::renderer

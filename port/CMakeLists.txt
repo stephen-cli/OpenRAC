@@ -41,6 +41,11 @@ option(OPENRAC_PORT_GAMES "Build the games from their decompilations (needs Clan
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Warnings)
 include(FastBuild)
+include(Optimize)
+# Android (the android-arm64 preset, the NDK's toolchain file): docs/port/ANDROID.md.
+if(ANDROID)
+  include(Android)
+endif()
 
 enable_testing()
 
@@ -67,6 +72,9 @@ target_include_directories(openrac_common PUBLIC .)
 if(UNIX AND NOT APPLE)
   target_link_libraries(openrac_common PUBLIC ${CMAKE_DL_LIBS})  # dladdr, for the crash report
 endif()
+if(ANDROID)
+  target_link_libraries(openrac_common PUBLIC openrac_android_compat)  # backtrace below API 33
+endif()
 openrac_warnings(openrac_common)
 
 add_executable(log_test tests/log_test.cpp)
@@ -79,6 +87,18 @@ target_include_directories(pause_options_test PRIVATE .)
 openrac_warnings(pause_options_test)
 add_test(NAME pause_options COMMAND pause_options_test)
 
+# The game fixes (game/common/fixes.h): rac1's list of differences, checked as the configure reads it
+# (cmake/Differences.cmake), and its fixes through the settings file. Needs no game.
+include(Differences)
+openrac_write_fixes(rac1 pal "${CMAKE_BINARY_DIR}/generated/openrac_fixes_test_rac1_pal.cpp")
+add_executable(game_fixes_test tests/game_fixes_test.cpp game/common/fixes.cpp game/common/settings.cpp
+                               "${CMAKE_BINARY_DIR}/generated/openrac_fixes_test_rac1_pal.cpp")
+target_include_directories(game_fixes_test PRIVATE . game/common game/common/include runtime/include)
+target_compile_definitions(game_fixes_test PRIVATE "OPENRAC_RAC1_HOST=\"${PROJECT_SOURCE_DIR}/game/rac1/host\"")
+target_link_libraries(game_fixes_test PRIVATE openrac_common)
+openrac_warnings(game_fixes_test)
+add_test(NAME game_fixes COMMAND game_fixes_test)
+
 # ---- runtime: game memory, the guest contract, the executable loader ----
 add_library(openrac_runtime STATIC
   runtime/crash.cpp
@@ -89,12 +109,26 @@ add_library(openrac_runtime STATIC
 )
 target_include_directories(openrac_runtime PUBLIC runtime/include)
 target_link_libraries(openrac_runtime PUBLIC openrac_common)
+if(MINGW)
+  target_link_libraries(openrac_common PUBLIC dbghelp advapi32)
+endif()
 openrac_warnings(openrac_runtime)
 
 add_executable(runtime_test tests/runtime_test.cpp tests/guest_c.c)
 target_link_libraries(runtime_test PRIVATE openrac_runtime)
 openrac_warnings(runtime_test)
 add_test(NAME runtime COMMAND runtime_test)
+
+add_executable(rac4_io_test tests/rac4_io_test.c
+  game/rac4-ntsc/host/pad.c game/rac4-ntsc/host/sound.c game/common/lib/pad.c)
+target_include_directories(rac4_io_test PRIVATE runtime/include game/common/include)
+openrac_warnings(rac4_io_test)
+add_test(NAME rac4_io COMMAND rac4_io_test)
+
+add_executable(graph_dma_test tests/graph_dma_test.c)
+target_include_directories(graph_dma_test PRIVATE runtime/include game/common/include)
+openrac_warnings(graph_dma_test)
+add_test(NAME graph_dma COMMAND graph_dma_test)
 
 # ---- assets, media, audio, the extractor: no window ----
 add_executable(crate_init_test tests/crate_init_test.c)
@@ -138,6 +172,22 @@ target_compile_options(moby_bounds_test PRIVATE -fno-strict-aliasing -ffp-contra
 openrac_warnings(moby_bounds_test)
 add_test(NAME moby_bounds COMMAND moby_bounds_test)
 
+add_executable(moby_view_test tests/moby_view_test.c)
+target_compile_options(moby_view_test PRIVATE -ffp-contract=off)
+if(UNIX)
+  target_link_libraries(moby_view_test PRIVATE m)
+endif()
+openrac_warnings(moby_view_test)
+add_test(NAME moby_view COMMAND moby_view_test)
+
+add_executable(wide_view_test tests/wide_view_test.c)
+target_compile_options(wide_view_test PRIVATE -ffp-contract=off)
+if(UNIX)
+  target_link_libraries(wide_view_test PRIVATE m)
+endif()
+openrac_warnings(wide_view_test)
+add_test(NAME wide_view COMMAND wide_view_test)
+
 add_executable(hero_manipulators_test tests/hero_manipulators_test.c)
 target_compile_options(hero_manipulators_test PRIVATE -fno-strict-aliasing -ffp-contract=off)
 openrac_warnings(hero_manipulators_test)
@@ -161,6 +211,11 @@ add_executable(scale_matrix_test tests/scale_matrix_test.c)
 openrac_warnings(scale_matrix_test)
 add_test(NAME scale_matrix COMMAND scale_matrix_test)
 
+add_executable(rows_multiply_test tests/rows_multiply_test.c)
+target_compile_options(rows_multiply_test PRIVATE -ffp-contract=off)
+openrac_warnings(rows_multiply_test)
+add_test(NAME rows_multiply COMMAND rows_multiply_test)
+
 add_executable(vendor_draw_test tests/vendor_draw_test.c)
 target_compile_options(vendor_draw_test PRIVATE -fno-strict-aliasing -ffp-contract=off)
 if(UNIX)
@@ -174,6 +229,14 @@ target_include_directories(effect_quad_test PRIVATE game/common/include runtime/
 target_compile_options(effect_quad_test PRIVATE -fno-strict-aliasing -ffp-contract=off)
 openrac_warnings(effect_quad_test)
 add_test(NAME effect_quad COMMAND effect_quad_test)
+
+# The shared rac1 host C's scene actors, with PAL's table and a stand-in for its prototypes.
+add_executable(scene_actors_test tests/scene_actors_test.c)
+target_include_directories(scene_actors_test PRIVATE tests/rac1_host game/common/include runtime/include
+                                                     game/rac1-pal/host)
+target_compile_options(scene_actors_test PRIVATE -fno-strict-aliasing -fwrapv)
+openrac_warnings(scene_actors_test)
+add_test(NAME scene_actors COMMAND scene_actors_test)
 
 add_executable(resource_bank_test tests/resource_bank_test.c)
 target_compile_options(resource_bank_test PRIVATE -fno-strict-aliasing)

@@ -11,8 +11,12 @@ extern int FUN_L00_002dbb20(void *);
 
 extern int FUN_L00_002dbb20_pt(void *, void *) __asm__("FUN_L00_002dbb20");
 /* Moby state 0xE while FUN_L00_002dbb20 reports a hit, back to 1 when it stops. */
-int FUN_L01_002efaf8(char *a, void *quad) {
-    int r = FUN_L00_002dbb20_pt(a, quad);
+extern int FUN_L00_002dbb20_h(void *, void *, void *, float) __asm__("FUN_L00_002dbb20");
+/* One of a class's Suck Cannon hooks (grab, place or fire), which the catalogue folds: each copy
+   calls its own one, the fire with (moby, velocity, target, height), so the arguments go on as
+   they came (retail touches none of a1, a2 and $f12 before its call). */
+int FUN_L01_002efaf8(char *a, void *quad, void *target, float h) {
+    int r = FUN_L00_002dbb20_h(a, quad, target, h);
     if (r == 0) {
         if (*(unsigned char *)(a + 0x20) == 0xe)
             a[0x20] = 1;
@@ -25,9 +29,9 @@ int FUN_L01_002efaf8(char *a, void *quad) {
 extern int FUN_L00_002dbe20(void *);
 
 /* Runs FUN_L00_002dbe20 on the moby and sets its state to 0xE. */
-int FUN_L01_002efb98(char *a) {
-    int r = FUN_L00_002dbe20(a);
-    a[0x20] = 0xe;
+int FUN_L01_002efb98(char *moby) {
+    int r = FUN_L00_002dbe20(moby);
+    moby[0x20] = 0xe;
     return r;
 }
 typedef struct {
@@ -35,10 +39,10 @@ typedef struct {
     s32 f;
 } T6;
 /* Returns the moby data pointer plus 0xC0, or 0 when either is null. */
-s32 FUN_L01_002efbc8(T6 *p) {
+s32 FUN_L01_002efbc8(T6 *moby) {
     s32 v;
-    if (p != 0) {
-        v = p->f;
+    if (moby != 0) {
+        v = moby->f;
         if (v != 0) {
             return v + 0xc0;
         }
@@ -51,8 +55,12 @@ extern int FUN_L00_002db8f8(void *);
 
 extern int FUN_L00_002db8f8_pt(void *, void *, void *) __asm__("FUN_L00_002db8f8");
 /* Moby state 7 while FUN_L00_002db8f8 reports a hit, back to 1 when it stops. */
-int FUN_L01_002f1c78(char *a, void *pos, void *target) {
-    int r = FUN_L00_002db8f8_pt(a, pos, target);
+extern int FUN_L00_002db8f8_h(void *, void *, void *, float) __asm__("FUN_L00_002db8f8");
+/* One of a class's Suck Cannon hooks (grab, place or fire), which the catalogue folds: each copy
+   calls its own one, the fire with (moby, velocity, target, height), so the arguments go on as
+   they came (retail touches none of a1, a2 and $f12 before its call). */
+int FUN_L01_002f1c78(char *a, void *pos, void *target, float h) {
+    int r = FUN_L00_002db8f8_h(a, pos, target, h);
     if (r == 0) {
         if (*(unsigned char *)(a + 0x20) == 0x7)
             a[0x20] = 1;
@@ -63,16 +71,16 @@ int FUN_L01_002f1c78(char *a, void *pos, void *target) {
 }
 
 /* Runs FUN_L00_002dbe20 on the moby and sets its state to 7. */
-int FUN_L01_002f1dc8(char *a) {
-    int r = FUN_L00_002dbe20(a);
-    a[0x20] = 0x7;
+int FUN_L01_002f1dc8(char *moby) {
+    int r = FUN_L00_002dbe20(moby);
+    moby[0x20] = 0x7;
     return r;
 }
 /* Returns the moby data pointer plus 0x60, or 0 when either is null. */
-s32 FUN_L01_002f1df8(T6 *p) {
+s32 FUN_L01_002f1df8(T6 *moby) {
     s32 v;
-    if (p != 0) {
-        v = p->f;
+    if (moby != 0) {
+        v = moby->f;
         if (v != 0) {
             return v + 0x60;
         }
@@ -94,8 +102,8 @@ typedef struct {
 s32 random_integer_below(s32) __asm__("FUN_00213260");
 s32 scale_game_frames(s32) __asm__("FUN_001f96f8");
 /* Fills a moby data block: four random values, fixed constants, four frame-scaled counts. */
-void FUN_L01_00308470(O_FUN_L01_00308470 *o) {
-    M_FUN_L01_00308470 *m = o->m;
+void FUN_L01_00308470(O_FUN_L01_00308470 *moby) {
+    M_FUN_L01_00308470 *m = moby->m;
     s32 i;
     for (i = 0; i < 4; i++)
         m->r[i] = random_integer_below(0xFF);

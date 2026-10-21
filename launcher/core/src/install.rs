@@ -87,19 +87,25 @@ pub fn plan_extract(config: &Config, install: &Path, game: &str, image: &Path) -
     if !image.is_file() {
         return Err(format!("{} is not a file", image.display()));
     }
+    let mut args: Vec<String> = vec![
+        "tools/extractor.py".into(),
+        image.display().to_string(),
+        "--game".into(),
+        game.into(),
+        "--extract".into(),
+        "--validate".into(),
+        "--proj-path".into(),
+        data_dir(install, game).display().to_string(),
+    ];
+    // A phone's storage: of the disc's files only what the port reads beside the image (every
+    // file is still checked), not gigabytes more to write.
+    if crate::actions::Platform::current() == crate::actions::Platform::Android {
+        args.push("--boot-only".into());
+    }
     Ok(Plan {
         title: format!("Set up {game} from your disc"),
         program: python,
-        args: vec![
-            "tools/extractor.py".into(),
-            image.display().to_string(),
-            "--game".into(),
-            game.into(),
-            "--extract".into(),
-            "--validate".into(),
-            "--proj-path".into(),
-            data_dir(install, game).display().to_string(),
-        ],
+        args,
         cwd: root.to_path_buf(),
         detached: false,
         env: Vec::new(),
@@ -115,8 +121,29 @@ pub fn uninstall(install: &Path, game: &str) -> Result<(), String> {
         if path.exists() {
             std::fs::remove_dir_all(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
         }
+        // A developer's other disc's set-up waits beside it as <game>@<version> (disc_choice.rs).
+        // It is what the set-up made as well, and goes with it.
+        for other in kept_ones(&dir.join(sub), game) {
+            std::fs::remove_dir_all(&other).map_err(|e| format!("cannot remove {}: {e}", other.display()))?;
+        }
     }
     Ok(())
+}
+
+/// The folders of `game` that wait beside it under another name: `<game>@<version>`, the other
+/// disc's set-up a developer keeps aside (disc_choice.rs).
+fn kept_ones(dir: &Path, game: &str) -> Vec<PathBuf> {
+    let prefix = format!("{game}@");
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -158,6 +185,21 @@ mod tests {
         assert_eq!(state(install, "rac1").extracted, None);
         assert!(keep.exists(), "uninstall removes only what set-up made");
         assert!(uninstall(install, "../rac1").is_err());
+    }
+
+    #[test]
+    fn removes_the_other_discs_set_up_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path();
+        extracted(install, "rac1", "SCES_509.16");
+        // The other disc's set-up waits beside it (disc_choice.rs).
+        let kept = data_dir(install, "rac1").join("iso_data").join("rac1@pal");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::write(kept.join("disc.iso"), b"image").unwrap();
+
+        uninstall(install, "rac1").unwrap();
+        assert!(!kept.exists(), "the other disc's set-up goes with it");
+        assert_eq!(state(install, "rac1").extracted, None);
     }
 
     #[test]

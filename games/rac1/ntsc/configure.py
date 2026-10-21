@@ -48,6 +48,9 @@ SDK_COMPILER_DECOMPME = "ee-gcc2.9-991111-01"
 CROSS = "mips-ps2-decompals-"
 
 COMPILER_FLAGS = "-DMATCHING_DECOMP -O2 -g2 -gstabs"
+# SDK units build without -g, as retail did: the line labels of -g would keep
+# the assembler from filling delay slots.
+SDK_COMPILER_FLAGS = "-DMATCHING_DECOMP -O2"
 
 LANG_DEFINE = "-DBUILD_US_VERSION"
 
@@ -329,7 +332,6 @@ OVERLAY_SN_UNITS = {
     "shared/gameplay/entities/seeker.c",
     "shared/gameplay/entities/sentrybot.c",
     "shared/gameplay/entities/spawner.c",
-    "shared/gameplay/entities/thruster_pack_lock.c",
     "shared/gameplay/entities/timed_activation_pads.c",
     "shared/gameplay/entities/trackdrive_left.c",
     "shared/gameplay/entities/trespasser.c",
@@ -377,6 +379,7 @@ OVERLAY_SN_UNITS = {
     "shared/ui/menus/0027f448.c",
     "shared/ui/text/001fb470.c",
     "shared/ui/text/002377b8.c",
+    "shared/ui/text/00262ae8.c",
     "shared/world/loaders/0023fa00.c",
     "shared/world/loaders/load_level_gameplay.c",
 }
@@ -417,9 +420,9 @@ RODATA_OVERLAYS = {
     "ui/help/draw_help": (0x1E7A70, 0xE89F0, 28),  # switch table (migrated)
     "ui/help/dismiss_help": (0x1E7A20, 0xE89A0, 32),  # switch table (migrated)
     "_sceFs_Rcv_Intr": (0x1528E0, 0x53860, 100),  # retail switch table (jtbl_001528E0)
-    "fun_00216c48": (0x1E86A0, 0xE9620, 24),  # retail switch table (jtbl_001E86A0)
+    "ui/menus/process_menu_entry": (0x1E86A0, 0xE9620, 24),  # retail switch table (jtbl_001E86A0)
     "draw_sky_shells": (0x1E8910, 0xE9890, 24),  # switch table
-    "fun_002223f0": (0x1E8810, 0xE9790, 80),  # switch table
+    "ui/menus/update_timed_menu_sequence": (0x1E8810, 0xE9790, 80),  # switch table
     "gameplay/vendor/update_resident_dialogue_animation_state": (0x1E8A90, 0xE9A10, 52),  # switch table
     "update_help_state": (0x1E7A40, 0xE89C0, 36),  # switch table
     "memcard_update_state": (0x1E8200, 0xE9180, 348),  # switch table
@@ -446,6 +449,9 @@ RODATA_OVERLAYS = {
     "sdk/callbacks/report_mpeg_picture_temporal_scalable_unsupported": (0x153BC8, 0x54B48, 51),
     "sdk/library/GetRomName": (0x153C00, 0x54B80, 12),
     "draw_scrolling_sky_shells": (0x1E88F0, 0xE9870, 20),  # switch table
+    "update_streamed_moby_animation": (0x1E88B0, 0xE9830, 28),  # switch table
+    "update_mode_freeze": (0x1E79A0, 0xE8920, 124),  # switch table
+    "render_vendor_capture_pass_sequence": (0x1E8AD0, 0xE9A50, 24),  # switch table
 }
 
 # Recovered C units that define the small-data variables their original
@@ -489,21 +495,21 @@ DATA_OVERLAYS = {
     "textbin/world/data/select_world_object_resource_tables": (0x1CBBE0, 0xCCB60, 1152),
     "ui/menus/render_level_effects_and_screen_sprites": (0x1CE2C0, 0xCF240, 56),
     "textbin/gameplay/gadgets/load_hand_gadget": (0x1D52E8, 0xD6268, 1776),
-    "assembly/textbin/ui/menus/update_preview_animation_and_attachments": (0x1D6080, 0xD7000, 56),
-    "assembly/textbin/rendering/register_shrub_render_class": (0x1D8030, 0xD8FB0, 128),
+    "ui/menus/update_preview_animation_and_attachments": (0x1D6080, 0xD7000, 56),
+    "rendering/register_shrub_render_class": (0x1D8030, 0xD8FB0, 128),
     "gameplay/fun_0022e1b0": (0x1D9890, 0xDA810, 384),
-    "assembly/textbin/rendering/effects/build_resident_indexed_texture_warp_meshes": (0x1D9A10, 0xDA990, 32),
+    "rendering/effects/build_resident_indexed_texture_warp_meshes": (0x1D9A10, 0xDA990, 32),
     "assembly/textbin/ui/map/draw_level_selection_map": (0x1DDE28, 0xDEDA8, 320),
-    "assembly/textbin/rendering/register_object_render_class": (0x1E1900, 0xE2880, 256),
+    "rendering/register_object_render_class": (0x1E1900, 0xE2880, 256),
     "gameplay/vendor/render_capture_scrolling_text": (0x1E6018, 0xE6F98, 512),
-    "assembly/textbin/gameplay/vendor/render_vendor_capture_pass_sequence": (0x1E6218, 0xE7198, 96),
+    "gameplay/vendor/render_vendor_capture_pass_sequence": (0x1E6218, 0xE7198, 96),
     "textbin/render_vendor_capture_texture_overlays_pass": (0x1E6620, 0xE75A0, 64),
     "textbin/rebuild_configured_text_label_list": (0x1E8728, 0xE96A8, 60),
     "ui/menus/update_menu_resource_stream": (0x1E87D0, 0xE9750, 24),
     "textbin/video/player/init_all": (0x1E8AF0, 0xE9A70, 18),
     "rendering/view/update_view_context": (0x18CFC0, 0x8DF40, 64),
     "input/pad/init_pads": (0x1CD760, 0xCE6E0, 16),
-    "ui/menus/fun_002223f0": (0x1D5298, 0xD6218, 3),
+    "ui/menus/update_timed_menu_sequence": (0x1D5298, 0xD6218, 3),
     "gameplay/vendor/update_resident_dialogue_animation_state": (0x1E63FC, 0xE737C, 4),
     "rendering/draw_dialog_text": (0x1E78F0, 0xE8870, 48),
 }
@@ -738,7 +744,7 @@ def make_compiler_cmd(config_dir: Path, src_path: Path) -> tuple[str, str]:
     )
 
     compile_cmd = (
-        f"{sdk_cc_dir}/ee-gcc -c {common_includes} {LANG_DEFINE} {COMPILER_FLAGS}"
+        f"{sdk_cc_dir}/ee-gcc -c {common_includes} {LANG_DEFINE} {SDK_COMPILER_FLAGS}"
     )
 
     return compile_cmd, common_includes
@@ -765,7 +771,7 @@ def _game_compiler_root() -> Path:
 
 def game_compiler_configured() -> bool:
     root = _game_compiler_root()
-    return (root / "ee-gcc").is_file() and (root / "cc1").is_file()
+    return all((root / name).is_file() for name in ("ee-gcc", "cc1", "sdk-as"))
 
 def ee_gcc_patched_configured() -> bool:
     return bool(EE_GCC_PATCHED_ROOT) and (Path(EE_GCC_PATCHED_ROOT) / "xgcc").is_file()
@@ -1110,10 +1116,11 @@ def hoist_sda_externs(assembly, source):
     that did and did not define the symbol), so the directive goes in front
     of the first function defined after the sda declaration instead.  A
     NON_MATCHING `#else` draft is not compiled, so its declarations do not
-    count.
+    count, unless the file defines NON_MATCHING to compile the drafts.
     """
-    source = re.sub(r"^(#ifndef NON_MATCHING\n(?:INCLUDE_ASM[^\n]*\n)*)#else\n.*?^#endif",
-                    r"\1#endif", source, flags=re.M | re.S)
+    if not re.search(r"^#\s*define\s+NON_MATCHING\b", source, re.M):
+        source = re.sub(r"^(#ifndef NON_MATCHING\n(?:INCLUDE_ASM[^\n]*\n)*)#else\n.*?^#endif",
+                        r"\1#endif", source, flags=re.M | re.S)
     sda = {}
     for match in re.finditer(r"^extern[^;]*__attribute__\(\(sda\)\)[^;]*;", source, re.M):
         decl = match.group(0)
@@ -1319,12 +1326,6 @@ def build_stuff(
         ),
     )
 
-    ninja.rule(
-        "sdk-compiler",
-        description="sdk-compiler $in",
-        command=f"{compile_cmd} $in $extra -o $out && {CROSS}strip $out -N dummy-symbol-name -R .mdebug",
-    )
-
     if not game_compiler_configured():
         # The reconstructed game compiler is mandatory, not optional.  Without
         # it, every unit in GAME_COMPILER_UNITS silently falls through to
@@ -1335,7 +1336,7 @@ def build_stuff(
         # they can be deleted instead of sitting as dead configuration.
         raise SystemExit(
             "the reconstructed game compiler is required: "
-            f"{_game_compiler_root()} has no ee-gcc/cc1.\n"
+            f"{_game_compiler_root()} has no ee-gcc/cc1/sdk-as.\n"
             "Install it at tools/compilers/game-compiler (the baseline "
             "workspace stages it under tools/cc/game-compiler) or point "
             "GAME_COMPILER_ROOT at it. The patch stack that rebuilds it from "
@@ -1354,6 +1355,20 @@ def build_stuff(
     ee_assembler = _windows_exe(str(Path(SN_TOOLCHAIN_ROOT) / "ee/bin/Ps2EeAs.exe"))
 
     game_root = _game_compiler_root()
+    # SDK code: the SDK compiler's cc1, assembled by sdk-as (built with the
+    # game compiler from the same archive): GNU as with patch 0059, which fills
+    # an empty jump delay slot the way retail's SDK assembler did.
+    ninja.rule(
+        "sdk-compiler",
+        description="sdk-compiler $in",
+        command=(
+            f"mkdir -p $sdk_work && {compile_cmd} -S $in $extra -o $sdk_work/cand.s && "
+            f"{game_root}/sdk-as -mabi=eabi -I{src_path.parent / 'include'} -I{src_path.parent} "
+            f"-o $out $sdk_work/cand.s && "
+            f"{CROSS}strip $out -N dummy-symbol-name -R .mdebug"
+        ),
+    )
+
     # Game code: the game compiler's cc1, assembled by Ps2EeAs, as retail was.
     # Ps2EeAs pads short loops itself (its div padding is patched out at
     # install: retail has none, scripts/patch-ps2eeas.py), and the compile
@@ -1516,7 +1531,9 @@ def build_stuff(
                 build(entry.object_path, entry.src_paths, rule, variables=variables)
             elif rule == "sdk-compiler":
                 flags = SDK_COMPILER_FLAG_UNITS.get(unit, "")
-                variables = {"extra": f"{flags} "} if flags else {}
+                variables = {"sdk_work": str(ROOT / "build/sdk-work/units" / unit)}
+                if flags:
+                    variables["extra"] = f"{flags} "
                 build(entry.object_path, entry.src_paths, rule, variables=variables)
             elif rule == "cc_ee_gcc_patched" and not patched_route:
                 # No patched profile: build from the retail oracle; the C is
@@ -2128,7 +2145,7 @@ def build_overlays() -> Path:
     if not game_compiler_configured():
         raise SystemExit(
             "the reconstructed game compiler is required: "
-            f"{_game_compiler_root()} has no ee-gcc/cc1 (see docs/building.md)"
+            f"{_game_compiler_root()} has no ee-gcc/cc1/sdk-as (see docs/building.md)"
         )
     asm_dir = Path("config/us/overlays/asm")
     if not asm_dir.is_dir():
@@ -2149,12 +2166,14 @@ def build_overlays() -> Path:
     # obj/ only checks that the file compiles as written; its code is never
     # compared.  GNU as can assert (tc-mips.c:11454) on a bare symbol access
     # in a noreorder delay slot, with -G0 on some files and without it on
-    # others, so a file passes when it assembles either way.
+    # others, and on some with both; cc1 -G0 leaves no such access, so a file
+    # passes when it assembles any of the three ways.
     overlay_cc = f"{game_root}/ee-gcc -c {includes} {LANG_DEFINE} {COMPILER_FLAGS} $in -o $out"
     ninja.rule(
         "overlay-cc",
         description="overlay-cc $in",
-        command=f"{overlay_cc.replace(' -c ', ' -c -Wa,-G0 ', 1)} 2>/dev/null || {overlay_cc}",
+        command=(f"{overlay_cc.replace(' -c ', ' -c -Wa,-G0 ', 1)} 2>/dev/null || {overlay_cc} 2>/dev/null || "
+                 f"{overlay_cc.replace(' -c ', ' -c -G0 ', 1)}"),
     )
     ninja.rule(
         "c-only",

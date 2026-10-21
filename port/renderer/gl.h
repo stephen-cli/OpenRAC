@@ -5,7 +5,8 @@
 // the functions it calls, loaded through the context's own loader
 // (SDL_GL_GetProcAddress). A generated loader (glad) would declare thousands
 // of functions the renderer never calls; this list is the renderer's real
-// dependency on GL, kept to OpenGL 4.1 core so the same code runs on macOS.
+// dependency on GL, kept to OpenGL 4.1 core so the same code runs on macOS, and to what OpenGL ES
+// 3.2 also has (Android), but for the few OPENRAC_GL_DESKTOP_FUNCTIONS below.
 //
 // The functions live in namespace openrac::gl under their GL names, so a
 // renderer source says `using namespace openrac::gl;` and calls glClear(...)
@@ -90,6 +91,10 @@ inline constexpr GLenum GL_FILL = 0x1B02;
 
 inline constexpr GLenum GL_CULL_FACE = 0x0B44;
 inline constexpr GLenum GL_DEPTH_TEST = 0x0B71;
+inline constexpr GLenum GL_STENCIL_TEST = 0x0B90;
+inline constexpr GLenum GL_KEEP = 0x1E00;
+inline constexpr GLenum GL_INCR_WRAP = 0x8507;
+inline constexpr GLenum GL_DECR_WRAP = 0x8508;
 inline constexpr GLenum GL_BLEND = 0x0BE2;
 inline constexpr GLenum GL_SCISSOR_TEST = 0x0C11;
 inline constexpr GLenum GL_CLIP_DISTANCE0 = 0x3000;
@@ -104,6 +109,8 @@ inline constexpr GLenum GL_VENDOR = 0x1F00;
 inline constexpr GLenum GL_RENDERER = 0x1F01;
 inline constexpr GLenum GL_VERSION = 0x1F02;
 inline constexpr GLenum GL_SHADING_LANGUAGE_VERSION = 0x8B8C;
+inline constexpr GLenum GL_EXTENSIONS = 0x1F03;
+inline constexpr GLenum GL_NUM_EXTENSIONS = 0x821D;
 inline constexpr GLenum GL_MAJOR_VERSION = 0x821B;
 inline constexpr GLenum GL_MINOR_VERSION = 0x821C;
 
@@ -157,6 +164,7 @@ inline constexpr GLenum GL_DRAW_FRAMEBUFFER = 0x8CA9;
 inline constexpr GLenum GL_COLOR_ATTACHMENT0 = 0x8CE0;
 inline constexpr GLenum GL_DEPTH_ATTACHMENT = 0x8D00;
 inline constexpr GLenum GL_DEPTH_STENCIL_ATTACHMENT = 0x821A;
+inline constexpr GLenum GL_STENCIL_ATTACHMENT = 0x8D20;
 inline constexpr GLenum GL_FRAMEBUFFER_COMPLETE = 0x8CD5;
 // clang-format on
 
@@ -164,6 +172,7 @@ inline constexpr GLenum GL_FRAMEBUFFER_COMPLETE = 0x8CD5;
 // clang-format off
 #define OPENRAC_GL_FUNCTIONS(X)                                                                    \
     X(const GLubyte *, glGetString, (GLenum name))                                                 \
+    X(const GLubyte *, glGetStringi, (GLenum name, GLuint index))                                  \
     X(void, glGetIntegerv, (GLenum pname, GLint *data))                                            \
     X(void, glGetFloatv, (GLenum pname, GLfloat *data))                                            \
     X(GLenum, glGetError, (void))                                                                  \
@@ -171,18 +180,20 @@ inline constexpr GLenum GL_FRAMEBUFFER_COMPLETE = 0x8CD5;
     X(void, glDisable, (GLenum cap))                                                               \
     X(void, glClear, (GLbitfield mask))                                                            \
     X(void, glClearColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a))                            \
-    X(void, glClearDepth, (GLdouble depth))                                                        \
     X(void, glViewport, (GLint x, GLint y, GLsizei width, GLsizei height))                         \
     X(void, glScissor, (GLint x, GLint y, GLsizei width, GLsizei height))                          \
     X(void, glDepthFunc, (GLenum func))                                                            \
     X(void, glDepthMask, (GLboolean flag))                                                         \
+    X(void, glStencilFunc, (GLenum func, GLint ref, GLuint mask))                                  \
+    X(void, glStencilOpSeparate, (GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass))        \
+    X(void, glStencilMask, (GLuint mask))                                                          \
+    X(void, glClearStencil, (GLint s))                                                             \
     X(void, glColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a))                     \
     X(void, glBlendFuncSeparate, (GLenum src_rgb, GLenum dst_rgb, GLenum src_a, GLenum dst_a))     \
     X(void, glBlendEquation, (GLenum mode))                                                        \
     X(void, glBlendColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a))                            \
     X(void, glCullFace, (GLenum mode))                                                             \
     X(void, glFrontFace, (GLenum mode))                                                            \
-    X(void, glPolygonMode, (GLenum face, GLenum mode))                                             \
     X(void, glPixelStorei, (GLenum pname, GLint param))                                            \
     X(void, glReadPixels, (GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type,     \
                            void *pixels))                                                          \
@@ -233,7 +244,6 @@ inline constexpr GLenum GL_FRAMEBUFFER_COMPLETE = 0x8CD5;
     X(GLuint, glCreateProgram, (void))                                                             \
     X(void, glAttachShader, (GLuint program, GLuint shader))                                       \
     X(void, glBindAttribLocation, (GLuint program, GLuint index, const GLchar *name))              \
-    X(void, glBindFragDataLocation, (GLuint program, GLuint color, const GLchar *name))            \
     X(void, glLinkProgram, (GLuint program))                                                       \
     X(void, glGetProgramiv, (GLuint program, GLenum pname, GLint *params))                         \
     X(void, glGetProgramInfoLog, (GLuint program, GLsizei size, GLsizei *length, GLchar *log))     \
@@ -266,10 +276,40 @@ inline constexpr GLenum GL_FRAMEBUFFER_COMPLETE = 0x8CD5;
                                 GLint dx1, GLint dy1, GLbitfield mask, GLenum filter))
 // clang-format on
 
+// Functions OpenGL ES 3.2 does not have. On a desktop context they are loaded as the others; on an
+// ES context load() points them at stand-ins: glClearDepth at glClearDepthf, glPolygonMode at an
+// extension's form (GL_NV_polygon_mode, GL_ANGLE_polygon_mode) or at nothing (the debug overlay's
+// wireframe is then drawn filled).
+// clang-format off
+#define OPENRAC_GL_DESKTOP_FUNCTIONS(X)                                                            \
+    X(void, glClearDepth, (GLdouble depth))                                                        \
+    X(void, glPolygonMode, (GLenum face, GLenum mode))
+// clang-format on
+
+// Functions only some contexts have, for a tiled GPU's sake (a phone's): null where the context
+// lacks them, and loaded on an ES context only (a desktop GPU gains nothing from them, and a
+// desktop loader may hand out a pointer for a function its context does not have). Each caller
+// tests its pointer, and the extension where it is one.
+//   glInvalidateFramebuffer: OpenGL ES 3.0. The attachments a pass leaves are not written back.
+//   glFramebufferTexture2DMultisampleEXT, glRenderbufferStorageMultisampleEXT:
+//     GL_EXT_multisampled_render_to_texture. The samples stay in the GPU's tile memory and are
+//     resolved into the texture as they are written out (FrameBuffer).
+// clang-format off
+#define OPENRAC_GL_ES_OPTIONAL_FUNCTIONS(X)                                                        \
+    X(void, glInvalidateFramebuffer, (GLenum target, GLsizei count, const GLenum *attachments))    \
+    X(void, glFramebufferTexture2DMultisampleEXT, (GLenum target, GLenum attachment,               \
+                                                   GLenum textarget, GLuint texture, GLint level,  \
+                                                   GLsizei samples))                               \
+    X(void, glRenderbufferStorageMultisampleEXT, (GLenum target, GLsizei samples, GLenum format,   \
+                                                  GLsizei w, GLsizei h))
+// clang-format on
+
 #define OPENRAC_GL_DECLARE(ret, name, params)                                                      \
     using PFN_##name = ret(OPENRAC_GLAPI*) params;                                                 \
     extern PFN_##name name;
 OPENRAC_GL_FUNCTIONS(OPENRAC_GL_DECLARE)
+OPENRAC_GL_DESKTOP_FUNCTIONS(OPENRAC_GL_DECLARE)
+OPENRAC_GL_ES_OPTIONAL_FUNCTIONS(OPENRAC_GL_DECLARE)
 #undef OPENRAC_GL_DECLARE
 
 // The context's loader, in SDL_GL_GetProcAddress's shape.
@@ -282,5 +322,17 @@ bool load(GetProcAddress get, std::string& missing);
 
 // True once load() has succeeded.
 bool loaded();
+
+// Which OpenGL the context is, as load() read it from GL_VERSION: the desktop's 4.1 core, or
+// OpenGL ES 3.2 (Android's, or a desktop driver's ES context: OPENRAC_GL_API=es, platform/window.h).
+enum class Api { Desktop, ES };
+Api api();
+
+inline bool is_es() {
+    return api() == Api::ES;
+}
+
+// True when the context lists the extension (GL_EXTENSIONS, read once by load()).
+bool has_extension(const char* name);
 
 }  // namespace openrac::gl

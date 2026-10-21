@@ -40,11 +40,11 @@ extern void FUN_L01_00309bf8(void);
 void enqueue_callback_list_1(void *fn, void *arg) __asm__("FUN_001f4600");
 
 /* Sets both flag fields to 0xFF and queues FUN_L01_00309bf8 for the moby. */
-void FUN_L01_00309c98(FlagMoby *m) {
+void FUN_L01_00309c98(FlagMoby *moby) {
     int v = 0xFF;
-    m->h32 = v;
-    m->b30 = v;
-    enqueue_callback_list_1(FUN_L01_00309bf8, m);
+    moby->h32 = v;
+    moby->b30 = v;
+    enqueue_callback_list_1(FUN_L01_00309bf8, moby);
 }
 #include "rnc/gameplay/hero.h"
 #include "rnc/gameplay/state/usage_stats.h"
@@ -84,6 +84,10 @@ extern int D_0015EEA4_macro __asm__("D_0015EEA4") MACRO_ADDR;
 extern s32 current_level_index_macro __asm__("D_0015ED84") MACRO_ADDR;
 /* Novalis tutorial hint triggers: plays help messages and counts usage stats. */
 void FUN_L01_0030acb8(struct Moby *moby) {
+    enum {
+        TUTORIAL_HINT_STATE_INITIALIZE = 0,
+        TUTORIAL_HINT_STATE_UPDATE = 1
+    };
     s32 *data;
     struct Moby *m;
     struct Moby *m2;
@@ -92,13 +96,13 @@ void FUN_L01_0030acb8(struct Moby *moby) {
     data = (s32 *)moby->pvars;
     tick_countdown_32(&data[6]);
     switch (moby->state) {
-    case 0:
+    case TUTORIAL_HINT_STATE_INITIALIZE:
         data[5] = 0;
         moby->update_dist = 0xFF;
         moby->state = 1;
         data[10] = 0;
         break;
-    case 1:
+    case TUTORIAL_HINT_STATE_UPDATE:
         if (level_frame_count < scale_game_frames(400) && usage_stats.stat[12].count != 0 && usage_stats.stat[11].count == 0) {
             if (scale_game_frames(D_0015EEA4_macro) - usage_stats.stat[12].unk2 * 600 < scale_game_frames(1100) && help_records[0x51].v >= 0) {
                 help_request(0x4E27, 0x51);
@@ -247,23 +251,23 @@ extern f32 random_float_between(f32, f32) __asm__("FUN_002132a8");
 extern s32 scale_game_frames(s32) __asm__("FUN_001f96f8");
 void mark_moby_for_removal(void *) __asm__("FUN_0020c828");
 
-void FUN_L01_0030ba18(struct Moby *m) {
+void FUN_L01_0030ba18(struct Moby *moby) {
     BlobVars *v;
     s32 hit;
     s32 i;
     s32 n;
-    s32 c;
+    s32 grey_intensity;
     s32 alpha;
     s32 grey;
     f32 s;
-    u8 *p;
+    u8 *puff;
     u8 *q;
 
-    v = (BlobVars *)m->pvars;
+    v = (BlobVars *)moby->pvars;
     if (random_integer_below(2)) {
-        enqueue_callback_list_1(FUN_L01_0030bfa8, m);
+        enqueue_callback_list_1(FUN_L01_0030bfa8, moby);
     }
-    add_vector_xyz(&m->pos, &m->pos, v);
+    add_vector_xyz(&moby->pos, &moby->pos, v);
     if (FUN_001f99c0(v->vel.x) > D_L01_00162060 * frame_scale) {
         v->vel.x *= (D_L01_0016205C - 1.0f) * frame_scale + 1.0f;
     }
@@ -274,15 +278,15 @@ void FUN_L01_0030ba18(struct Moby *m) {
         v->vel.z *= (D_L01_0016205C - 1.0f) * frame_scale + 1.0f;
     }
     v->vel.z -= D_L01_00162058 * frame_time_sq;
-    m->rot.x = fast_add_rotations(m->rot.x, v->spin.x);
-    m->rot.y = fast_add_rotations(m->rot.y, v->spin.y);
-    m->rot.z = fast_add_rotations(m->rot.z, v->spin.z);
-    if (m->pos.x < 2.0f || m->pos.x > 1021.0f || m->pos.y < 2.0f || m->pos.y > 1021.0f ||
-        m->pos.z < 2.0f || m->pos.z > 1021.0f) {
-        mark_moby_for_removal(m);
+    moby->rot.x = fast_add_rotations(moby->rot.x, v->spin.x);
+    moby->rot.y = fast_add_rotations(moby->rot.y, v->spin.y);
+    moby->rot.z = fast_add_rotations(moby->rot.z, v->spin.z);
+    if (moby->pos.x < 2.0f || moby->pos.x > 1021.0f || moby->pos.y < 2.0f || moby->pos.y > 1021.0f ||
+        moby->pos.z < 2.0f || moby->pos.z > 1021.0f) {
+        mark_moby_for_removal(moby);
         return;
     }
-    hit = coll_sphere(2.0f, &m->pos, 0, (void *)v->owner);
+    hit = coll_sphere(2.0f, &moby->pos, 0, (void *)v->owner);
     if (tick_countdown_32(&v->timer) || hit) {
         if (hit) {
             if (D_L01_001742C0.have_normal) {
@@ -291,13 +295,13 @@ void FUN_L01_0030ba18(struct Moby *m) {
                 clear_vector(v);
             }
         }
-        FUN_L00_0025e450(m, v, &m->pos, 0.0f, 0.0f, 0x14, 3, 4, 4.0f, 2.0f, 100000.0f, 0, 3.0f, 15.0f, 1, 1,
+        FUN_L00_0025e450(moby, v, &moby->pos, 0.0f, 0.0f, 0x14, 3, 4, 4.0f, 2.0f, 100000.0f, 0, 3.0f, 15.0f, 1, 1,
                          -1, 0);
-        mark_moby_for_removal(m);
+        mark_moby_for_removal(moby);
         return;
     }
     s = random_float_between(0.5f, 1.5f) * 210000.0f;
-    spark_cbb0(&m->pos, &D_L01_0015F580, 0x4F007FFF, 0x1FFFFFFF, s,
+    spark_cbb0(&moby->pos, &D_L01_0015F580, 0x4F007FFF, 0x1FFFFFFF, s,
                FUN_L00_00257b90(scale_game_frames(10), scale_game_frames(20)), 1);
     alpha = 0x60000000;
     for (i = 0; i < 2; i++) {
@@ -306,16 +310,16 @@ void FUN_L01_0030ba18(struct Moby *m) {
             n = -n;
         }
         s = random_float_between(40000.0f, 100000.0f);
-        c = FUN_L00_00257b90(0x30, 0xFF);
-        grey = (c << 8) | alpha;
-        p = spawn_puff(&m->pos, 0.025f, 1.0f, 1.0f, n, &D_L01_0015F580, s, c | ((c << 16) | grey));
-        if (p != NULL) {
-            p[3] = 0x44;
-            q = p + 0x20;
-            *(s16 *)(p + 0xA) = scale_game_frames(60);
+        grey_intensity = FUN_L00_00257b90(0x30, 0xFF);
+        grey = (grey_intensity << 8) | alpha;
+        puff = spawn_puff(&moby->pos, 0.025f, 1.0f, 1.0f, n, &D_L01_0015F580, s, grey_intensity | ((grey_intensity << 16) | grey));
+        if (puff != NULL) {
+            puff[3] = 0x44;
+            q = puff + 0x20;
+            *(s16 *)(puff + 0xA) = scale_game_frames(60);
             *(s32 *)(q + 4) = 2;
             q[0xA] = 0x60;
-            q[0xB] = p[0xA];
+            q[0xB] = puff[0xA];
         }
     }
 }
@@ -355,28 +359,28 @@ extern f32 random_float_between(f32, f32) __asm__("FUN_002132a8");
 extern s32 scale_game_frames(s32) __asm__("FUN_001f96f8");
 
 DebrisMoby *FUN_L01_0030be70(DebrisMoby *src, void *dir, f32 scale) {
-    DebrisMoby *m;
+    DebrisMoby *spawned_moby;
     DebrisVars *v;
 
-    m = create_moby(0x5E6);
-    if (m != NULL) {
-        v = m->vars;
+    spawned_moby = create_moby(0x5E6);
+    if (spawned_moby != NULL) {
+        v = spawned_moby->vars;
         v->parent = src;
-        qcopy(&m->pos, &src->pos);
-        m->rot = src->rot;
-        m->state = 0;
-        m->b30 = 0xFF;
-        m->h32 = 0xFF;
-        m->b31 = 1;
-        m->scale = m->scale * scale;
+        qcopy(&spawned_moby->pos, &src->pos);
+        spawned_moby->rot = src->rot;
+        spawned_moby->state = 0;
+        spawned_moby->b30 = 0xFF;
+        spawned_moby->h32 = 0xFF;
+        spawned_moby->b31 = 1;
+        spawned_moby->scale = spawned_moby->scale * scale;
         fast_vec_normalize(v, dir, random_float_between(0.8f, 1.2f));
         v->spin_x = randf_sym(0.0f, 0.008726646f);
         v->spin_y = randf_sym(0.05235988f, 0.13962634f);
         v->spin_z = randf_sym(0.0f, DEG_TO_RAD);
         v->timer = scale_game_frames(200);
-        FUN_L00_00250df8(m);
+        FUN_L00_00250df8(spawned_moby);
     }
-    return m;
+    return spawned_moby;
 }
 /* Cutscene state at D_L01_0016CCE0 (as struct L10Data in l10/gameplay/vendor/002ea1f0.c). */
 typedef struct {
@@ -438,13 +442,17 @@ extern void render_environment_mapped_object(void) __asm__("FUN_002327a0");
 
 /* Cutscene effects: camera targets, splashes, sparks and trails keyed on the cutscene scene and frame. */
 void FUN_L01_0030c190(struct Moby *moby) {
+    enum {
+        CUTSCENE_FX_STATE_INITIALIZE = 0,
+        CUTSCENE_FX_STATE_UPDATE = 1
+    };
     FxVec a;
     FxVec b;
     FxVec c;
     FxVec d;
-    struct Moby *m;
-    char *e;
-    FxSpark *s;
+    struct Moby *cutscene_moby;
+    char *splash;
+    FxSpark *spark;
     f32 ang;
     f32 r;
     s32 i;
@@ -456,11 +464,11 @@ void FUN_L01_0030c190(struct Moby *moby) {
     s32 node;
 
     switch (moby->state) {
-    case 0:
+    case CUTSCENE_FX_STATE_INITIALIZE:
         moby->update_dist = 0xFF;
         moby->state = 1;
         break;
-    case 1:
+    case CUTSCENE_FX_STATE_UPDATE:
         if (cutscene_mode_macro == 2) {
             if (fx_cutscene.scene == 1 || (fx_cutscene.scene == 2 && fx_cutscene.frame <= scale_game_frames(148)) ||
                 fx_cutscene.scene == 3 || fx_cutscene.scene == 4) {
@@ -477,10 +485,10 @@ void FUN_L01_0030c190(struct Moby *moby) {
                 if (fx_cutscene.frame >= scale_game_frames(472) && fx_cutscene.frame <= scale_game_frames(537) &&
                     fx_cutscene.slot[0] != 0) {
                     moby_point_position(fx_cutscene.slot[0], 1, &a);
-                    e = spawn_splash(random_float_between(0.5f, 2.0f), random_integer_below(2) ? 2.0f : -2.0f, &a, &D_L01_0015F580,
+                    splash = spawn_splash(random_float_between(0.5f, 2.0f), random_integer_below(2) ? 2.0f : -2.0f, &a, &D_L01_0015F580,
                                         &a.f[2]);
-                    if (e != 0) {
-                        *(s16 *)(e + 0xA) = scale_game_frames(60);
+                    if (splash != 0) {
+                        *(s16 *)(splash + 0xA) = scale_game_frames(60);
                     }
                 }
                 if (fx_cutscene.scene == 1 && fx_cutscene.frame == scale_game_frames(472) && fx_cutscene.slot[0] != 0) {
@@ -504,29 +512,29 @@ void FUN_L01_0030c190(struct Moby *moby) {
                 }
             }
             if (fx_cutscene.scene == 4) {
-                m = fx_cutscene.slot[4];
-                if (m != 0 && m->oclass == 0x213) {
-                    enqueue_callback_list_1(render_environment_mapped_object, m);
+                cutscene_moby = fx_cutscene.slot[4];
+                if (cutscene_moby != 0 && cutscene_moby->oclass == 0x213) {
+                    enqueue_callback_list_1(render_environment_mapped_object, cutscene_moby);
                     if (fx_cutscene.frame >= scale_game_frames(850) && fx_cutscene.frame <= scale_game_frames(1160)) {
                         color = 0x7F204080;
                         for (node = 1; node < 7; node++) {
-                            moby_point_position(m, node, &a);
+                            moby_point_position(cutscene_moby, node, &a);
                             for (j = 0; j < 2; j++) {
                                 spread = random_integer_below(16);
-                                s = spawn_spark(&a, 0.1f, 1.0f, 0.9f, random_integer_below(2) == 0 ? spread : -spread,
+                                spark = spawn_spark(&a, 0.1f, 1.0f, 0.9f, random_integer_below(2) == 0 ? spread : -spread,
                                                    &D_L01_0015F580, 200000.0f, color);
-                                if (s != 0) {
-                                    FxSparkTail *t = &s->tail;
+                                if (spark != 0) {
+                                    FxSparkTail *spark_tail = &spark->tail;
 
                                     if (fx_cutscene.frame >= scale_game_frames(1100)) {
-                                        s->unkA = scale_game_frames(30);
+                                        spark->unkA = scale_game_frames(30);
                                     } else {
-                                        s->unkA = scale_game_frames(6);
+                                        spark->unkA = scale_game_frames(6);
                                     }
-                                    s->unk9 = truncate_float_to_s32(4.0f) + 0x40;
-                                    t->unk4 = 2;
-                                    t->unkA = color >> 24;
-                                    t->unkB = s->unkA;
+                                    spark->unk9 = truncate_float_to_s32(4.0f) + 0x40;
+                                    spark_tail->unk4 = 2;
+                                    spark_tail->unkA = color >> 24;
+                                    spark_tail->unkB = spark->unkA;
                                 }
                             }
                         }
@@ -534,10 +542,10 @@ void FUN_L01_0030c190(struct Moby *moby) {
                 }
             }
             if (fx_cutscene.scene == 5 && fx_cutscene.frame < scale_game_frames(120)) {
-                m = fx_cutscene.slot[2];
-                if (m != 0) {
+                cutscene_moby = fx_cutscene.slot[2];
+                if (cutscene_moby != 0) {
                     a.q = 0;
-                    moby_point_position(m, 5, &b);
+                    moby_point_position(cutscene_moby, 5, &b);
                     if (fx_cutscene.frame >= 2) {
                         subtract_vector_xyz(&a, &b, &fx_prev_pos);
                         qcopy(&fx_prev_pos, &b);
@@ -546,14 +554,14 @@ void FUN_L01_0030c190(struct Moby *moby) {
                     }
                     if (fx_cutscene.frame == scale_game_frames(118)) {
                         clear_vector(&c);
-                        spawn_explosion(m, &c, &b, 0.0f, 0.0f, 3, 200, 200, 5.0f, 2.5f, 9.0f, 1.0f, -1, 60.0f, 0, 60, -1, 0);
+                        spawn_explosion(cutscene_moby, &c, &b, 0.0f, 0.0f, 3, 200, 200, 5.0f, 2.5f, 9.0f, 1.0f, -1, 60.0f, 0, 60, -1, 0);
                         qcopy(&d, &b);
                         d.f[2] = d.f[2] - 1.0f;
-                        spawn_explosion(m, &c, &d, 0.0f, 0.0f, 300, 2, 2, 1.0f, 0.5f, 9.0f, 1.0f, -1, 60.0f, 0, 0, -1, 0);
+                        spawn_explosion(cutscene_moby, &c, &d, 0.0f, 0.0f, 300, 2, 2, 1.0f, 0.5f, 9.0f, 1.0f, -1, 60.0f, 0, 0, -1, 0);
                     }
-                    enqueue_callback_list_1(render_environment_mapped_object, m);
-                    moby_point_position(m, 1, &c);
-                    moby_point_position(m, 2, &d);
+                    enqueue_callback_list_1(render_environment_mapped_object, cutscene_moby);
+                    moby_point_position(cutscene_moby, 1, &c);
+                    moby_point_position(cutscene_moby, 2, &d);
                     subtract_vector_xyz(&c, &c, &a);
                     subtract_vector_xyz(&d, &d, &a);
                     scale_vector_xyz(&a, &a, 0.25f);
@@ -592,16 +600,21 @@ void mark_moby_for_removal(void *) __asm__("FUN_0020c828");
 
 void tall_shroom_update(TriggerMoby *obj) __asm__("FUN_L01_0030d0f0");
 void tall_shroom_update(TriggerMoby *obj) {
+    enum {
+        TALL_SHROOM_STATE_INITIALIZE = 0,
+        TALL_SHROOM_STATE_WAIT_FOR_HIT = 1,
+        TALL_SHROOM_STATE_REMOVE_WITH_EFFECTS = 2
+    };
     TriggerHit *hit;
     s32 flag;
 
     flag = 0;
     hit = find_moby_hit(obj, 0x10000, 0);
     switch (obj->state) {
-    case 0:
+    case TALL_SHROOM_STATE_INITIALIZE:
         obj->state = 1;
         break;
-    case 1:
+    case TALL_SHROOM_STATE_WAIT_FOR_HIT:
         if (hit != 0 && hit->f2c > 0.0f) {
             flag = 1;
         }
@@ -609,7 +622,7 @@ void tall_shroom_update(TriggerMoby *obj) {
             obj->state = 2;
         }
         break;
-    case 2:
+    case TALL_SHROOM_STATE_REMOVE_WITH_EFFECTS:
         allocate_voice_for_target_entry(0, 0, obj);
         FUN_L01_002787a0(obj);
         FUN_L00_00263fd8(obj, 0x717, obj->pos, obj->rot, 0, 0, &D_L01_0015F580, &D_L01_0015F580,
@@ -630,7 +643,7 @@ extern f32 fast_vec_dot(void *, void *) __asm__("FUN_001f9ab0");
 extern void fast_vec_scale(void *, void *, f32) __asm__("FUN_001f9a68");
 extern f32 fast_vec_length(void *) __asm__("FUN_001f9af0");
 
-void FUN_L01_0030ef18(s32 n, f32 (*normals)[3], f32 (*verts)[3], s32 unused, f32 (*uv)[2]) {
+void FUN_L01_0030ef18(s32 vertex_count, f32 (*normals)[3], f32 (*verts)[3], s32 unused, f32 (*uv)[2]) {
     EnvVec eye;
     EnvVec pos;
     EnvVec refl;
@@ -638,7 +651,7 @@ void FUN_L01_0030ef18(s32 n, f32 (*normals)[3], f32 (*verts)[3], s32 unused, f32
     s32 i;
     f32 len;
 
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < vertex_count; i++) {
         pos.w = 1.0f;
         pos.x = verts[i][0];
         pos.y = verts[i][1];
@@ -695,19 +708,23 @@ extern f32 frame_delta_time __asm__("D_0015ED7C");
 void FUN_L01_0030f0e0(void);
 void enqueue_callback_list_1(void *fn, void *arg) __asm__("FUN_001f4600");
 
-void FUN_L01_0030f208(ScrollMoby *m) {
-    f32 d;
+void FUN_L01_0030f208(ScrollMoby *moby) {
+    enum {
+        UV_SCROLL_STATE_INITIALIZE = 0,
+        UV_SCROLL_STATE_UPDATE_AND_QUEUE_DRAW = 1
+    };
+    f32 uv_scroll_delta;
 
-    switch (m->state) {
-    case 0:
+    switch (moby->state) {
+    case UV_SCROLL_STATE_INITIALIZE:
         D_L01_00162110[0] = 0.0f;
         D_L01_00162110[1] = 0.0f;
-        m->state = 1;
+        moby->state = 1;
         break;
-    case 1:
-        d = frame_delta_time * 0.025f;
-        D_L01_00162110[0] += d;
-        D_L01_00162110[1] += d;
+    case UV_SCROLL_STATE_UPDATE_AND_QUEUE_DRAW:
+        uv_scroll_delta = frame_delta_time * 0.025f;
+        D_L01_00162110[0] += uv_scroll_delta;
+        D_L01_00162110[1] += uv_scroll_delta;
         if (D_L01_00162110[0] > 1.0f) {
             D_L01_00162110[0] -= 1.0f;
         }
@@ -720,7 +737,7 @@ void FUN_L01_0030f208(ScrollMoby *m) {
         if (D_L01_00162110[1] < -1.0f) {
             D_L01_00162110[1] += 1.0f;
         }
-        enqueue_callback_list_1(FUN_L01_0030f0e0, m);
+        enqueue_callback_list_1(FUN_L01_0030f0e0, moby);
         break;
     }
 }

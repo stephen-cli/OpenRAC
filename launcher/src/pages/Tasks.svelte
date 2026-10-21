@@ -4,7 +4,7 @@
   // to copy and send us when something failed. With developer tools on this is Develop's console.
   import DevConsole from "$components/DevConsole.svelte";
   import Icon from "$components/Icon.svelte";
-  import { app, cancel, clearFinished, clock, jobs } from "$lib/app.svelte";
+  import { app, cancel, clearFinished, clock, jobs, toast } from "$lib/app.svelte";
   import { elapsed } from "$lib/format";
   import { isGame, phaseLabel, readProgress } from "$lib/progress";
   import type { Job } from "$lib/queue";
@@ -51,12 +51,18 @@
     }
     if (job.state === "succeeded") return did(job);
     if (job.state === "cancelled") return "Stopped before it finished.";
-    if (isGame(job)) return "The game stopped unexpectedly. Its page has a report you can send us.";
+    // The game ended by itself: it may have crashed, or it may have been closed. Its page says
+    // which, so this does not claim a crash.
+    if (isGame(job)) return "The game stopped. Its page has what happened.";
     return "It did not finish. Copy what it printed and send it to us on GitHub or Discord.";
   }
 
   async function copy(job: Job) {
-    await navigator.clipboard.writeText([`$ ${job.command}`, ...job.lines.map((l) => l.line)].join("\n"));
+    try {
+      await navigator.clipboard.writeText([`$ ${job.command}`, ...job.lines.map((l) => l.line)].join("\n"));
+    } catch {
+      toast("The output could not be copied: the browser would not give it to the clipboard.", "error");
+    }
   }
 </script>
 
@@ -72,7 +78,12 @@
 
     {#if !jobs.list.length}
       <section class="panel empty">
-        <p class="muted">Nothing has run yet. When the launcher sets a game up or builds it, what it did shows here.</p>
+        <Icon name="terminal" size={22} />
+        <div class="grow">
+          <h2>Nothing has run yet</h2>
+          <p>When the launcher sets a game up, builds it or starts it, what it did shows here.</p>
+        </div>
+        <button onclick={() => (app.page = "library")}><Icon name="library" size={16} />Your games</button>
       </section>
     {/if}
 
@@ -139,18 +150,41 @@
 {/if}
 
 <style>
+  .empty {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    color: var(--soft);
+  }
+
+  .empty h2 {
+    margin-bottom: 2px;
+    font-size: 1rem;
+  }
+
+  .empty p {
+    color: var(--body);
+    font-size: 0.875rem;
+  }
+
+  @media (max-width: 600px) {
+    .empty {
+      flex-wrap: wrap;
+    }
+  }
+
   .cut {
     margin: 6px 0 0;
-    font-size: 12px;
+    font-size: 0.75rem;
   }
 
   .page {
     max-width: 900px;
     margin: 0 auto;
-    padding: 28px 28px 60px;
+    padding: var(--page-top, 28px) var(--page-x, 28px) var(--page-bottom, 60px);
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: var(--page-gap, 14px);
   }
 
   .page.console {
@@ -224,12 +258,12 @@
 
   .line {
     margin: 0;
-    font-size: 13px;
+    font-size: 0.8125rem;
     color: var(--soft);
   }
 
   .time {
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -265,7 +299,7 @@
 
   summary {
     cursor: pointer;
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-weight: 600;
     color: var(--lav);
   }
@@ -275,7 +309,7 @@
   }
 
   .tools .mono {
-    font-size: 12px;
+    font-size: 0.75rem;
   }
 
   pre {
@@ -287,7 +321,7 @@
     border-radius: var(--radius-sm);
     padding: 10px 12px;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: 0.75rem;
     line-height: 1.5;
     color: var(--body);
     white-space: pre-wrap;

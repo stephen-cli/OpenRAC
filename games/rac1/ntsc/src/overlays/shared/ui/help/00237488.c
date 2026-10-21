@@ -16,23 +16,23 @@
 extern f32 approach_value(f32 *, f32, f32) __asm__("FUN_00213ed8");
 #include "rnc/data_labels.h"
 
-void FUN_L05_00237488(float *out, float *p, float step) {
+void FUN_L05_00237488(float *out, float *smoothed_values, float step) {
     char *g = (char *)((unsigned char *)&D_0013E533) + 0xE1D;
     float v[2];
     v[0] = -*(float *)(g + 0x1D20);
     v[1] = *(float *)(g + 0x1D24);
-    approach_value(p + 2, v[0], step);
-    if (p[2] > 1.0f)
-        p[2] = 1.0f;
-    if (p[2] < -1.0f)
-        p[2] = -1.0f;
-    out[0] = p[2];
-    approach_value(p + 1, v[1], step);
-    if (p[1] > 1.0f)
-        p[1] = 1.0f;
-    if (p[1] < -1.0f)
-        p[1] = -1.0f;
-    out[1] = p[1];
+    approach_value(smoothed_values + 2, v[0], step);
+    if (smoothed_values[2] > 1.0f)
+        smoothed_values[2] = 1.0f;
+    if (smoothed_values[2] < -1.0f)
+        smoothed_values[2] = -1.0f;
+    out[0] = smoothed_values[2];
+    approach_value(smoothed_values + 1, v[1], step);
+    if (smoothed_values[1] > 1.0f)
+        smoothed_values[1] = 1.0f;
+    if (smoothed_values[1] < -1.0f)
+        smoothed_values[1] = -1.0f;
+    out[1] = smoothed_values[1];
 }
 
 #include "sda.h"
@@ -565,9 +565,9 @@ int FUN_L05_002515d0(void) {
         }
         hero_get_collision_ray_endpoints(ray_start, ray_end, 0, scale, 1.3f);
         if (func_L00_001EFFF0(ray_start, ray_end, 2, *(int *)&u->moby, 0) != 0) {
-            int s = collision_hit_material();
-            u->ground_type = s;
-            if ((short)s == 0) {
+            int hit_material = collision_hit_material();
+            u->ground_type = hit_material;
+            if ((short)hit_material == 0) {
                 ray_start[2] = D_L05_00174268 - 0.01f;
                 if (func_L00_001EFFF0(ray_start, ray_end, 2, *(int *)&u->moby, 0) == 0) {
                     hero_set_state(0x34, 1);
@@ -646,6 +646,17 @@ extern int D_0015EEA4_macro __asm__("D_0015EEA4") __attribute__((section(".sdata
 extern int D_0015ED84_gp __asm__("D_0015ED84") __attribute__((section(".sdata")));
 
 int FUN_L05_00251be8(void) {
+    enum {
+        ITEM_WRENCH = 8,
+        ITEM_BUFFERED_SOUND_DEVICE = 10,
+        ITEM_TARGET_INTERACTION_DEVICE = 12,
+        ITEM_HELD_SOUND_DEVICE = 15,
+        ITEM_STATE_CHANGING_SOUND_DEVICE = 18,
+        ITEM_PRESS_ACTIVATED_DEVICE = 21,
+        ITEM_HERO_SOUND_REQUEST_DEVICE = 31,
+        ITEM_AMMO_MENU_DEVICE = 32,
+        ITEM_RACE_PROJECTILE = 36
+    };
     float joint_pos[4];
     int press_time0, press_time1, press_time2;
     int start_timer;
@@ -666,7 +677,7 @@ int FUN_L05_00251be8(void) {
     start_timer = (*(Hero *)((char *)&hero)).state_timer;
     mask = (*(Hero *)((char *)&hero)).items[0].button_mask;
     switch ((*(Hero *)((char *)&hero)).items[0].item_id) {
-    case 8:
+    case ITEM_WRENCH:
         if ((*(Hero *)((char *)&hero)).state.control_mode < 2U || ((*(Hero *)((char *)&hero)).state.control_mode == 4 && (*(Hero *)((char *)&hero)).unk418 != 0)) {
             Moby *item;
 
@@ -771,7 +782,7 @@ int FUN_L05_00251be8(void) {
             }
         }
         break;
-    case 12:
+    case ITEM_TARGET_INTERACTION_DEVICE:
         {
             int window;
 
@@ -804,7 +815,7 @@ int FUN_L05_00251be8(void) {
             }
         }
         break;
-    case 31:
+    case ITEM_HERO_SOUND_REQUEST_DEVICE:
         if ((*(Hero *)((char *)&hero)).vehicle_mode != 0) {
             break;
         }
@@ -827,14 +838,14 @@ int FUN_L05_00251be8(void) {
         (*(Hero *)((char *)&hero)).unk22DE = 0x12;
         (*(Hero *)((char *)&hero)).unk22DC = 1;
         break;
-    case 32:
+    case ITEM_AMMO_MENU_DEVICE:
         if ((*(Hero *)((char *)&hero)).state.control_mode < 3U || (*(Hero *)((char *)&hero)).state.control_mode == 4 || (*(Hero *)((char *)&hero)).state.control_mode == 5) {
             if (FUN_L00_00266d60(mask, scale_game_frames_alt(8), 0)) {
                 FUN_L00_0029a6b0(0);
             }
         }
         break;
-    case 15:
+    case ITEM_HELD_SOUND_DEVICE:
         if ((*(Hero *)((char *)&hero)).state.control_mode < 2U || (*(Hero *)((char *)&hero)).state.control_mode == 0xC || (*(Hero *)((char *)&hero)).state.control_mode == 2 || (*(Hero *)((char *)&hero)).state.control_mode == 4
             || (*(Hero *)((char *)&hero)).state.control_mode == 5 || (*(Hero *)((char *)&hero)).state.control_mode == 0xF || (*(Hero *)((char *)&hero)).state.current == 0x1E) {
             PVar_2523C8 *pv;
@@ -860,7 +871,7 @@ int FUN_L05_00251be8(void) {
             }
         }
         break;
-    case 10:
+    case ITEM_BUFFERED_SOUND_DEVICE:
     case 17:
     case 20:
     case 24:
@@ -893,7 +904,7 @@ int FUN_L05_00251be8(void) {
             }
         }
         break;
-    case 18:
+    case ITEM_STATE_CHANGING_SOUND_DEVICE:
         if ((*(Hero *)((char *)&hero)).state.control_mode < 2U || ((*(Hero *)((char *)&hero)).state.control_mode == 4 && (*(Hero *)((char *)&hero)).unk418 != 0)) {
             if ((*(Hero *)((char *)&hero)).state.current != 1) {
                 int window = scale_game_frames_alt(0xA);
@@ -910,14 +921,14 @@ int FUN_L05_00251be8(void) {
             }
         }
         break;
-    case 21:
+    case ITEM_PRESS_ACTIVATED_DEVICE:
         if (((Moby *)(*(Hero *)((char *)&hero)).items[0].moby) != 0) {
             if (D_0013CA40_p2523C8.pressed & mask) {
                 FUN_L00_0020e4c8();
             }
         }
         break;
-    case 36:
+    case ITEM_RACE_PROJECTILE:
         {
             Moby *item;
             Moby *best;
@@ -1072,15 +1083,15 @@ void FUN_L05_00253850(void) {
             k->unkA9C == 0 &&
             k->unkAB0 < ((unsigned char *)((char *)k->moby))[0x51] &&
             ((unsigned char *)((char *)k->moby))[0x51] < k->unkAB4) {
-            int t = k->unk888;
-            if (t > scale_game_frames(0x1E)) {
+            int animation_transition_frames = k->unk888;
+            if (animation_transition_frames > scale_game_frames(0x1E)) {
                 int x = FUN_L05_002551b8_c();
                 set_hero_animation(x, 9, (float)scale_game_frames(0x11));
             } else {
-                t = k->unk888;
-                if (t < scale_game_frames(0xA))
-                    t = scale_game_frames(0xA);
-                set_hero_animation(FUN_L05_002551b8_c(), 0xD, (float)t);
+                animation_transition_frames = k->unk888;
+                if (animation_transition_frames < scale_game_frames(0xA))
+                    animation_transition_frames = scale_game_frames(0xA);
+                set_hero_animation(FUN_L05_002551b8_c(), 0xD, (float)animation_transition_frames);
             }
         }
     }
@@ -1215,12 +1226,7 @@ void FUN_L05_00253b48(void) {
         }
     }
 }
-#ifndef NON_MATCHING
-INCLUDE_ASM("config/us/overlays/asm/FUN_L05_00254058.s", FUN_L05_00254058);
-#else
-extern u8 D_0013D388;
-extern f32 D_L05_002169F8[];
-extern f32 multiply_global_factor(f32) __asm__("FUN_001f96b0");
+/* Ported from rac1-decomp (src/overlays/shared/help_00237B00.c: func_L05_00254838), where it is exact; names translated to the US level program. */
 
 struct ScoreTable { f32 values[5]; };
 
@@ -1237,76 +1243,66 @@ struct HeroTally {
     s32 max_spins;        /* 0x70C */
     s32 spin_score;       /* 0x710 */
     s32 total_score;      /* 0x714 */
+    u8 pad718[0x190];
+    s32 active;           /* 0x8A8 */
 };
+
+extern struct ScoreTable D_L05_002169F8;
+extern float scale_time(float) __asm__("FUN_001f96b0");
+extern int D_0015ED84;
+extern int D_0015EEA4;
+extern u8 alternate_item_available[128] __asm__("D_0013D388");
 
 #define TALLY ((struct HeroTally *)&hero)
 
 void FUN_L05_00254058(void) {
-    struct UsageStats *stats;
-    s32 play_time;
-    s32 unit;
-    s32 i;
-    f32 spin;
-
-    if (D_0013D388 == 0) return;
-    if (hero.unk8A8 != 0) {
-        stats = &usage_stats;
-        if (stats->stat[30].count < 0xFFFF) {
-            stats->stat[30].count++;
-        }
-        play_time = scale_game_frames(D_0015EEA4_macro);
-        unit = 600;
-        if (play_time / unit > stats->stat[30].unk2) {
-            stats->stat[30].unk2 = scale_game_frames(D_0015EEA4_macro) / 600;
-        }
-        stats->stat[30].level_mask = stats->stat[30].level_mask | (1 << D_0015ED84_gp) | 0x80000000;
+    int i;
+    if (alternate_item_available[0] == 0) return;
+    if (TALLY->active != 0) {
+        struct UsageStats *stats = &usage_stats;
+        if (stats->stat[30].count < 0xFFFF) stats->stat[30].count++;
+        if (scale_game_frames(D_0015EEA4) / 600 > stats->stat[30].unk2)
+            stats->stat[30].unk2 = scale_game_frames(D_0015EEA4) / 600;
+        stats->stat[30].level_mask = stats->stat[30].level_mask | (1 << D_0015ED84) | 0x80000000;
     }
     for (i = 0; i < 3; i++) {
-        if (absolute_float(TALLY->spin[i]) > 3.3161256f) {
-            s32 count = TALLY->spin_count[i];
-            spin = TALLY->spin[i];
-            if (0.0f < spin) spin -= 6.2831855f;
-            else spin += 6.2831855f;
-            TALLY->spin[i] = spin;
-            TALLY->spin_count[i] = count + 1;
-        }
-    }
-    {
-        TALLY->max_spins = 0;
-        for (i = 0; i < 3; i++) {
-            if (TALLY->max_spins < TALLY->spin_count[i]) TALLY->max_spins = TALLY->spin_count[i];
-        }
-    }
-    {
-        s32 step = 100;
-        s32 n = TALLY->max_spins;
-        TALLY->spin_score = 0;
-        if (n > 0) {
-            s32 total = 0;
-            for (i = 0; i < n; i++) {
-                total += step;
-                step += 50;
+        float *spin = &TALLY->spin[i];
+        if (absolute_float(*spin) > 3.3161256f) {
+            float value = *spin;
+            if (value > 0.0f) {
+                *spin = value - 6.2831855f;
+                TALLY->spin_count[i]++;
+            } else {
+                *spin = value + 6.2831855f;
+                TALLY->spin_count[i]++;
             }
-            TALLY->spin_score = total;
         }
     }
-    {
-        TALLY->flag_count = 0;
-        for (i = 0; i < 4; i++) {
-            if (TALLY->flags[i] != 0) TALLY->flag_count++;
-        }
+    TALLY->max_spins = 0;
+    for (i = 0; i < 3; i++) {
+        if (TALLY->max_spins < TALLY->spin_count[i]) TALLY->max_spins = TALLY->spin_count[i];
     }
     {
-        struct ScoreTable table = *(struct ScoreTable *)D_L05_002169F8;
+        int step = 100;
+        TALLY->spin_score = 0;
+        for (i = 0; i < TALLY->max_spins; i++) {
+            TALLY->spin_score += step;
+            step += 50;
+        }
+    }
+    TALLY->flag_count = 0;
+    for (i = 0; i < 4; i++) {
+        if (TALLY->flags[i] != 0) TALLY->flag_count++;
+    }
+    {
+        struct ScoreTable table = D_L05_002169F8;
         TALLY->rank_scale = table.values[TALLY->flag_count];
-        TALLY->score = truncate_float_to_s32((f32)((TALLY->time_score_base * 100) / (s32)(multiply_global_factor(1.0f) * 60.0f)));
+        TALLY->score = truncate_float_to_s32((float)((TALLY->time_score_base * 100) / (int)(scale_time(1.0f) * 60.0f)));
         TALLY->score += TALLY->flag_count * 25;
-        TALLY->score = truncate_float_to_s32((f32)TALLY->score * TALLY->rank_scale);
+        TALLY->score = truncate_float_to_s32((float)TALLY->score * TALLY->rank_scale);
         TALLY->total_score = TALLY->spin_score + TALLY->score;
     }
 }
-#undef TALLY
-#endif
 /* Finds the nearest path node ahead of the hero (behind the facing test) and returns its position and heading. */
 /* Ported from rac1-decomp (src/overlays/shared/help_00237B00.c: func_L05_00254B38), where it is exact; names translated to the US level program. */
 
@@ -1337,32 +1333,32 @@ void FUN_L05_00254358(float *out, float *rot) {
     distance = 9999999.0f;
     best = 0;
     for (i = 0; i < *(int *)path; i += 2) {
-            char *h = (char *)((char *)((char *)&hero));
-            char *p = path + i * 16;
+            char *hero_bytes = (char *)((char *)((char *)&hero));
+            char *candidate_path_record = path + i * 16;
             float limit = 4.0f;
-            float angle = fast_arc_tan_c(*(float *)(p + 0x10) - *(float *)(h + 0x80), *(float *)(p + 0x14) - *(float *)(h + 0x84));
+            float angle = fast_arc_tan_c(*(float *)(candidate_path_record + 0x10) - *(float *)(hero_bytes + 0x80), *(float *)(candidate_path_record + 0x14) - *(float *)(hero_bytes + 0x84));
             int n2 = *(int *)path + 2;
             int next = (i + n2) % *(int *)path;
-            char *q = path + next * 16;
-            if (fast_difference_between_rotations(angle, fast_arc_tan_c(*(float *)(q + 0x10) - *(float *)(p + 0x10), *(float *)(q + 0x14) - *(float *)(p + 0x14))) > 1.5707964f) {
-                float d;
-                if (D_0015ED84_gp == 0x10 && *(char **)(h + 0x8B4) != 0) {
-                    char *verts = *(char **)(h + 0x8B4);
-                    char *first_height_sample_point = verts + *(short *)(h + 0x8C8) * 16;
-                    char *second_height_sample_point = verts + *(short *)(h + 0x898) * 16;
+            char *lookahead_path_record = path + next * 16;
+            if (fast_difference_between_rotations(angle, fast_arc_tan_c(*(float *)(lookahead_path_record + 0x10) - *(float *)(candidate_path_record + 0x10), *(float *)(lookahead_path_record + 0x14) - *(float *)(candidate_path_record + 0x14))) > 1.5707964f) {
+                float candidate_distance_xy;
+                if (D_0015ED84_gp == 0x10 && *(char **)(hero_bytes + 0x8B4) != 0) {
+                    char *verts = *(char **)(hero_bytes + 0x8B4);
+                    char *first_height_sample_point = verts + *(short *)(hero_bytes + 0x8C8) * 16;
+                    char *second_height_sample_point = verts + *(short *)(hero_bytes + 0x898) * 16;
                     float z1 = *(float *)(first_height_sample_point + 0x18);
                     float z2 = *(float *)(second_height_sample_point + 0x18);
                     if (z1 < z2) {
-                        if (absolute_float_c(z2 - *(float *)(p + 0x18)) > limit)
+                        if (absolute_float_c(z2 - *(float *)(candidate_path_record + 0x18)) > limit)
                             goto next_point;
                     } else {
-                        if (absolute_float_c(z1 - *(float *)(p + 0x18)) > limit)
+                        if (absolute_float_c(z1 - *(float *)(candidate_path_record + 0x18)) > limit)
                             goto next_point;
                     }
                 }
-                d = vector_distance_xy_alt(((char *)&D_0013F3D0), path + i * 16 + 0x10);
-                if (d < distance) {
-                    distance = d;
+                candidate_distance_xy = vector_distance_xy_alt(((char *)&D_0013F3D0), path + i * 16 + 0x10);
+                if (candidate_distance_xy < distance) {
+                    distance = candidate_distance_xy;
                     best = i;
                 }
             }
@@ -1374,9 +1370,9 @@ void FUN_L05_00254358(float *out, float *rot) {
     out[2] = probe_ground_height(tmp, 0, 0.5f);
     clear_u64_value(rot);
     {
-        float *a = (float *)(path + best * 16);
+        float *selected_path_record = (float *)(path + best * 16);
         float *b = (float *)(path + (best + 1) * 16);
-        rot[2] = fast_arc_tan_c(b[4] - a[4], b[5] - a[5]);
+        rot[2] = fast_arc_tan_c(b[4] - selected_path_record[4], b[5] - selected_path_record[5]);
     }
 }
 extern int D_0015ED84_lui __asm__("D_0015ED84") __attribute__((section(".sdata")));
@@ -1667,9 +1663,9 @@ int FUN_L05_002551b8(void) {
     return r;
 }
 int FUN_L05_002551d0(void) {
-    struct Hero *p = &hero;
-    int f = p->unk8CE;
-    if (p->unk884 == 0) {
+    struct Hero *hero_ptr = &hero;
+    int f = hero_ptr->unk8CE;
+    if (hero_ptr->unk884 == 0) {
         int r = 0x7D;
         if (f == 0)
             r = 0x52;
@@ -1788,7 +1784,7 @@ change_state:
     return 1;
 continue_fall:
     if (D_0013D388_254608[0]) {
-        if (current_level_index == 5 && (&hero)->unk6E0[4] == 4 && *(int *)((char *)&hero + 0x70C) > 3 && D_0013D408_254608[7] == 0) {
+        if (current_level_index == 5 && (&hero)->unk6E0[4] == 4 && (&hero)->unk70C > 3 && D_0013D408_254608[7] == 0) {
             D_0013D408_254608[7] = 1;
             allocate_voice_for_bank_entry_254608(1, 0, 0);
             queue_dialogue_message_254608(0x53D6, -1);

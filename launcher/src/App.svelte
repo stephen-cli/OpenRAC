@@ -2,6 +2,7 @@
   import Header from "$components/Header.svelte";
   import Toasts from "$components/Toasts.svelte";
   import UpdateModal from "$components/UpdateModal.svelte";
+  import { errorText, onAndroid } from "$lib/api";
   import { app, openDevelop, refresh, start, updateDiscordPresence, type Page } from "$lib/app.svelte";
   import Game from "./pages/Game.svelte";
   import Library from "./pages/Library.svelte";
@@ -33,6 +34,15 @@
     document.documentElement.dataset.layout = app.config?.layout ?? "compact";
   });
 
+  // Another page starts at its top, as it arrives (app.css: its sections rise in turn).
+  let view = $state<HTMLElement | null>(null);
+  let shown: Page | null = null;
+  $effect(() => {
+    if (app.page === shown) return;
+    shown = app.page;
+    view?.scrollTo({ top: 0 });
+  });
+
   $effect(() => {
     // With developer tools on, what the launcher ran is Develop's console (a game's menu still
     // asks for Activity).
@@ -48,18 +58,23 @@
     // ?page=tasks (and ?version=rac1/pal) open a page directly: handy for screenshots.
     // ?page=develop opens Develop on ?version, or on ?develop=checkout|console.
     const params = new URLSearchParams(location.search);
-    void start().then(() => {
-      const version = params.get("version");
-      if (version) {
-        app.version = version;
-        app.page = "game";
-      }
-      const page = params.get("page") as Page | null;
-      if (page === "develop") openDevelop(params.get("develop") ?? version ?? undefined);
-      else if (page) app.page = page;
-      // ?update&modal=update: the update window open on the preview's update (mock.ts).
-      if (params.get("modal") === "update") app.showUpdateModal = true;
-    });
+    void start()
+      .then(() => {
+        const version = params.get("version");
+        if (version) {
+          app.version = version;
+          app.page = "game";
+        }
+        const page = params.get("page") as Page | null;
+        if (page === "develop") openDevelop(params.get("develop") ?? version ?? undefined);
+        else if (page) app.page = page;
+        // ?update&modal=update: the update window open on the preview's update (mock.ts).
+        if (params.get("modal") === "update") app.showUpdateModal = true;
+      })
+      .catch((e: unknown) => {
+        // start() says what went wrong itself; this is the last word for anything else.
+        app.startError = errorText(e);
+      });
     // Pick up what changed outside the launcher (a build in a terminal, a new disc).
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
@@ -70,11 +85,20 @@
 </script>
 
 {#if !app.config}
-  <div class="loading"><span class="spinner"></span></div>
+  <div class="loading">
+    {#if app.startError}
+      <p>The launcher could not start: {app.startError}</p>
+      <button class="primary" onclick={() => void start()}>Try again</button>
+    {:else}
+      <span class="spinner"></span>
+      {#if app.preparing}<p>Preparing OpenRAC's tools. This happens once after installing or updating.</p>{/if}
+    {/if}
+  </div>
 {:else}
   <div class="shell">
-    {#if app.config.setupComplete}<Header />{/if}
-    <main>
+    <!-- The first run has the bar with only the name (Android's rail is only its tabs). -->
+    {#if app.config.setupComplete}<Header />{:else if !onAndroid}<Header setup />{/if}
+    <main bind:this={view}>
       {#if !app.config.setupComplete}<Settings setup />
       {:else if app.page === "game"}<Game />
       {:else if app.page === "mods"}{#await modsPage() then page}<page.default />{/await}
@@ -94,13 +118,36 @@
     height: 100%;
     display: grid;
     place-items: center;
+    place-content: center;
+    gap: 16px;
+    padding: 0 24px;
+    text-align: center;
     color: var(--amber);
+  }
+
+  .loading p {
+    margin: 0;
+    color: var(--dim);
   }
 
   .shell {
     height: 100%;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Android: the navigation rail beside the page, or its bar under it on a narrow window
+     (Header.svelte). */
+  :global(html[data-platform="android"]) .shell {
+    flex-direction: row;
+    /* Nothing beside the page scrolls the window: no strip of the background under the rail. */
+    overflow: hidden;
+  }
+
+  @media (max-width: 599px) {
+    :global(html[data-platform="android"]) .shell {
+      flex-direction: column-reverse;
+    }
   }
 
   /* A page scrolls down, never sideways: what is wider than the window is the page's to fit. */

@@ -180,7 +180,17 @@ actions, as rac1/pal has on Windows:
   machine has where the decompilation's assembly files are not.
   On Windows it sets up Visual Studio's environment itself and finds Clang
   and Ninja, so a player never types a compiler's command. The game page
-  offers it in place of Play until the game is built, and as Rebuild after.
+  offers it in place of Play until the game is built. Each build that
+  succeeds leaves `openrac-build.json` in `port/build/release`: the OpenRAC
+  version and commit it built, and its games.
+- `port-rebuild`, "Rebuild the game from scratch": the same with `--clean`,
+  which deletes the build folder first and keeps the `--source` and `--disc`
+  it held. The game page's Rebuild the game runs it, and so does Rebuild now
+  in the notice the page shows when the game is outdated: built by another
+  OpenRAC version than the stamp records, or at a commit before a change to
+  what the game is built from (`port/`, `games/<game>/`, the build's own
+  files: git decides, [port_build.rs](../core/src/port_build.rs)). The notice
+  only recommends: Play never builds a game that is built.
 - `port-levels`: `editor/extract.py port {disc} assets/port/rac1/pal`, the
   levels in the form the port draws (the worlds behind the menus too). Half
   a minute, once. Building runs it after the build the first time, and the
@@ -189,6 +199,18 @@ actions, as rac1/pal has on Windows:
 {root}/assets/port/rac1/pal`, as OpenGOAL's launcher starts `gk`. It `needs`
   the levels: an action's `needs` lists files an earlier step makes, and it
   stays blocked, naming that step, until they exist.
+
+A `play` action also gets the environment Settings asks for
+(`core/src/actions.rs`, `Action::plan`): `OPENRAC_DEVELOPER=1` with developer
+tools on, `OPENRAC_LOG=verbose` with Detailed game logs, and, on Windows,
+Linux and macOS with Renderer set to Vulkan (Advanced, `Config.renderer`),
+`OPENRAC_GL_API=vulkan`: the port's experimental Vulkan renderer
+(`port/renderer/vulkan`) in place of OpenGL 4.1. Where Vulkan 1.3 cannot
+start, or the build has no Vulkan renderer, the game logs why and draws with
+OpenGL (`port/platform/window.cpp`). It applies from the game's next start.
+On macOS it runs on MoltenVK, which each game's application bundle carries
+(`port/cmake/MacApp.cmake`). Android keeps its own choice under Graphics
+(`src-tauri/src/android.rs`).
 
 Each version's levels have a folder of their own under one root, since the
 versions of a game share its data folder: `assets/port/<game>/<version>` in a

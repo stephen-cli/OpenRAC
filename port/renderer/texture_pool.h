@@ -80,6 +80,12 @@ public:
     void place(std::uint32_t tbp, TextureHandle texture);
     void clear_placements();
 
+    // A TEX0 with CLD set has loaded the CLUT at its CBP into the chip's CLUT buffer: the draws
+    // after it read their palette from what was there then, even after the game puts something
+    // else at that block (cld: 1 to 3 always load, 4 and 5 when CBP differs from CBP0 or CBP1,
+    // which the caller decides).
+    void load_clut(const gs::Tex0& tex0);
+
     // ---- What a draw samples ----
 
     // The texture TEX0 describes, converted with TEXA. Never 0: when nothing
@@ -106,7 +112,7 @@ public:
     // Delete every GL texture (before the context goes away).
     void release_gl();
 
-    // Once per frame: forget conversions of game uploads that no draw has
+    // Once per frame: forget conversions of game uploads, and distance fields, that no draw has
     // used for kKeepFrames frames.
     void end_frame();
 
@@ -132,11 +138,30 @@ private:
     struct Stored {
         ImageUpload upload;
         std::uint64_t hash = 0;
+        std::uint64_t sequence = 0;  // uploads in order: the later of two over one block is there
+        std::uint32_t end = 0;       // past the last block its pages reach
     };
+
+    // A CLUT as loaded into the chip's buffer: its rectangle in its format.
+    struct Clut {
+        std::vector<std::uint8_t> data;
+        std::uint8_t cpsm = 0;
+        int width = 0;
+        int entries = 0;
+        std::uint64_t hash = 0;
+    };
+
+    // The upload a texture or CLUT at `block` is in: the one there, else the latest whose pages
+    // reach over it (`offset` says how far into it, in blocks). Null when there is none.
+    const Stored* upload_at(std::uint32_t block, std::uint32_t& offset) const;
+    // The CLUT at tex0.cbp as it is in memory now; false when nothing was put there.
+    bool clut_in_memory(const gs::Tex0& tex0, Clut& out) const;
 
     struct Entry {
         bool live = false;
         bool from_upload = false;  // converted from game uploads: may be dropped
+        bool field = false;        // a distance field (distance_field): may be dropped as well
+        std::uint64_t field_hash = 0;  // its key in m_distance_fields
         bool mipmaps = false;
         bool linear = false;
         Rgba8Image image;
@@ -158,6 +183,8 @@ private:
     float m_anisotropy = 1.0f;
     std::vector<TextureHandle> m_free;
     std::unordered_map<std::uint32_t, Stored> m_uploads;        // by base pointer
+    std::uint64_t m_sequence = 0;
+    std::unordered_map<std::uint32_t, Clut> m_cluts;            // loaded, by CBP (load_clut)
     std::unordered_map<std::uint32_t, TextureHandle> m_placed;  // by base pointer
     std::unordered_map<Key, TextureHandle, KeyHash> m_converted;
     TextureHandle m_placeholder = 0;

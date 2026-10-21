@@ -52,7 +52,8 @@ uint32_t openrac_stream_play(uint32_t sector, int32_t volume, int32_t group, uin
                              uint32_t flags);
 int openrac_stream_live(uint32_t stream);
 int openrac_stream_buffered(uint32_t stream);
-/* Milliseconds left in the part playing (a loop: in this pass), 0 once ended. */
+/* Milliseconds left in the part playing (a loop: in this pass), 0 once ended; while the part is
+ * still being decoded, its whole length from the VAG header. */
 int32_t openrac_stream_remaining_ms(uint32_t stream);
 void openrac_stream_stop(uint32_t stream); /* 0: every stream */
 void openrac_stream_pause(uint32_t stream, int paused);
@@ -64,6 +65,11 @@ void openrac_sound_render(int16_t* interleaved, size_t frames);
 /* Nonzero: a stream's file is read before openrac_stream_play returns, not on a thread of its own,
  * so it is ready at the same tick on every run (OPENRAC_AUDIO_TICKED, main.cpp). */
 void openrac_stream_read_at_once(int at_once);
+
+/* Stops the threads reading a track and waits for them: called before the program exits, so that
+ * the globals the readers use are not taken away under them (a crash at quit, when the player
+ * closed the window while a track was being read). */
+void openrac_sound_stop_readers(void);
 
 #ifdef __cplusplus
 }

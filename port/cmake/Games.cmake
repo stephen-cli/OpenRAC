@@ -16,6 +16,7 @@
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 include(MacApp)
+include(Differences)
 
 # hostgen uses every core itself: one game's translation at a time (Ninja).
 set_property(GLOBAL APPEND PROPERTY JOB_POOLS openrac_hostgen=1)
@@ -47,6 +48,13 @@ if(TARGET openrac_assets_geometry)
   target_link_libraries(openrac_game_common PUBLIC openrac_assets_geometry)
 endif()
 target_compile_options(openrac_game_common PRIVATE ${OPENRAC_GAME_C_FLAGS} -Wall -Wextra)
+
+# The VAG streams of the sound engine, on a disc image the test writes.
+add_executable(sound_engine_test "${CMAKE_CURRENT_LIST_DIR}/../tests/sound_engine_test.cpp")
+target_include_directories(sound_engine_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/..")
+target_link_libraries(sound_engine_test PRIVATE openrac_game_common)
+openrac_warnings(sound_engine_test)
+add_test(NAME sound_engine COMMAND sound_engine_test)
 
 function(openrac_add_game config)
   file(READ "${config}" json)
@@ -100,7 +108,26 @@ function(openrac_add_game config)
   file(GLOB_RECURSE inputs CONFIGURE_DEPENDS
     "${game_source}/src/*.c" "${game_source}/src/*.h" "${game_source}/include/*.h"
     "${game_source}/candidates/*.c" "${game_source}/nonmatching/*.tsv" "${game_source}/nonmatching/*.c")
-  # The decompilation's own tables that hostgen.json names ("places", "symbols").
+  # The decompilation's own tables that hostgen.json names.
+  string(JSON catalogue_count ERROR_VARIABLE no_catalogues LENGTH "${json}" catalogues)
+  if(NOT no_catalogues AND catalogue_count GREATER 0)
+    math(EXPR last "${catalogue_count} - 1")
+    foreach(i RANGE ${last})
+      string(JSON catalogue GET "${json}" catalogues ${i})
+      list(APPEND inputs "${game_source}/${catalogue}")
+    endforeach()
+  endif()
+  # Alias tables ("aliases"): headers, or a build's table of derived values outside include/.
+  string(JSON alias_count ERROR_VARIABLE no_aliases LENGTH "${json}" aliases)
+  if(NOT no_aliases AND alias_count GREATER 0)
+    math(EXPR last "${alias_count} - 1")
+    foreach(i RANGE ${last})
+      string(JSON alias_table GET "${json}" aliases ${i})
+      if(EXISTS "${game_source}/${alias_table}")
+        list(APPEND inputs "${game_source}/${alias_table}")
+      endif()
+    endforeach()
+  endif()
   string(JSON places ERROR_VARIABLE no_places GET "${json}" places)
   if(NOT no_places AND EXISTS "${game_source}/${places}")
     list(APPEND inputs "${game_source}/${places}")
@@ -114,6 +141,12 @@ function(openrac_add_game config)
         list(APPEND inputs "${game_source}/${symbols}")
       endif()
     endforeach()
+  endif()
+  # The names the decompilation's build derives ("derived"): its build's table when that checkout
+  # was built (the port's copy beside hostgen.json is among the tables below).
+  string(JSON derived_build ERROR_VARIABLE no_derived GET "${json}" derived build)
+  if(NOT no_derived AND EXISTS "${game_source}/${derived_build}")
+    list(APPEND inputs "${game_source}/${derived_build}")
   endif()
   # The assembly the game's setup wrote (hostgen.json "asm", when enabled): functions with no C are
   # translated from it (asmc.py), so hostgen runs again when it changes. Missing directories (no
@@ -172,6 +205,10 @@ function(openrac_add_game config)
     JOB_POOL openrac_hostgen
     VERBATIM)
   add_custom_target(openrac_${target_id}_hostgen DEPENDS "${gen}/hostgen.stamp")
+  # Every call through a known code address passes its arguments as the function there takes them,
+  # by position (Windows x64) as well as by kind (tools/hostgen/abicheck.py).
+  add_test(NAME ${id}_call_abi COMMAND "${Python3_EXECUTABLE}" "${hostgen_dir}/abicheck.py" "${gen}")
+  set_tests_properties(${id}_call_abi PROPERTIES SKIP_RETURN_CODE 77)
 
   # The game: generated C, and the game's own host C if it has any.
   file(GLOB host CONFIGURE_DEPENDS "${config_dir}/host/*.c")
@@ -204,51 +241,81 @@ function(openrac_add_game config)
     set_source_files_properties(${host} PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
   endif()
 
-  add_executable(openrac-${id} "${OPENRAC_GAME_DIR}/common/main.cpp")
-  target_link_libraries(openrac-${id} PRIVATE openrac_${target_id}_game openrac_runtime)
-  # The window: the renderer draws what the game holds in memory (game/common/frontend.h).
-  if(TARGET openrac_viewer_lib AND TARGET openrac_platform)
-    target_sources(openrac-${id} PRIVATE "${OPENRAC_GAME_DIR}/common/frontend.cpp"
-                                         "${OPENRAC_GAME_DIR}/common/debug_menu.cpp"
-                                         "${OPENRAC_GAME_DIR}/common/debug_overlay.cpp"
-                                         "${OPENRAC_GAME_DIR}/common/fps_counter.cpp"
-                                         "${OPENRAC_GAME_DIR}/common/options_menu.cpp"
-                                         "${OPENRAC_GAME_DIR}/common/settings.cpp")
-    target_link_libraries(openrac-${id} PRIVATE openrac_viewer_lib openrac_platform openrac_imgui)
-    # The debug overlay's moby class names: the editor's table, as text.
-    openrac_moby_class_names(names_cpp)
-    target_sources(openrac-${id} PRIVATE "${names_cpp}")
-    target_compile_definitions(openrac-${id} PRIVATE OPENRAC_FRONTEND=1)
-    # The window's icon: the game's own or the launcher's, embedded as PNG bytes.
-    openrac_window_icon("${config_dir}" "${target_id}" icon_c)
-    target_sources(openrac-${id} PRIVATE "${icon_c}")
-    # The game's name as players see it, in the window's title and on macOS its bundle's name
-    # (cmake/MacApp.cmake): the title in its catalogue entry (games/<game>/game.json) and the
-    # version's video standard, "Ratchet & Clank (PAL)", "Ratchet & Clank (NTSC)".
-    string(JSON game GET "${json}" game)
-    string(REGEX REPLACE "^${game}-" "" version "${id}")
-    cmake_path(SET catalogue NORMALIZE "${OPENRAC_REPO_DIR}/games/${game}/game.json")
-    file(READ "${catalogue}" catalogue_json)
-    string(JSON title GET "${catalogue_json}" title)
-    string(JSON video ERROR_VARIABLE no_video GET "${catalogue_json}" versions "${version}" disc video)
-    if(NOT no_video)
-      set(title "${title} (${video})")
-    endif()
-    set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${catalogue}")
-    target_compile_definitions(openrac-${id} PRIVATE "OPENRAC_GAME_TITLE=\"${title}\"")
-    if(APPLE)
-      set(icon "${config_dir}/icon-macos.png")
-      if(NOT EXISTS "${icon}")
-        set(icon "${PROJECT_SOURCE_DIR}/../launcher/src-tauri/icons/icon.icns")
-      endif()
-      openrac_macos_app(openrac-${id} NAME "${title}" ID "dev.openrac.${id}" ICON "${icon}")
-    endif()
-    if(TARGET openrac_media)
-      target_link_libraries(openrac-${id} PRIVATE openrac_media)
-      target_compile_definitions(openrac-${id} PRIVATE OPENRAC_MOVIES=1)
-    endif()
+  # On Android the game is the library SDL's activity loads and whose main it calls
+  # (libopenrac-<id>.so), and the same program again as an executable the launcher runs for what
+  # needs no window (--check-levels). Android runs programs only from the app's library folder,
+  # so that one is named like a library too: libopenrac-<id>-cli.so (docs/port/ANDROID.md).
+  if(ANDROID)
+    add_library(openrac-${id} SHARED "${OPENRAC_GAME_DIR}/common/main.cpp")
+    target_compile_definitions(openrac-${id} PRIVATE OPENRAC_ANDROID_ACTIVITY=1)
+    # Its calls to its own functions bound inside it, as in a program (cmake/Android.cmake).
+    target_link_options(openrac-${id} PRIVATE LINKER:-Bsymbolic-functions)
+    add_executable(openrac-${id}-cli "${OPENRAC_GAME_DIR}/common/main.cpp")
+    # It finds libSDL3.so and libc++_shared.so beside it, in the same folder.
+    set_target_properties(openrac-${id}-cli PROPERTIES OUTPUT_NAME "libopenrac-${id}-cli.so"
+                                                     BUILD_RPATH "\$ORIGIN")
+    set(targets openrac-${id} openrac-${id}-cli)
+  else()
+    add_executable(openrac-${id} "${OPENRAC_GAME_DIR}/common/main.cpp")
+    set(targets openrac-${id})
   endif()
-  openrac_warnings(openrac-${id})
+  # The game fixes of this disc (cmake/Differences.cmake), which the game's host C reads through
+  # openrac_game_fix: in every program, with a window or without.
+  string(JSON game GET "${json}" game)
+  string(REGEX REPLACE "^${game}-" "" version "${id}")
+  set(fixes_cpp "${CMAKE_BINARY_DIR}/generated/openrac_fixes_${target_id}.cpp")
+  openrac_write_fixes("${game}" "${version}" "${fixes_cpp}")
+  foreach(target IN LISTS targets)
+    target_link_libraries(${target} PRIVATE openrac_${target_id}_game openrac_runtime)
+    target_sources(${target} PRIVATE "${OPENRAC_GAME_DIR}/common/fixes.cpp" "${fixes_cpp}")
+    target_include_directories(${target} PRIVATE "${OPENRAC_GAME_DIR}/common")
+    if(MINGW)
+      target_link_libraries(${target} PRIVATE winmm)
+    endif()
+    # The window: the renderer draws what the game holds in memory (game/common/frontend.h).
+    if(TARGET openrac_viewer_lib AND TARGET openrac_platform)
+      target_sources(${target} PRIVATE "${OPENRAC_GAME_DIR}/common/frontend.cpp"
+                                       "${OPENRAC_GAME_DIR}/common/debug_menu.cpp"
+                                       "${OPENRAC_GAME_DIR}/common/debug_overlay.cpp"
+                                       "${OPENRAC_GAME_DIR}/common/fps_counter.cpp"
+                                       "${OPENRAC_GAME_DIR}/common/imgui_gl.cpp"
+                                       "${OPENRAC_GAME_DIR}/common/options_menu.cpp"
+                                       "${OPENRAC_GAME_DIR}/common/settings.cpp"
+                                       "${OPENRAC_GAME_DIR}/common/touch_overlay.cpp")
+      target_link_libraries(${target} PRIVATE openrac_viewer_lib openrac_platform openrac_imgui)
+      # The debug overlay's moby class names: the editor's table, as text.
+      openrac_moby_class_names(names_cpp)
+      target_sources(${target} PRIVATE "${names_cpp}")
+      target_compile_definitions(${target} PRIVATE OPENRAC_FRONTEND=1)
+      # The window's icon: the game's own or the launcher's, embedded as PNG bytes.
+      openrac_window_icon("${config_dir}" "${target_id}" icon_c)
+      target_sources(${target} PRIVATE "${icon_c}")
+      # The game's name as players see it, in the window's title and on macOS its bundle's name
+      # (cmake/MacApp.cmake): the title in its catalogue entry (games/<game>/game.json) and the
+      # version's video standard, "Ratchet & Clank (PAL)", "Ratchet & Clank (NTSC)".
+      cmake_path(SET catalogue NORMALIZE "${OPENRAC_REPO_DIR}/games/${game}/game.json")
+      file(READ "${catalogue}" catalogue_json)
+      string(JSON title GET "${catalogue_json}" title)
+      string(JSON video ERROR_VARIABLE no_video GET "${catalogue_json}" versions "${version}" disc video)
+      if(NOT no_video)
+        set(title "${title} (${video})")
+      endif()
+      set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${catalogue}")
+      target_compile_definitions(${target} PRIVATE "OPENRAC_GAME_TITLE=\"${title}\"")
+      if(APPLE)
+        set(icon "${config_dir}/icon-macos.png")
+        if(NOT EXISTS "${icon}")
+          set(icon "${PROJECT_SOURCE_DIR}/../launcher/src-tauri/icons/icon.icns")
+        endif()
+        openrac_macos_app(${target} NAME "${title}" ID "dev.openrac.${id}" ICON "${icon}")
+      endif()
+      if(TARGET openrac_media)
+        target_link_libraries(${target} PRIVATE openrac_media)
+        target_compile_definitions(${target} PRIVATE OPENRAC_MOVIES=1)
+      endif()
+    endif()
+    openrac_warnings(${target})
+  endforeach()
 endfunction()
 
 # The window's icon as a C array (openrac_icon_png, openrac_icon_png_size): the game's icon if

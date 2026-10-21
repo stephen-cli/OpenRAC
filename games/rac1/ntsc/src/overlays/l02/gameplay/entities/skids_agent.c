@@ -126,6 +126,14 @@ extern void FUN_L00_00250df8(void *);
  * record 50), a path-camera ride (3/4) that fades D_L02_0015F3FC in and out, then the shared head-tracking tail. */
 void skids_agent_update(struct Moby *moby) __asm__("FUN_L02_002e0dc0");
 void skids_agent_update(struct Moby *moby) {
+    enum {
+        SKIDS_AGENT_INITIALIZE = 0,
+        SKIDS_AGENT_IDLE_AND_TALK = 1,
+        SKIDS_AGENT_CONVERSATION_ACTIVE = 2,
+        SKIDS_AGENT_INTERPOLATE_TRANSFORM_AND_FADE = 3,
+        SKIDS_AGENT_FADE_TO_ZERO_AND_DELETE = 4,
+        SKIDS_AGENT_END_CONVERSATION = 5
+    };
     char *data = (char *)moby->pvars;
     s32 t;
     f32 fade;
@@ -133,7 +141,7 @@ void skids_agent_update(struct Moby *moby) {
 
     FUN_L02_002e0cd8(moby);
     switch (moby->state) {
-    case 0:
+    case SKIDS_AGENT_INITIALIZE:
         if (items_owned[0x2D] != 0) {
             goto kill;
         }
@@ -148,7 +156,7 @@ void skids_agent_update(struct Moby *moby) {
         (*(struct Moby **)(data + 0x178))->spawn_frame = moby->spawn_frame;
         (*(struct Moby **)(data + 0x178))->flags |= 0x100;
         break;
-    case 1:
+    case SKIDS_AGENT_IDLE_AND_TALK:
         if (*(u8 *)(data + 8) == 1 && point_in_clip_volume(&hero.motion.pos, *(s32 *)(data + 0x154)) != 0) {
             *(f32 *)(data + 0xC) = 255.0f;
         } else {
@@ -186,7 +194,7 @@ void skids_agent_update(struct Moby *moby) {
             blend_anim(moby, 0, 0, scale_frames(10));
         }
         break;
-    case 2:
+    case SKIDS_AGENT_CONVERSATION_ACTIVE:
         if (level_game_mode != 2) {
             moby->state = 1;
             if (*(s16 *)(data + 4) == 0) {
@@ -215,11 +223,11 @@ void skids_agent_update(struct Moby *moby) {
             talk_camera.placed = 1;
         }
         break;
-    case 5:
+    case SKIDS_AGENT_END_CONVERSATION:
         FUN_L00_00260860(5, 1);
         end_conversation(0, -1);
         goto kill;
-    case 3: {
+    case SKIDS_AGENT_INTERPOLATE_TRANSFORM_AND_FADE: {
         Vec4 pos;
         Vec4 rot;
         Vec4 from;
@@ -247,7 +255,7 @@ void skids_agent_update(struct Moby *moby) {
         D_L02_0015F3FC = *(f32 *)(data + 0x17C);
         break;
     }
-    case 4: {
+    case SKIDS_AGENT_FADE_TO_ZERO_AND_DELETE: {
         approach_value((f32 *)(data + 0x17C), 0.0f, 0.1f);
         fade = *(f32 *)(data + 0x17C);
         D_L02_0015F3FC = fade;
@@ -352,79 +360,84 @@ void skids_agent_update(struct Moby *moby) {
 extern f32 frame_scale_sq_macro __asm__("D_0015ED64") __attribute__((section(".sdata")));
 /* Watcher NPC update (twin of qwarks_bouncer_update): idles with random animations, talks to the hero and drops its reward, and turns its head toward the hero or a random look target. */
 void skid_mcmarx_update(struct Moby *m) __asm__("FUN_L02_002e1950");
-void skid_mcmarx_update(struct Moby *m) {
-    WatcherVars *v = (WatcherVars *)m->pvars;
+void skid_mcmarx_update(struct Moby *moby) {
+    enum {
+        SKID_MCMARX_INITIALIZE = 0,
+        SKID_MCMARX_IDLE_AND_TALK = 1,
+        SKID_MCMARX_CONVERSATION_ACTIVE = 2
+    };
+    WatcherVars *v = (WatcherVars *)moby->pvars;
     WatcherLook look;
     f32 rate;
     f32 head_rate;
     s32 tracking;
 
-    FUN_L02_002e0cd8(m);
-    FUN_L02_002e1fb8((char *)m);
-    switch (m->state) {
-    case 0:
+    FUN_L02_002e0cd8(moby);
+    FUN_L02_002e1fb8((char *)moby);
+    switch (moby->state) {
+    case SKID_MCMARX_INITIALIZE:
         if (D_0013D506) {
-            delete_moby(m);
+            delete_moby(moby);
             return;
         }
         v->unk180 = 0;
         v->dialog = D_L02_00161D00;
-        m->state = 1;
-        m->update_dist = 0xFF;
-        watcher_init(m, v);
-        initialize_moby_grounding(m);
+        moby->state = 1;
+        moby->update_dist = 0xFF;
+        watcher_init(moby, v);
+        initialize_moby_grounding(moby);
         break;
-    case 1:
+    case SKID_MCMARX_IDLE_AND_TALK:
         if (v->zone_check == 1 && point_in_clip_volume(&hero.motion.pos, v->zone))
             v->talk_radius = 255.0f;
         else
             v->talk_radius = 2.5f;
-        if (watcher_talk(m, v)) {
-            watcher_face(m, 2.5f);
-            m->state = 2;
+        if (watcher_talk(moby, v)) {
+            watcher_face(moby, 2.5f);
+            moby->state = 2;
         }
         if (v->talk_state == 2) {
             give_reward(2000, 10);
             FUN_L00_00260860(30, 1);
-            jet_clear_persistent(*((u8 *)m + 0xB0));
+            jet_clear_persistent(*((u8 *)moby + 0xB0));
             jet_reset_camera(&hero.motion.pos, &hero.motion.rot);
             end_conversation(0, -1);
-            delete_moby(m);
+            delete_moby(moby);
             return;
         }
-        if (m->prev_seq == 0 && count_down_16(&v->idle_timer)) {
-            s32 a = 1;
+        if (moby->prev_seq == 0 && count_down_16(&v->idle_timer)) {
+            s32 idle_animation = 1;
             v->idle_timer = float_to_int(scale_time(rand_range(1200.0f, 2400.0f)));
             if (rand_int(2) == 0)
-                a = 2;
-            if (m->prev_seq != a)
-                blend_anim(m, a, 0, scale_frames(10));
-        } else if ((m->anim_flags & 2) && m->prev_seq) {
-            blend_anim(m, 0, 0, scale_frames(10));
+                idle_animation = 2;
+            if (moby->prev_seq != idle_animation)
+                blend_anim(moby, idle_animation, 0, scale_frames(10));
+        } else if ((moby->anim_flags & 2) && moby->prev_seq) {
+            blend_anim(moby, 0, 0, scale_frames(10));
         }
         break;
-    case 2:
+    case SKID_MCMARX_CONVERSATION_ACTIVE:
         if (D_L02_0016CE60.placed == 0) {
-            vec_set_len(&D_L02_0016CE60.pos, &m->rot_row0, 2.5f);
-            vec_add(&D_L02_0016CE60.pos, &D_L02_0016CE60.pos, &m->pos);
+            vec_set_len(&D_L02_0016CE60.pos, &moby->rot_row0, 2.5f);
+            vec_add(&D_L02_0016CE60.pos, &D_L02_0016CE60.pos, &moby->pos);
             D_L02_0016CE60.pos.z += 10.0f;
             D_L02_0016CE60.pos.z = ground_height(&D_L02_0016CE60.pos, 0, 0.5f);
             vec_clear(&D_L02_0016CE60.vel);
-            D_L02_0016CE60.vel.z = angle_add(m->rot.z, 3.14159f);
+            D_L02_0016CE60.vel.z = angle_add(moby->rot.z, 3.14159f);
             D_L02_0016CE60.placed = 1;
         }
         if (level_game_mode_macro != 2)
-            m->state = 1;
+            moby->state = 1;
         break;
     }
     rate = 0.02f;
     head_rate = 0.3f;
     tracking = 0;
-    if (m->prev_seq == 0) {
+    if (moby->prev_seq == 0) {
         tracking = 1;
-        if (vec_dist(&m->pos, &hero.motion.pos) < 8.0f
-            && angle_diff(m->rot.z, angle_atan2(hero.motion.unkD0.f[0] - m->pos.x,
-                                                hero.motion.unkD0.f[1] - m->pos.y)) < 1.5707964f) {
+        if (vec_dist(&moby->pos, &hero.motion.pos) < 8.0f
+            && angle_diff(moby->rot.z, angle_atan2(hero.motion.unkD0.f[0] - moby->pos.x,
+                                                hero.motion.unkD0.f[1] - moby->pos.y)) < 1.5707964f) {
             if (vec_len(&hero.motion.displacement) > 0.01f)
                 v->moving_timer = scale_frames(120);
             else
@@ -436,9 +449,9 @@ void skid_mcmarx_update(struct Moby *m) {
         if (count_down(&v->target_timer)) {
             f32 heading;
             v->target_timer = float_to_int(scale_time(rand_range(180.0f, 300.0f)));
-            heading = angle_add(m->rot.z, rand_range(-90.0f, 90.0f) * DEG_TO_RAD);
+            heading = angle_add(moby->rot.z, rand_range(-90.0f, 90.0f) * DEG_TO_RAD);
             spherical_offset(&v->target, 6.0f, heading, rand_range(0.0f, 30.0f) * DEG_TO_RAD);
-            vec_add(&v->target, &v->target, &m->pos);
+            vec_add(&v->target, &v->target, &moby->pos);
         }
         if (v->moving_timer) {
             qcopy(&look.target, &hero.motion.unkD0);
@@ -451,10 +464,10 @@ void skid_mcmarx_update(struct Moby *m) {
     if (tracking) {
         f32 yaw;
         f32 pitch;
-        qcopy(&look.eye, &m->pos);
+        qcopy(&look.eye, &moby->pos);
         look.eye.z += 2.0f;
         vec_sub(&look.delta, &look.target, &look.eye);
-        yaw = angle_sub(angle_atan2(look.delta.x, look.delta.y), m->rot.z);
+        yaw = angle_sub(angle_atan2(look.delta.x, look.delta.y), moby->rot.z);
         pitch = -angle_atan2(vec_len_xy(&look.delta), look.delta.z);
         if (yaw > 1.5707964f)
             yaw = 1.5707964f;
@@ -470,8 +483,8 @@ void skid_mcmarx_update(struct Moby *m) {
     }
     if (D_0015EDB0)
         v->height = 2.75f;
-    drive_joint(rate * frame_scale_sq_macro, head_rate * frame_scale_sq_macro, m, v->body, 0);
-    drive_joint(rate * frame_scale_sq_macro, head_rate * frame_scale_sq_macro, m, v->head, 1);
+    drive_joint(rate * frame_scale_sq_macro, head_rate * frame_scale_sq_macro, moby, v->body, 0);
+    drive_joint(rate * frame_scale_sq_macro, head_rate * frame_scale_sq_macro, moby, v->head, 1);
 }
 #include "qcopy.h"
 extern char *D_L02_001600EC_n __asm__("D_L02_001600EC");
@@ -570,6 +583,14 @@ extern void update_entity_matrix(void *, void *, void *, void *) __asm__("FUN_L0
  * hero to step on, then plays the driver's up or down animation (2/4) with its loop sound until it ends. */
 void liftcar_platform_update(struct Moby *moby) __asm__("FUN_L02_002e2228");
 void liftcar_platform_update(struct Moby *moby) {
+    enum {
+        LIFTCAR_PLATFORM_INITIALIZE = 0,
+        LIFTCAR_PLATFORM_WAIT_FOR_MISSION_GATE = 1,
+        LIFTCAR_PLATFORM_ANIMATE_THEN_WAIT_FOR_RIDER_OR_HERO_ABOVE = 2,
+        LIFTCAR_PLATFORM_WAIT_FOR_RIDER_OR_HERO_ABOVE = 3,
+        LIFTCAR_PLATFORM_ANIMATE_THEN_WAIT_FOR_RIDER_OR_HERO_BELOW = 4,
+        LIFTCAR_PLATFORM_WAIT_FOR_RIDER_OR_HERO_BELOW = 5
+    };
     char *data = (char *)moby->pvars;
     struct Moby *driver = &D_L02_0015FFD8[*(int *)(data + 0xA0)];
     Vec4 delta;
@@ -584,19 +605,19 @@ void liftcar_platform_update(struct Moby *moby) {
     moby_point_position(driver, 0, &pos);
     qcopy(&moby->pos, &pos);
     switch (moby->state) {
-    case 0:
+    case LIFTCAR_PLATFORM_INITIALIZE:
         build_moby_bone_transform(driver, 0, joint_mtx);
         moby->rot.z = atan2_e2228(joint_mtx[0], joint_mtx[1]);
         moby->state = 1;
         blend_moby_animation(driver, 3, 0, 0);
         break;
-    case 1:
+    case LIFTCAR_PLATFORM_WAIT_FOR_MISSION_GATE:
         if (D_0014C050[current_level_index][moby->mission] == 0xFF) {
             moby->state = 5;
         }
         break;
-    case 3:
-    case 5:
+    case LIFTCAR_PLATFORM_WAIT_FOR_RIDER_OR_HERO_ABOVE:
+    case LIFTCAR_PLATFORM_WAIT_FOR_RIDER_OR_HERO_BELOW:
         ride = 0;
         if (hero.ground_moby == moby && hero.air_frames.s == 0 && moby->command == 0) {
             ride = 1;
@@ -621,8 +642,8 @@ void liftcar_platform_update(struct Moby *moby) {
             moby->command = 0;
         }
         break;
-    case 2:
-    case 4:
+    case LIFTCAR_PLATFORM_ANIMATE_THEN_WAIT_FOR_RIDER_OR_HERO_ABOVE:
+    case LIFTCAR_PLATFORM_ANIMATE_THEN_WAIT_FOR_RIDER_OR_HERO_BELOW:
         build_moby_bone_transform(driver, 0, joint_mtx);
         moby->rot.z = atan2_e2228(joint_mtx[0], joint_mtx[1]);
         if (distance_xyz(&moby->pos, &hero.motion.pos) < 1.5f && hero.motion.pos.f[2] < moby->pos.z - 1.5f) {
@@ -690,21 +711,21 @@ extern void draw_2ea048(void *) __asm__("FUN_00201f58");
 
 /* Draws the parts whose clip volumes contain the camera (all of them when
  * the override flag is set). */
-void FUN_L02_002ea048(struct Moby *m) {
-    int *d = (int *)m->pvars;
+void FUN_L02_002ea048(struct Moby *moby) {
+    int *clip_volume_indices = (int *)moby->pvars;
 
     FUN_L02_002a4818(0.0f, 260080.0f, 255.0f, 0.0f, 15, 15, 25, 30, 40, 64, D_L02_001F3E80);
-    if (D_L02_0015F608 != 0 || (d[0] != -1 && in_clip_2ea048(D_L02_001673C0, d[0]))) {
+    if (D_L02_0015F608 != 0 || (clip_volume_indices[0] != -1 && in_clip_2ea048(D_L02_001673C0, clip_volume_indices[0]))) {
         draw_2ea048(D_L02_001F3C00);
     }
-    if (D_L02_0015F608 != 0 || (d[1] != -1 && in_clip_2ea048(D_L02_001673C0, d[1]))) {
+    if (D_L02_0015F608 != 0 || (clip_volume_indices[1] != -1 && in_clip_2ea048(D_L02_001673C0, clip_volume_indices[1]))) {
         draw_2ea048(D_L02_001F3CD0);
         draw_2ea048(D_L02_001F3D30);
         draw_2ea048(D_L02_001F3D90);
         draw_2ea048(D_L02_001F3DD0);
         draw_2ea048(D_L02_001F3E10);
     }
-    if (D_L02_0015F608 != 0 || (d[2] != -1 && in_clip_2ea048(D_L02_001673C0, d[2]))) {
+    if (D_L02_0015F608 != 0 || (clip_volume_indices[2] != -1 && in_clip_2ea048(D_L02_001673C0, clip_volume_indices[2]))) {
         draw_2ea048(D_L02_001F3C60);
     }
     FUN_L02_002a47f8_c();
@@ -723,13 +744,17 @@ extern void FUN_L02_002ea048_cb(void) __asm__("FUN_L02_002ea048");
 
 void ocean_aridia_update(struct Moby *moby) __asm__("FUN_L02_002ea198");
 void ocean_aridia_update(struct Moby *moby) {
+    enum {
+        OCEAN_ARIDIA_INITIALIZE = 0,
+        OCEAN_ARIDIA_REGISTER_DRAW_CALLBACK = 1
+    };
     switch (moby->state) {
-    case 0:
+    case OCEAN_ARIDIA_INITIALIZE:
         FUN_L02_002a47f8(0.16666667f);
         moby->state = 1;
         moby->update_dist = 0xFF;
         break;
-    case 1:
+    case OCEAN_ARIDIA_REGISTER_DRAW_CALLBACK:
         add_draw_callback(FUN_L02_002ea048_cb, moby);
         break;
     }

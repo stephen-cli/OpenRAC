@@ -318,10 +318,10 @@ void hero_update_movement(void) {
     Vec4 vD0;
 
     switch (hero.state.current) {
-    case 0x0:
-    case 0x1:
-    case 0x3:
-    case 0x4:
+    case HERO_STATE_IDLE:
+    case HERO_STATE_LOOK:
+    case HERO_STATE_STOP:
+    case HERO_STATE_CROUCH:
     case 0x17:
     case 0x1D:
     case 0x1E:
@@ -1562,7 +1562,7 @@ void hero_update_movement(void) {
         }
         break;
     }
-    case 2:
+    case HERO_STATE_RUN:
     case 0x73: {
         s32 slide = 0;
         f32 k;
@@ -1589,14 +1589,14 @@ void hero_update_movement(void) {
         }
         FUN_L00_00211be8();
         if (hero.unk930 > 0.0f) {
-            Vec4 *p = &hero.move_impulse;
+            Vec4 *move_impulse_ptr = &hero.move_impulse;
             FUN_L00_002132b8(0.7f, 0.0f);
             v0.q = hero.move_impulse.q;
             hero.target_speed += forward_component(&v0);
             if (hero.target_speed < frame_time * 0.7f) {
                 hero.target_speed = frame_time * 0.7f;
             }
-            clear_u64_value(p);
+            clear_u64_value(move_impulse_ptr);
         }
         k = 1.0f;
         if (hero.state.step == 1 && hero.unk3BE == 0) {
@@ -1751,7 +1751,7 @@ void hero_update_movement(void) {
         AN.f110 = d * 3.5f;
         break;
     }
-    case 0x28:
+    case HERO_STATE_GRIND:
     case 0x29:
     case 0x2A:
     case 0x2B:
@@ -2183,13 +2183,13 @@ void hero_update_movement(void) {
         set_vector_length_xy(&hero.motion.velocity, &hero.motion.velocity, D_L00_001C3CB0[truncate_float_to_s32(hero.anim_frame)] * 0.5f);
         break;
     }
-    case 0x79:
+    case HERO_STATE_SLIP:
         hero.motion.move_yaw = hero.downhill_yaw;
         hero.target_speed = frame_time * 5.5f;
         FUN_L00_00213e68(frame_time_sq * 25.0f);
         FUN_L00_002334d0(&hero.motion.velocity, &hero.motion.unk120, frame_time_sq * 18.0f);
         break;
-    case 6:
+    case HERO_STATE_FALL:
     case 0x2D:
         if (hero.state.current == 0x2D) {
             f32 t = 0.0f;
@@ -2319,15 +2319,15 @@ void hero_update_movement(void) {
         FUN_L00_0020b5b8();
         break;
     }
-    case 7:
-    case 9:
-    case 0xA:
-    case 0xB:
+    case HERO_STATE_JUMP:
+    case HERO_STATE_RUN_JUMP:
+    case HERO_STATE_PACK_JUMP:
+    case HERO_STATE_HIGH_JUMP:
     case 0xC:
     case 0xD:
     case 0xE:
     case 0xF:
-    case 0x10:
+    case HERO_STATE_PACK_LONG_JUMP:
     case 0x11:
     case 0x12:
     case 0x1C:
@@ -2337,7 +2337,7 @@ void hero_update_movement(void) {
     case 0x5E:
     case 0x69: {
         s32 t198;
-        s32 t420;
+        s32 jump_timer_threshold;
         if (hero.state.current == 0x1C && hero.unk22D8 == 0 && hero.items[3].item_id == 3) {
             if (FUN_L00_00211870(10.0f) != 0) {
                 FUN_L00_00216de8(4, 0);
@@ -2364,11 +2364,11 @@ void hero_update_movement(void) {
             }
         }
         t198 = hero.state_timer;
-        t420 = hero.unk420;
-        if (t198 == t420) {
+        jump_timer_threshold = hero.unk420;
+        if (t198 == jump_timer_threshold) {
             qcopy(&hero.unk400, &hero.motion.pos);
         }
-        if (hero.unk418 != 0 || (t198 < t420 && hero.state.current != HERO_STATE_HIGH_JUMP && hero.state.current != HERO_STATE_PACK_LONG_JUMP && hero.state.current != 0xC &&
+        if (hero.unk418 != 0 || (t198 < jump_timer_threshold && hero.state.current != HERO_STATE_HIGH_JUMP && hero.state.current != HERO_STATE_PACK_LONG_JUMP && hero.state.current != 0xC &&
                             hero.state.current != 0x11 && hero.state.current != 0x1C && hero.state.current != 0x4C)) {
             if (hero.unk4A8 != 0) {
                 FUN_L00_002167d0();
@@ -2826,10 +2826,10 @@ void hero_update_movement(void) {
                 break;
             case 2:
                 if (hero.anim_frame > 14.0f && hero.anim_frame < 21.0f) {
-                    f32 s2 = 2.0f;
+                    f32 sphere_radius = 2.0f;
                     moby_point_position((struct MobyView *)hero.moby, 3, &v0);
-                    collect_mobies_in_sphere(s2, &v0, 0x10, (struct MobyView *)hero.moby, &v10);
-                    s2 = 0.0f;
+                    collect_mobies_in_sphere(sphere_radius, &v0, 0x10, (struct MobyView *)hero.moby, &v10);
+                    sphere_radius = 0.0f;
                     moby_point_position((struct MobyView *)hero.moby, 4, &v0);
                     collect_mobies_in_sphere(2.0f, &v0, 0x10, (struct MobyView *)hero.moby, &v10);
                 }

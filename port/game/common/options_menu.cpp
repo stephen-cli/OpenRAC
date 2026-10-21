@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "common/log.h"
+#include "fixes.h"
 #include "openrac/game_host.h"
 #include "openrac/guest.h"
 #include "pause_options.h"
@@ -24,31 +25,15 @@ namespace openrac::frontend::options_menu {
 
 namespace {
 
-// ---- The rows: one per setting, whatever game shows them ----
-
-enum Row {
-    kDisplayMode,
-    kMonitor,
-    kResolution,
-    kAspect,
-    kHud,
-    kRenderScale,
-    kMsaa,
-    kAnisotropy,
-    kVSync,
-    kFrameRate,
-    kFrameCap,
-    kShowFps,
-    kMuteUnfocused,
-    kSkipCutscenes,
-    kStrafe,
-    kRows
-};
 constexpr const char* kLabels[kRows] = {
     "Display mode", "Monitor",   "Resolution", "Picture",       "HUD",           "Render scale", "Anti-aliasing",
     "Texture filter", "VSync",   "Frame rate", "Frame cap",     "Frame counter", "Mute in background",
     "Skip cutscenes", "Strafe (experimental)",
 };
+
+// The "Game fixes" group, after the settings' own rows: its heading, then a row a fix.
+constexpr int kFixesHeading = kRows;
+constexpr const char* kFixesLabel = "Game fixes";
 
 // The value after `current` in a list (before it, for by = -1), around the ends; the first when
 // `current` is not one of them.
@@ -81,6 +66,10 @@ std::size_t offered(const int (&list)[N], int most) {
 
 std::string value_of(int row) {
     const settings::Settings& s = settings::get();
+    if (row >= kRows) {
+        const int fix = fix_of_row(row);
+        return fix < 0 ? std::string() : fixes::on(fix) ? std::string("On") : std::string("Original");
+    }
     switch (row) {
         case kDisplayMode:
             return settings::name(s.display_mode);
@@ -136,6 +125,13 @@ std::string value_of(int row) {
 // A row moved to its next value (by = 1: Cross or Right) or its last one (by = -1: Left).
 void step_value(int row, int by) {
     settings::Settings& s = settings::get();
+    if (row >= kRows) {
+        // A fix: on or off either way. The heading changes nothing.
+        if (const int fix = fix_of_row(row); fix >= 0) {
+            fixes::set(fix, !fixes::on(fix));
+        }
+        return;
+    }
     switch (row) {
         case kDisplayMode:
             s.display_mode = stepped_enum(s.display_mode, by);
@@ -391,7 +387,7 @@ bool update(const openrac_front_end& fe) {
         }
     }
     // The window follows the cursor: a row short of each end while there are more that way.
-    if (cursor == kShown - 1 && n.top + kShown < kRows) {
+    if (cursor == kShown - 1 && n.top + kShown < row_count()) {
         ++n.top;
         --cursor;
     } else if (cursor == 0 && n.top > 0) {
@@ -399,7 +395,7 @@ bool update(const openrac_front_end& fe) {
         ++cursor;
     }
     for (int i = 0; i < kShown; ++i) {
-        put_text(n.labels + kTextBytes * static_cast<gaddr>(i), kLabels[n.top + i]);
+        put_text(n.labels + kTextBytes * static_cast<gaddr>(i), label(n.top + i));
         put_text(n.values + kTextBytes * static_cast<gaddr>(i), value_of(n.top + i));
     }
     if (changed) {
@@ -662,7 +658,7 @@ bool update(gaddr page_menu, gaddr pad) {
         step_value(m.top + cursor, (pressed & page::kPadRight) != 0 ? 1 : -1);
         changed = true;
     }
-    if (cursor == kShownHere - 1 && m.top + kShownHere < kRows) {
+    if (cursor == kShownHere - 1 && m.top + kShownHere < row_count()) {
         ++m.top;
         --cursor;
     } else if (cursor == 0 && m.top > 0) {
@@ -670,7 +666,7 @@ bool update(gaddr page_menu, gaddr pad) {
         ++cursor;
     }
     for (int i = 0; i < kShownHere; ++i) {
-        page::put_text(page::pause_rows_text + page::kTextBytes * static_cast<gaddr>(i), kLabels[m.top + i]);
+        page::put_text(page::pause_rows_text + page::kTextBytes * static_cast<gaddr>(i), label(m.top + i));
         page::put_text(page::pause_rows_text + page::kTextBytes * static_cast<gaddr>(kShownHere + i), value_of(m.top + i));
     }
     if (changed) {
@@ -688,6 +684,34 @@ const openrac_front_end* front_end() {
 }
 
 }  // namespace
+
+int row_count() {
+    return fixes::count() > 0 ? kRows + 1 + fixes::count() : kRows;
+}
+
+int fix_of_row(int row) {
+    const int fix = row - kFixesHeading - 1;
+    return fix >= 0 && fix < fixes::count() ? fix : -1;
+}
+
+const char* label(int row) {
+    if (row >= 0 && row < kRows) {
+        return kLabels[row];
+    }
+    if (row == kFixesHeading && fixes::count() > 0) {
+        return kFixesLabel;
+    }
+    const int fix = fix_of_row(row);
+    return fix >= 0 ? fixes::fix(fix).name : "";
+}
+
+std::string value(int row) {
+    return value_of(row);
+}
+
+void step(int row, int by) {
+    step_value(row, by);
+}
 
 bool update(int loaded_overlay) {
     const openrac_front_end* fe = front_end();

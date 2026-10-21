@@ -5,6 +5,7 @@ player needs nothing but the image of their own disc: no checkout, no Python,
 no compiler.
 
   python3 tools/bundle_standalone.py OUT [--game-build DIR] [--python DIR]
+  python3 tools/bundle_standalone.py OUT --android [--python DIR]
 
 OUT (launcher/src-tauri/resources/openrac for an installer) gets:
 
@@ -17,9 +18,20 @@ OUT (launcher/src-tauri/resources/openrac for an installer) gets:
   port/build/release/        the game built for this system (--game-build:
                              the folder tools/build_port.py built into), with
                              the libraries beside it; on macOS each game is its
-                             application bundle, apps/openrac-<id>/<title>.app
+                             application bundle, apps/openrac-<id>/<title>.app.
+                             A Linux program goes without its debug info
+                             (its symbols stay, for a crash report's backtrace):
+                             three quarters of its size, which every installer
+                             would compress and every player download
   python/                    a Python to run the tools (--python: an unpacked
                              python-build-standalone "install_only" archive)
+
+--android makes the copy the Android launcher carries in its APK
+(tools/build_android.py; docs/port/ANDROID.md). The games and the Python
+program are libraries of the APK there, which the launcher links into place
+when it unpacks the copy (OpenracSetup.kt): the copy has no port/build/, and
+--python names a PYTHONHOME (lib/python3.N with its lib-dynload), not a
+python-build-standalone archive.
 
 The launcher finds it in its resources (launcher/core/src/detect.rs,
 bundled_root) and uses it when there is no checkout. Without --game-build or
@@ -36,8 +48,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # What a player's launcher offers for a version, from launcher/actions.json. The rest (the
-# decompilation's builds and checks, the level editor, building the port) needs a checkout.
-KEEP = ("port-levels", "port-levels-check", "play")
+# decompilation's builds and checks, building the port, the tools' tests) needs a checkout.
+PLAY = ("port-levels", "port-levels-check", "play")
+# Mods: the level editor (Godot projects of the disc's levels, packed back into the game's data),
+# models and textures, packs, and playing with them. In a checkout they work in its assets/; the
+# carried copy is read-only, so they work in the data folder instead (MOD_FOLDERS).
+MODS = ("editor-extract", "editor-preview", "editor-import", "editor-open", "editor-pack",
+        "assets-export", "assets-import", "overrides-add", "overrides-stack", "play-edited")
+KEEP = PLAY + MODS
+# Where a checkout's folders for version <game>/<version> go in the carried copy, longest first:
+# the levels the port draws, the level editor's projects, and the packed levels.
+MOD_FOLDERS = (("{root}/assets/port/", "port"), ("assets/port/", "port"), ("assets/levels/", "levels"),
+               ("{root}/assets/packed/", "packed"), ("assets/packed/", "packed"))
 # Where the carried copy writes instead of the checkout's assets/port/<game>/<version>. {data} is the
 # game's, shared by its versions: each version's levels are <data>/port/<version>, which is also where
 # the program looks without --levels.
@@ -49,6 +71,26 @@ GAMES = ("openrac-rac1-pal", "openrac-rac1-ntsc")
 def levels_folder(key: str) -> str:
     """The data folder's place for version KEY's levels: <data>/port/<version>."""
     return f"{LEVELS_ROOT}/{key.split('/')[-1]}"
+
+
+def in_data_folder(text: str, key: str) -> str:
+    """TEXT with version KEY's checkout folders (MOD_FOLDERS) moved into the data folder:
+    assets/levels/rac1/pal/level_{level} becomes {data}/levels/pal/level_{level}."""
+    version = key.split("/")[-1]
+    for prefix, kind in MOD_FOLDERS:
+        text = text.replace(f"{prefix}{key}", f"{{data}}/{kind}/{version}")
+    return text
+
+
+def moved(value, key: str):
+    """VALUE (an action's field: a string, a list or a dict of them) with in_data_folder applied."""
+    if isinstance(value, str):
+        return in_data_folder(value, key)
+    if isinstance(value, list):
+        return [moved(v, key) for v in value]
+    if isinstance(value, dict):
+        return {k: moved(v, key) for k, v in value.items()}
+    return value
 
 
 def point_at(args: list[str], levels: str) -> list[str]:
@@ -74,7 +116,12 @@ def player_actions() -> dict:
             action = dict(action)
             if action.get("state") != "planned":
                 args = action.get("args", [])
-                if action["id"] == "port-levels":
+                if action["id"] == "port-levels" and not key.startswith("rac1/"):
+                    # A later game's levels, read for packs (early access): no worlds behind the
+                    # menus, and the first level's manifest is its own.
+                    action["args"] = args[:3] + [levels, "--anywhere", "--replace"]
+                    action["artifact"] = moved(action["artifact"], key)
+                elif action["id"] == "port-levels":
                     # editor/extract.py port DISC OUT: OUT is the data folder's, wherever it is.
                     action["args"] = args[:3] + [levels, "--anywhere", "--replace"]
                     action["artifact"] = f"{levels}/level_99/manifest.json"
@@ -85,6 +132,16 @@ def player_actions() -> dict:
                     action["makes"] = f"{levels}/verified-3.json"
                     action["needs"] = [{"path": f"{levels}/level_99/manifest.json", "from": need["from"]}
                                        for need in action.get("needs", [])]
+                elif action["id"] in MODS:
+                    for field in ("args", "artifact", "needs", "makes"):
+                        if field in action:
+                            action[field] = moved(action[field], key)
+                    if args[:2] in (["editor/extract.py", "godot"], ["editor/extract.py", "pack"]):
+                        # The editor writes only under a checkout's assets/ unless told otherwise.
+                        action["args"] = action["args"] + ["--anywhere"]
+                    if action["id"] == "play-edited":
+                        # Started where Play is (below), for the same reason.
+                        action["cwd"] = "{data}"
                 else:
                     action["args"] = point_at(args, levels)
                     action["needs"] = [{"path": f"{levels}/verified-3.json", "from": need["from"]}
@@ -106,6 +163,20 @@ def copy_tree(source: Path, dest: Path, keep) -> None:
             shutil.copy2(path, dest / rel)
 
 
+def strip_debug(path: Path) -> bool:
+    """Drops the debug info of an ELF program (Linux), keeping its symbols; whether it did. A
+    program of another system, or no strip tool on the PATH, leaves the file as it is."""
+    with path.open("rb") as f:
+        if f.read(4) != b"\x7fELF":
+            return False
+    tool = shutil.which("llvm-strip") or shutil.which("strip")
+    if tool is None:
+        print(f"no strip tool: {path.name} keeps its debug info", file=sys.stderr)
+        return False
+    subprocess.run([tool, "--strip-debug", str(path)], check=True)
+    return True
+
+
 def copy_games(build: Path, dest: Path) -> list[str]:
     """The game programs in BUILD, copied to DEST; their names. On macOS a game is an application
     bundle named by its title in apps/openrac-<id>/ (port/cmake/MacApp.cmake), carried whole; the
@@ -120,6 +191,7 @@ def copy_games(build: Path, dest: Path) -> list[str]:
         for path in sorted(build.glob(f"{game}*")):
             if path.is_file() and path.suffix in ("", ".exe"):
                 shutil.copy2(path, dest / path.name)
+                strip_debug(dest / path.name)
                 carried.append(path.name)
     return carried
 
@@ -129,7 +201,10 @@ def main() -> int:
     parser.add_argument("out", type=Path)
     parser.add_argument("--game-build", type=Path, help="the build folder holding the game (port/build/release)")
     parser.add_argument("--python", type=Path, help="an unpacked standalone Python (its python/ folder)")
+    parser.add_argument("--android", action="store_true", help="the Android launcher's copy (tools/build_android.py)")
     args = parser.parse_args()
+    if args.android and args.game_build:
+        sys.exit("--android carries no game build: the games are the APK's libraries")
     out = args.out.resolve()
     # The folder in the launcher's resources is kept in git with a note in it: the note stays.
     if out.exists() and any(p.name != "README.txt" for p in out.iterdir()):
@@ -171,7 +246,13 @@ def main() -> int:
                 carried.append(path.name)
         if not any(name.split("/")[-1].startswith(GAMES[0]) for name in carried):
             sys.exit(f"{args.game_build} has no {GAMES[0]}: build it first (tools/build_port.py rac1-pal)")
-    if args.python:
+    if args.python and args.android:
+        if not any(args.python.glob("lib/python3.*/os.py")):
+            sys.exit(f"{args.python} is not a PYTHONHOME for Android (no lib/python3.N/os.py)")
+        shutil.copytree(args.python, out / "python", symlinks=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "test", "tests", "idlelib", "tkinter", "ensurepip"))
+        carried.append("python (Android)")
+    elif args.python:
         if not any((args.python / rel).is_file() for rel in ("bin/python3", "python.exe")):
             sys.exit(f"{args.python} is not an unpacked standalone Python (no bin/python3 or python.exe)")
         shutil.copytree(args.python, out / "python", symlinks=True,
@@ -182,7 +263,8 @@ def main() -> int:
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     (out / "STANDALONE").write_text(
         "The copy of OpenRAC an installed launcher carries (tools/bundle_standalone.py).\n"
-        f"commit: {commit or 'unknown'}\ncarries: {', '.join(carried) or 'no game, no Python'}\n")
+        f"commit: {commit or 'unknown'}\ncarries: {', '.join(carried) or 'no game, no Python'}\n"
+        + ("for: Android (the games and Python are the APK's libraries)\n" if args.android else ""))
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
     print(f"{out}: {size / 1e6:.0f} MB; carries {', '.join(carried) or 'no game, no Python'}")
     return 0

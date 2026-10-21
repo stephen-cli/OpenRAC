@@ -34,49 +34,53 @@ extern void rand_vec(void *, f32, f32) __asm__("FUN_L00_00257d78");
 
 /* Shard debris update: drifts along its velocity, sheds particle trails and expires when its timer runs out. */
 void FUN_L02_002ebf20(struct Moby *m);
-void FUN_L02_002ebf20(struct Moby *m) {
-    ShardVars *v = (ShardVars *)m->pvars;
-    Vec4f p, back, half, jit;
-    u8 *q;
+void FUN_L02_002ebf20(struct Moby *moby) {
+    enum {
+        SHARD_STATE_REMOVE = 0,
+        SHARD_STATE_ACTIVE = 1
+    };
+    ShardVars *v = (ShardVars *)moby->pvars;
+    Vec4f trail_position, back, half, jit;
+    u8 *particle;
     s32 i;
 
-    switch (m->state) {
-    case 0:
-        mark_moby_for_removal(m);
+    switch (moby->state) {
+    case SHARD_STATE_REMOVE:
+        mark_moby_for_removal(moby);
         return;
-    case 1:
+    case SHARD_STATE_ACTIVE:
         break;
     default:
         return;
     }
-    vec_add(&m->pos, &m->pos, &v->vel);
+    vec_add(&moby->pos, &moby->pos, &v->vel);
     approach_value(&v->vel.z, 0.0f, D_L02_00161F58 * frame_time_sq);
-    m->rot.y = 1.5707964f - angle_atan2(vec_len_xy(&v->vel), v->vel.z);
-    qcopy(&p, &m->pos);
+    moby->rot.y = 1.5707964f - angle_atan2(vec_len_xy(&v->vel), v->vel.z);
+    qcopy(&trail_position, &moby->pos);
     vec_scale(&half, &v->vel, 0.5f);
     vec_scale(&back, &v->vel, -0.1f);
     for (i = 1; i >= 0; i--) {
         s32 t = scale_frames(float_to_int(rand_range(20.0f, 60.0f)));
-        q = spawn_particle(&p, &back, t, D_L02_00161F5C >> 24, D_L02_00161F5C & 0xFFFFFF, 3,
+        particle = spawn_particle(&trail_position, &back, t, D_L02_00161F5C >> 24, D_L02_00161F5C & 0xFFFFFF, 3,
                                  rand_range(300000.0f, 500000.0f), 10000.0f, 1.0f, -0.0002f, 0.0f);
-        if (q) {
-            q[2] = *D_L02_001B2680.tint;
-            q[9] = float_to_int(4.0f) - 0x80;
+        if (particle) {
+            particle[2] = *D_L02_001B2680.tint;
+            particle[9] = float_to_int(4.0f) - 0x80;
         }
-        vec_add(&p, &p, &half);
+        vec_add(&trail_position, &trail_position, &half);
         rand_vec(&jit, 0.5f, 1.5f);
-        vec_add(&p, &p, &jit);
+        vec_add(&trail_position, &trail_position, &jit);
     }
-    q = spawn_particle(&m->pos, &back, scale_frames(6), D_L02_00161F60 >> 24, D_L02_00161F5C & 0xFFFFFF, 3,
+    particle = spawn_particle(&moby->pos, &back, scale_frames(6), D_L02_00161F60 >> 24, D_L02_00161F5C & 0xFFFFFF, 3,
                              250000.0f, 5000.0f, 1.0f, -0.0004f, 0.0f);
-    if (q)
-        q[9] = float_to_int(4.0f) - 0x80;
-    if (m->visible == 0)
+    if (particle)
+        particle[9] = float_to_int(4.0f) - 0x80;
+    if (moby->visible == 0)
         count_down(&v->timer);
     else
         v->timer = scale_frames(60);
     if (v->timer == 0)
-        mark_moby_for_removal(m);
+        mark_moby_for_removal(moby);
 }
 #include "qcopy.h"
 extern char *create_moby_c(int) __asm__("FUN_0020c4f8");
@@ -150,6 +154,10 @@ extern char D_00141968[];
 extern s32 D_0014EE90[];
 
 void FUN_L02_002ee890(struct Moby *moby) {
+    enum {
+        AIRBORNE_DIALOGUE_UNARMED = 0,
+        AIRBORNE_DIALOGUE_ARMED = 1
+    };
     int *data = (int *)moby->pvars;
     moby->update_dist = 0xFF;
 
@@ -173,14 +181,14 @@ void FUN_L02_002ee890(struct Moby *moby) {
     }
 
     switch (data[0x15]) {
-    case 0:
+    case AIRBORNE_DIALOGUE_UNARMED:
         if (is_point_inside_clip_volume(&hero.motion.pos, data[0x12]) != 0) {
             if (hero.state.current == 0x2C) {
                 data[0x15] = 1;
             }
         }
         break;
-    case 1: {
+    case AIRBORNE_DIALOGUE_ARMED: {
         struct Hero *h = &hero;
         if (h->grounded_frames != 0) {
             data[0x15] = 0;
@@ -320,8 +328,8 @@ void FUN_L02_002ee890(struct Moby *moby) {
         if (v == 0 || *(unsigned short *)(b + 0x238) == 0) {
             struct Hero *h = &hero;
             if (h->state.current == 0x72) {
-                char *p = ((char *)h->ground_moby);
-                if (p != 0 && *(short *)(p + 0xA6) == 0x267) {
+                char *ground_moby = ((char *)h->ground_moby);
+                if (ground_moby != 0 && *(short *)(ground_moby + 0xA6) == 0x267) {
                     if (v == 0) {
                         help_request(0x7DB, 0x46);
                     } else if (*(unsigned short *)(b + 0x238) == 0) {
@@ -436,6 +444,12 @@ s32 D_L02_00162164 = 0x10019;
  * on a timer plus occasional single puffs (D_L02_00162088 / D_L02_00162048); state 2 alternates its puff life.
  * Each burst and puff block has its own locals: shared ones become long-lived pseudos and shift the allocation. */
 void FUN_L02_002ef020(struct Moby *moby) {
+    enum {
+        SMOKE_VENT_STATE_INITIALIZE = 0,
+        SMOKE_VENT_STATE_VIEW_GATED_EMISSION = 1,
+        SMOKE_VENT_STATE_ALTERNATING_PUFF_TIMING = 2,
+        SMOKE_VENT_STATE_REMOVE = 3
+    };
     char *data = (char *)moby->pvars;
     Vec4 p;
     Vec4 vel;
@@ -465,11 +479,11 @@ void FUN_L02_002ef020(struct Moby *moby) {
     f32 rise2_puff;
 
     switch (moby->state) {
-    case 0:
+    case SMOKE_VENT_STATE_INITIALIZE:
         moby->state = data[0] + 1;
         build_rotation_matrix(&moby->rot_row0, &moby->rot);
         break;
-    case 1:
+    case SMOKE_VENT_STATE_VIEW_GATED_EMISSION:
         qcopy(&p, &moby->pos);
         p.f[3] = 6.0f;
         if (sphere_in_view(&p, 120.0f) == -1) {
@@ -513,7 +527,7 @@ void FUN_L02_002ef020(struct Moby *moby) {
         spawn_smoke_particle(&moby->pos, &vel, &acc, color_a1_puff, color_b1_puff, time_a1_puff, time_b1_puff,
                        truncate_time(scale_time((f32)D_L02_001620A0 * (random_float(-D_L02_001620A4, D_L02_001620A4) + 1.0f))), -1);
         break;
-    case 2:
+    case SMOKE_VENT_STATE_ALTERNATING_PUFF_TIMING:
         if (tick_timer32((s32 *)(data + 0xC4)) != 0) {
             if (*(s32 *)(data + 0xC8) < 21) {
                 *(s32 *)(data + 0xC8) = 30;
@@ -562,7 +576,7 @@ void FUN_L02_002ef020(struct Moby *moby) {
         spawn_smoke_particle(&moby->pos, &vel, &acc, color_a2_puff, color_b2_puff, time_a2_puff, time_b2_puff,
                        truncate_time(scale_time((f32)D_L02_00162060 * (random_float(-D_L02_00162064, D_L02_00162064) + 1.0f))), -1);
         break;
-    case 3:
+    case SMOKE_VENT_STATE_REMOVE:
         mark_moby_for_removal(moby);
         break;
     }
@@ -571,6 +585,9 @@ extern void FUN_L00_001ed630(void *, void *, void *);
 
 /* Sets the vendor camera mode; mode 3 also aims it from the hero's position. */
 void FUN_L02_002f8a18(int mode, int arg) {
+    enum {
+        VENDOR_CAMERA_MODE_CAPTURE_HERO_POSITION = 3
+    };
     char *g = D_L02_00167280;
     char *cam = *(char **)(g + 0x180);
     char *d = *(char **)(cam + 0x70);
@@ -578,7 +595,7 @@ void FUN_L02_002f8a18(int mode, int arg) {
 
     cam[0x88] = mode;
     switch (mode) {
-    case 3:
+    case VENDOR_CAMERA_MODE_CAPTURE_HERO_POSITION:
         qcopy(d + 0x110, &hero.motion.pos);
         FUN_L00_001ed630(d + 0xFC, g + 0x140, &hero.motion.pos);
     case 2:

@@ -8,7 +8,7 @@ makes `openrac-<id>` for every one whose decompilation is present:
 |---|---|---|---|---|
 | [rac1-pal](rac1-pal/README.md) | Ratchet & Clank (PAL) | `games/rac1` | `func_0012DB18` | complete, from [the survey](../../docs/port/RAC1_PAL_SURVEY.md) |
 | [rac1-ntsc](rac1-ntsc/README.md) | Ratchet & Clank (NTSC-U) | `games/rac1/ntsc` | `FUN_0012d9d8` | carried from rac1-pal's ([versionmap](../tools/versionmap/README.md)); runs into its title loop |
-| rac2-ntsc | Going Commando (NTSC-U) | `games/rac2/ntsc` (`src/`, with level placements from `config/levels/functions.tsv`) | not known yet | empty |
+| [rac2-ntsc](rac2-ntsc/README.md) | Going Commando (NTSC-U) | `games/rac2/ntsc` (`src/`, with level placements from `config/levels/functions.tsv`) | `func_00131AE8` (its crt0, the port's own; `main` is `func_00131D98`) | from its symbol table and byte comparison with rac1-pal's and rac4's; reaches its main menu with a further-along decompilation |
 | rac3-ntsc | Up Your Arsenal (NTSC-U) | `games/rac3/ntsc` (without `i5bootn`, the online program; the menu, `frontbin`, as a group of its own) | not known yet | empty |
 | rac4-ntsc | Deadlocked (NTSC-U) | `games/rac4/ntsc` | not known yet | its libc, from `config/libc.tsv` |
 
@@ -37,6 +37,7 @@ layer and the renderer.
 | `sources`, `skip`, `includes`, `defines` | the C to translate and how to read it |
 | `names` | how the decompilation names code and data by address, as regular expressions with `addr` (and `overlay`) groups; rac1/pal's (`func_`, `func_Lnn_`, `D_`) by default |
 | `symbols` | splat symbol files that give named globals and functions their addresses |
+| `derived` | `{"build": ..., "table": ...}`: the names the decompilation's own build derives (Going Commando's `build/boot/placed.json`), read from that build when it is there, else from the port's copy beside the configuration; neither stops hostgen ([derived.py](../tools/hostgen/derived.py)) |
 | `places` | where each level function sits in each level (rac1/pal's `functions.tsv`) |
 | `groups` | parts of the tree that are separate programs over the same addresses (rac3's menu, `src/frontbin`, overlay 100) |
 | `overlay_hook` | true if `host/` provides `openrac_game_loaded_overlay` (which level's program is loaded) |

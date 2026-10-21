@@ -37,8 +37,8 @@ void FUN_L16_002097a0(void) {
         if (g->frames_off_ground.s == 0 || g->ground_distance < 0.3f) {
             g->unk12E7 = 1;
             if (g->vehicle_mode == 0) {
-                char *p = (char *)g->items[1].moby;
-                if (p != 0 && *(short *)(p + 0xA6) == 0xAD)
+                char *item_moby = (char *)g->items[1].moby;
+                if (item_moby != 0 && *(short *)(item_moby + 0xA6) == 0xAD)
                     g->unk308 = 1;
             }
         }
@@ -51,9 +51,9 @@ void FUN_L16_002097a0(void) {
     }
     if (st == 0) {
         struct Hero *q = &hero;
-        float d = q->water_surface_z - q->ground_z.f;
-        q->unk22A4 = d;
-        if (d < 0.85f && 0.25f < d)
+        float water_depth = q->water_surface_z - q->ground_z.f;
+        q->unk22A4 = water_depth;
+        if (water_depth < 0.85f && 0.25f < water_depth)
             q->unk20A9 = 1;
         {
             struct Hero *flag = &hero;
@@ -147,15 +147,15 @@ extern void fast_vec_normalize(void *, void *, float) __asm__("FUN_001f9bf8");
 extern void FUN_L00_0025f730(void *a, float x);
 
 void FUN_L16_0020f8b0(void) {
-    char tmp[16];
-    char *p = D_0013E533 + 0x158D;
+    char normalized_vector[16];
+    char *accumulated_vector = D_0013E533 + 0x158D;
     char *q;
-    qcopy(p, p - 0x670);
-    q = p - 0x770;
-    fast_vec_normalize(tmp, q, *(float *)(q + 0x194));
-    fast_vec_add(p, p, tmp);
-    qcopy(p - 0x690, p);
-    FUN_L00_0025f730(p - 0x690, *(float *)(q + 0x85C) + *(float *)(q + 0x868));
+    qcopy(accumulated_vector, accumulated_vector - 0x670);
+    q = accumulated_vector - 0x770;
+    fast_vec_normalize(normalized_vector, q, *(float *)(q + 0x194));
+    fast_vec_add(accumulated_vector, accumulated_vector, normalized_vector);
+    qcopy(accumulated_vector - 0x690, accumulated_vector);
+    FUN_L00_0025f730(accumulated_vector - 0x690, *(float *)(q + 0x85C) + *(float *)(q + 0x868));
 }
 typedef union {
     OvlQuad q;
@@ -192,13 +192,14 @@ extern CollisionHit HH __asm__("D_L16_00174240") __attribute__((section(".data")
 void FUN_L16_0020ffb0(void) {
     enum {
         GRAVITY_WORLD_DOWN = 0,
-        GRAVITY_OPPOSITE_GROUND_NORMAL = 1
+        GRAVITY_OPPOSITE_GROUND_NORMAL = 1,
+        GRAVITY_TOWARD_REFERENCE_POINT = 2
     };
-    V_u collision_ray_endpoint, ground_probe_endpoint, v20, side_probe_endpoint, v40, probe_surface_angles, normalized_hit_normal;
+    V_u collision_ray_endpoint, ground_probe_endpoint, ground_offset_or_angles, side_probe_endpoint, unused_side_probe_endpoint, probe_surface_angles, normalized_hit_normal;
     f32 f;
     s32 r;
     s32 i;
-    f32 a;
+    f32 side_probe_angle;
     u8 *p;
 
     s32 k;
@@ -280,8 +281,8 @@ void FUN_L16_0020ffb0(void) {
         sceVu0Normalize((u8 *)&hero.unk270, (u8 *)&HH.normal_x);
         hero.ground_slope.f = FUN_L00_00233d30((u8 *)&HH.normal_x);
         hero.downhill_yaw = FUN_001f9e90_c(HH.normal_x, HH.normal_y);
-        fast_vec_sub(&v20, (u8 *)&hero.ground_point, (u8 *)&hero.motion.pos);
-        if (0.0f < FUN_001f9ab0_c(&v20, (u8 *)&hero.unk270)) {
+        fast_vec_sub(&ground_offset_or_angles, (u8 *)&hero.ground_point, (u8 *)&hero.motion.pos);
+        if (0.0f < FUN_001f9ab0_c(&ground_offset_or_angles, (u8 *)&hero.unk270)) {
             hero.ground_distance = -hero.ground_distance;
         }
         if (hero.ground_distance < 0.02f) {
@@ -312,7 +313,7 @@ d1:
         qcopy((u8 *)&hero.gravity_dir, (u8 *)&hero.unk270);
         FUN_001f9a68_c((u8 *)&hero.gravity_dir, (u8 *)&hero.gravity_dir, -1.0f);
         break;
-    case 2:
+    case GRAVITY_TOWARD_REFERENCE_POINT:
         fast_vec_sub((u8 *)&hero.gravity_dir, (u8 *)&hero.motion.unkB0, (u8 *)&hero.motion.pos);
         FUN_001f9bf8_c((u8 *)&hero.gravity_dir, (u8 *)&hero.gravity_dir, 1.0f);
         break;
@@ -332,20 +333,20 @@ d1:
     if (!(hero.ground_distance < 0.25f)) {
         return;
     }
-    FUN_L00_00216078((u8 *)&hero.unk270, &v20);
-    if (-0.78539819f < v20.f[1] && v20.f[1] < 0.78539819f) {
-        hero.ground_pitch.f = v20.f[1];
+    FUN_L00_00216078((u8 *)&hero.unk270, &ground_offset_or_angles);
+    if (-0.78539819f < ground_offset_or_angles.f[1] && ground_offset_or_angles.f[1] < 0.78539819f) {
+        hero.ground_pitch.f = ground_offset_or_angles.f[1];
     }
-    if (-0.78539819f < v20.f[0] && v20.f[0] < 0.78539819f) {
-        hero.unk2E8.f = v20.f[0];
+    if (-0.78539819f < ground_offset_or_angles.f[0] && ground_offset_or_angles.f[0] < 0.78539819f) {
+        hero.unk2E8.f = ground_offset_or_angles.f[0];
     }
     for (i = 0; i < 2; i++) {
-        a = 1.5707964f;
+        side_probe_angle = 1.5707964f;
         if (i == 1) {
-            a = -a;
+            side_probe_angle = -side_probe_angle;
         }
-        FUN_L00_002335c8(&side_probe_endpoint, 0.2f, a, 0.45f);
-        FUN_L00_002335c8(&v40, 0.2f, a, -0.45f);
+        FUN_L00_002335c8(&side_probe_endpoint, 0.2f, side_probe_angle, 0.45f);
+        FUN_L00_002335c8(&unused_side_probe_endpoint, 0.2f, side_probe_angle, -0.45f);
         if (collision_line(&side_probe_endpoint, &collision_ray_endpoint, 0x22, (s32)hero.moby, 0)) {
             f = HH.point.f[2] - hero.ground_z.f;
             hero.unk2C0.f[i] = f;
@@ -393,7 +394,7 @@ s32 FUN_L16_00210b60(s32 mode) {
     V_2133a8 w;
     s32 mask;
     s32 i;
-    u128_2133a8 *c;
+    u128_2133a8 *collision_output;
     f32 h;
     if (hero.unk1CC != 0) {
         return 1;
@@ -438,21 +439,21 @@ s32 FUN_L16_00210b60(s32 mode) {
             if (!coll1_2133a8(&hero.motion.pos.q, mask, ((s32)hero.moby), frame_scale * 0.45f))
                 break;
         } else {
-            s32 a;
+            s32 collision_result;
             h = hero.capsule_top - hero.unk224;
             if (h < 0.05f) {
                 h = 0.05f;
             }
-            a = coll2_2133a8(&hero.motion.pos.q, mask, hero.unk234, ((s32)hero.moby), h);
-            if (!(a | FUN_L00_001f3170(&hero.motion.pos.q, hero.unk234)))
+            collision_result = coll2_2133a8(&hero.motion.pos.q, mask, hero.unk234, ((s32)hero.moby), h);
+            if (!(collision_result | FUN_L00_001f3170(&hero.motion.pos.q, hero.unk234)))
                 break;
         }
-        c = D_L16_00174270;
-        qcopy(&hero.motion.pos.q, c);
-        qcopy(&hero.unk200.q, c + 1);
-        qcopy(&hero.unk210.q, c - 1);
+        collision_output = D_L16_00174270;
+        qcopy(&hero.motion.pos.q, collision_output);
+        qcopy(&hero.unk200.q, collision_output + 1);
+        qcopy(&hero.unk210.q, collision_output - 1);
         hero.wall_hit = 1;
-        hero.coll_hit_moby = ((u8 **)c)[-6];
+        hero.coll_hit_moby = ((u8 **)collision_output)[-6];
     }
     vsub_2133a8(&hero.motion.pos.q, &hero.motion.pos.q, &v);
     vsub_2133a8(&w, &hero.motion.pos.q, &old);

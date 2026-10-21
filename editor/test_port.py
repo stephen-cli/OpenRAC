@@ -103,15 +103,15 @@ class WriterTests(unittest.TestCase):
             {"index": 1, "class_id": 99, "fields": {"spawn_id": 2, "group": -1, "pvar_index": -1, "colour": [0, 0, 0]},
              "rotation": (0.0, 0.0, 0.0), "scale": 1.0, "matrix": translated(0, 0, 0)}]
         empty_collision = SimpleNamespace(cells=0, faces=0, triangles=[], surfaces=dict, hero_groups=0)
-        with mock.patch.object(port, "sky", lambda block: synthetic_sky()), \
+        with mock.patch.object(port, "sky", lambda block, *_: synthetic_sky()), \
                 mock.patch.object(port, "PANORAMA", (16, 8)), \
-                mock.patch.object(port, "terrain", lambda block, lod, lights=None: [square("terrain_000", ("terrain", 0), 2.0)]), \
+                mock.patch.object(port, "terrain", lambda block, lod, lights=None, problems=None: [square("terrain_000", ("terrain", 0), 2.0)]), \
                 mock.patch.object(port, "tie_classes", lambda level: ties), \
-                mock.patch.object(port, "tie_instances", lambda gameplay, classes: tie_placements), \
+                mock.patch.object(port, "tie_instances", lambda gameplay, classes, *_: tie_placements), \
                 mock.patch.object(port, "shrub_classes", lambda level: shrubs), \
-                mock.patch.object(port, "shrub_instances", lambda gameplay, classes: shrub_placements), \
+                mock.patch.object(port, "shrub_instances", lambda gameplay, classes, *_: shrub_placements), \
                 mock.patch.object(port, "moby_classes", lambda level: mobys), \
-                mock.patch.object(port, "moby_instances", lambda gameplay: moby_placements), \
+                mock.patch.object(port, "moby_instances", lambda gameplay, *_: moby_placements), \
                 mock.patch.object(godot, "decode", lambda block: empty_collision):
             return PortLevelWriter(out, synthetic_level()).write(0)
 
@@ -119,7 +119,7 @@ class WriterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             stats = self.export(Path(temp))
             level = Path(temp) / "level_03"
-            files = sorted(str(p.relative_to(level)) for p in level.rglob("*") if p.is_file())
+            files = sorted(p.relative_to(level).as_posix() for p in level.rglob("*") if p.is_file())
             self.assertEqual(files, ["manifest.json", "mobys/moby_7.glb", "placements.json", "shrubs/shrub_6.glb",
                                      "sky.glb", "sky.png", "terrain.glb", "textures/moby_0004.png",
                                      "textures/shrub_0002.png", "textures/sky_0000.png",

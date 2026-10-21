@@ -8,14 +8,19 @@
 import actionsFile from "../../actions.json";
 import summaryFile from "../../../progress/summary.json";
 import packageFile from "../../package.json";
+import { onAndroid } from "./api";
 import type {
   ActionView,
   BuildInfo,
+  GpuDriver,
+  GpuDrivers,
   InstallState,
   AppInfo,
   Check,
   Config,
   Detected,
+  DifferenceView,
+  Differences,
   GameView,
   JobEvent,
   Library,
@@ -84,18 +89,89 @@ type RawSummary = Record<
       fuzzy_percent: number | null;
       percent: number;
       date: string | null;
-    };
+    } | null;
     note?: string;
   }
 >;
 
 const manifests = import.meta.glob<RawGame>("../../../games/*/game.json", { eager: true, import: "default" });
+
+/** port/game/<game>/differences.json, as core/src/differences.rs reads it. */
+interface RawDifferences {
+  game: string;
+  differences: (Omit<DifferenceView, "on" | "refs" | "setting"> & {
+    discs: string[];
+    refs?: string[];
+    setting?: { key: string; default: boolean };
+  })[];
+}
+const differenceLists = import.meta.glob<RawDifferences>("../../../port/game/*/differences.json", {
+  eager: true,
+  import: "default",
+});
+/** The preview's settings files: `rac1/pal` -> key -> on. */
+const fixValues = new Map<string, Map<string, boolean>>();
+
+function mockDifferences(game: string, version: string): Differences {
+  const list = Object.values(differenceLists).find((l) => l.game === game);
+  const values = fixValues.get(`${game}/${version}`) ?? new Map<string, boolean>();
+  return {
+    game,
+    version,
+    settingsFile: `~/.local/share/openrac/settings/${game}-${version}.ini`,
+    entries: (list?.differences ?? [])
+      .filter((d) => d.discs.includes(version))
+      .map((d) => ({
+        id: d.id,
+        kind: d.kind,
+        name: d.name,
+        original: d.original,
+        port: d.port,
+        refs: d.refs ?? [],
+        setting: d.setting ?? null,
+        on: d.setting ? (values.get(d.setting.key) ?? d.setting.default) : null,
+      })),
+  };
+}
 const actions = actionsFile as { repository: RawAction[]; versions: Record<string, RawAction[] | undefined> };
 const summary = summaryFile as RawSummary;
 
 // ---- made-up state -------------------------------------------------------------------
 
-const platform: Platform = "linux";
+const platform: Platform = onAndroid ? "android" : "linux";
+
+/** ?android: the Android launcher's GPU driver packages. */
+const turnip: GpuDriver = {
+  id: "Turnip-25.2.0",
+  name: "Turnip",
+  description: "Mesa's open-source Vulkan driver for Adreno",
+  author: "Mesa",
+  version: "25.2.0",
+  vendor: "Mesa",
+  driverVersion: "Vulkan 1.4",
+  minApi: 28,
+  library: "vulkan.ad07XX.so",
+};
+let gpu: GpuDrivers = {
+  drivers: [turnip],
+  selected: null,
+  renderer: "gles",
+  device: { model: "Google Pixel (preview)", api: 35, soc: "Qualcomm SM8650", gpu: "adreno" },
+};
+
+// The launcher's update channels (core/src/update.rs): a release's build, and master's development builds.
+const STABLE = {
+  repository: "OpenRAC/OpenRAC",
+  channel: null,
+  manifest: "https://github.com/OpenRAC/OpenRAC/releases/latest/download/latest.json",
+  page: "https://github.com/OpenRAC/OpenRAC/releases",
+};
+const DEV = {
+  repository: "OpenRAC/OpenRAC",
+  channel: "launcher-dev-master",
+  manifest: "https://github.com/OpenRAC/OpenRAC/releases/download/launcher-dev-master/latest.json",
+  page: "https://github.com/OpenRAC/OpenRAC/releases/tag/launcher-dev-master",
+};
 
 let config: Config = {
   // ?setup: a first start where no OpenRAC folder was found, so the welcome screen asks for one.
@@ -119,9 +195,14 @@ let config: Config = {
   lastVersion: null,
   discordRpc: true,
   checkUpdates: true,
+  updateChannel: null,
   layout: "compact",
   discordClientId: null,
   detailedGameLog: false,
+  // ?vulkan: the desktop's Vulkan renderer is chosen (Settings, Advanced).
+  renderer: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("vulkan")
+    ? "vulkan"
+    : "opengl",
   crashesSeen: {},
   discChoice: {},
 };
@@ -201,6 +282,11 @@ const installs: Record<string, BuildInfo | undefined> = fresh
 
 /** ?built (and ?crash): the game is built and its levels are ready, so Play is the main button. */
 const built = query.has("built") || query.has("crash");
+
+/** The steps a built game and ready levels mean are done: the ones that made them. The rest
+ *  (the editor's projects, the exports, the packs) are not, whatever the mock is asked to
+ *  pretend. */
+const BUILT_DONE = new Set(["play", "port-build", "port-rebuild", "port-levels", "port-levels-check"]);
 
 function installState(game: string): InstallState {
   return {
@@ -291,14 +377,17 @@ function view(action: RawAction, st: VersionStatus | null): ActionView {
     thisPlatform,
     runnable: blockers.length === 0,
     blockers,
-    // The mock has no files: nothing is built or made (but with ?built).
-    done: built,
+    // The mock has no files: nothing is built or made, except what ?built says is (the game
+    // built and its levels ready). Only the steps that made those are done; the rest are not,
+    // or a page would say an action that never ran is done.
+    done: built && BUILT_DONE.has(action.id),
   };
 }
 
 function progress(key: string): Progress | null {
   const row = summary[key];
-  if (!row) return null;
+  // A version with no report yet (progress null) has no figures, as in catalog.rs.
+  if (!row?.progress) return null;
   const p = row.progress;
   return {
     matchedCode: p.matched_code,
@@ -346,6 +435,7 @@ function library(): Library {
           progress: progress(key),
           status: st,
           actions: (actions.versions[key] ?? []).map((a) => view(a, st)),
+          portOutdated: false,
         };
       });
       return { id: g.id, title: g.title, year: g.year ?? null, install: installState(g.id), versions };
@@ -365,6 +455,7 @@ function library(): Library {
 type Listener = (event: JobEvent) => void;
 const listeners = new Set<Listener>();
 let nextJob = 0;
+let gameRunning = typeof location !== "undefined" && new URLSearchParams(location.search).has("playing");
 const timers = new Map<number, ReturnType<typeof setInterval>>();
 
 export function mockListen(handler: Listener): () => void {
@@ -747,6 +838,8 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
         configFile: "~/.config/dev.openrac.launcher/launcher.json",
         // ?standalone shows an installed launcher's pages: no checkout, nothing to find.
         standalone: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("standalone"),
+        updates: STABLE,
+        updateChannels: { stable: STABLE, dev: DEV },
       });
     case "get_config":
       return delay({ ...config });
@@ -784,6 +877,8 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
       return delay(library());
     case "install_game":
       return delay(install(args.game as string, args.image as string));
+    case "prepare_disc":
+      return delay((args.image as string).replace(/\.chd$/i, ".iso"));
     case "scan_discs": {
       // ?discs: the games folder holds the first game's PAL disc; ?discs=both, its NTSC-U disc too,
       // which with developer tools on offers the disc switch (core/src/disc_choice.rs).
@@ -994,6 +1089,18 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
     case "open_reports_folder":
       console.info(`[preview] ${command}`, args);
       return delay(null);
+    case "differences":
+      return delay(mockDifferences(String(args.game), String(args.version)));
+    case "set_game_fix": {
+      const now = mockDifferences(String(args.game), String(args.version));
+      const fix = now.entries.find((e) => e.id === args.id && e.kind === "fix" && e.setting);
+      if (!fix?.setting) throw new Error(`${String(args.id)} is not something that can be switched off`);
+      const key = `${now.game}/${now.version}`;
+      const values = fixValues.get(key) ?? new Map<string, boolean>();
+      values.set(fix.setting.key, Boolean(args.on));
+      fixValues.set(key, values);
+      return delay(mockDifferences(now.game, now.version));
+    }
     case "read_save":
       return delay(mockSave(typeof args.serial === "string" ? args.serial : "SCES_509.16", Number(args.slot ?? 0)));
     case "write_save": {
@@ -1020,6 +1127,44 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
         view,
       });
     }
+    case "pick_disc":
+      return delay("/data/user/0/dev.openrac.launcher/files/discs/game.iso");
+    case "tools_ready":
+      // The APK's copy of OpenRAC, unpacked by the time the preview asks.
+      return delay(null);
+    case "gpu_drivers":
+      return delay(structuredClone(gpu));
+    case "gpu_driver_import": {
+      const driver = { ...turnip, id: `Turnip-25.3.0`, version: "25.3.0" };
+      gpu = { ...gpu, drivers: [...gpu.drivers.filter((d) => d.id !== driver.id), driver] };
+      return delay({ driver });
+    }
+    case "gpu_driver_select":
+      gpu = { ...gpu, selected: (args.id as string | null) ?? null };
+      return delay(null);
+    case "gpu_renderer_select":
+      gpu = { ...gpu, renderer: args.renderer as GpuDrivers["renderer"] };
+      return delay(null);
+    case "gpu_driver_remove":
+      gpu = {
+        ...gpu,
+        drivers: gpu.drivers.filter((d) => d.id !== args.id),
+        selected: gpu.selected === args.id ? null : gpu.selected,
+      };
+      return delay(null);
+    case "background_status":
+      return delay(null);
+    // `?playing` in the preview: the Android game runs beside the launcher.
+    case "game_status":
+      return delay({ running: gameRunning, library: gameRunning ? "openrac-rac1-pal" : null });
+    case "game_window":
+      if (args.stop) gameRunning = false;
+      return delay(null);
+    case "update_check":
+    case "launcher_update_check":
+      return delay(null);
+    case "update_install":
+      return delay(null);
     default:
       throw new Error(`the preview has no ${command}: add it to src/lib/mock.ts`);
   }

@@ -5,7 +5,7 @@
   // Kerwan"), each with Copy, Save and Delete (and all at once), after a plain question; then
   // Detailed logs. File names are a contributor's detail: shown with developer tools on.
   import Icon from "$components/Icon.svelte";
-  import { api, type ReportEntry } from "$lib/api";
+  import { api, onAndroid, type ReportEntry } from "$lib/api";
   import { app, countCrashes, dismissCrashes, guard, saveConfig, toast } from "$lib/app.svelte";
   import { DISCORD_URL, ISSUES_URL } from "$lib/links";
   import { headline, when } from "$lib/reports";
@@ -31,6 +31,8 @@
   let cleared = $state(false);
 
   const crashes = $derived(entries?.filter((e) => e.kind === "crash").length ?? 0);
+  /** The logs: a session the game kept, whether it ended well or not. */
+  const logs = $derived(entries?.filter((e) => e.kind !== "crash").length ?? 0);
   /** The crash to tell the player about: the newest, while it is recent and not dismissed (the tile's mark). */
   const latest = $derived(
     (app.crashes[game]?.recent ?? 0) > 0 ? (entries?.find((e) => e.kind === "crash") ?? null) : null,
@@ -39,12 +41,19 @@
   let open = $state(false);
   const shown = $derived(entries ? (all ? entries : entries.slice(0, FIRST)) : []);
 
+  /** The list read in flight: only the newest answer is kept, so that a list read before a
+   *  delete does not put the deleted log back. */
+  let reading = 0;
+
   async function load(only: string | null) {
+    const mine = ++reading;
     try {
       const list = await api.reportsList(game);
+      if (mine !== reading) return;
       entries = only ? list.filter((e) => !e.program || e.program === only) : list;
       failed = null;
     } catch (e) {
+      if (mine !== reading) return;
       entries = [];
       failed = String(e);
     }
@@ -120,7 +129,7 @@
       <p class="head">
         <Icon name="warn" size={16} />
         <strong>{headline(e)}</strong>
-        <span class="when">· {when(e.time)}</span>
+        <span class="when">{when(e.time)}</span>
       </p>
       <p class="say">
         Your saves are kept. To help us fix it, send us the report in a
@@ -149,10 +158,11 @@
     <summary>
       Logs and crash reports{entries
         ? entries.length
-          ? ` (${entries.length})`
+          ? // What the number holds, said in words: a count of logs alone reads as a count of
+            // crashes, and a player who closed the game a few times would think it had crashed.
+            `: ${logs} ${logs === 1 ? "log" : "logs"}${crashes > 0 ? `, ${crashes} ${crashes === 1 ? "crash" : "crashes"}` : ""}`
           : ": none yet"
-        : ""}{#if crashes > 0 && !latest}<span class="dim count">· {crashes} {crashes === 1 ? "crash" : "crashes"}</span
-        >{/if}
+        : ""}
     </summary>
     <div class="inside">
       <p class="intro muted">
@@ -160,9 +170,12 @@
         save one and send it to us.
       </p>
       <div class="row tools">
-        <button class="ghost small" onclick={() => void guard(api.openReportsFolder(game, false))}>
-          <Icon name="folder" size={14} />Open folder
-        </button>
+        {#if !onAndroid}
+          <!-- Android opens no app's own folders: Save puts a report where the player chooses. -->
+          <button class="ghost small" onclick={() => void guard(api.openReportsFolder(game, false))}>
+            <Icon name="folder" size={14} />Open folder
+          </button>
+        {/if}
         {#if entries && entries.length > 0}
           <button class="ghost small danger" onclick={() => (asking = asking === "all" ? null : "all")}>
             <Icon name="trash" size={14} />Delete all
@@ -296,7 +309,7 @@
 
   .badge {
     font-family: var(--font-sans);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 600;
     letter-spacing: 0;
     padding: 3px 10px;
@@ -306,15 +319,14 @@
     background: color-mix(in srgb, var(--err) 10%, transparent);
   }
 
-  /* The last crash: open, in the crash colour, with its two ways to send the report. */
+  /* The last crash: first in Help, its mark in the crash colour, with its two ways to send the
+     report; a rule under it, not a box in the panel's box. */
   .latest {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 12px 14px;
-    border-radius: 12px;
-    border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
-    background: color-mix(in srgb, var(--err) 7%, var(--panel));
+    padding: 2px 0 14px;
+    border-bottom: 1px solid var(--line);
   }
 
   .latest .head {
@@ -332,7 +344,7 @@
 
   .say {
     margin: 0;
-    font-size: 13px;
+    font-size: 0.8125rem;
     color: var(--body);
   }
 
@@ -346,13 +358,8 @@
     cursor: pointer;
     color: var(--lav);
     font-weight: 600;
-    font-size: 14px;
+    font-size: 0.875rem;
     padding: 2px 0;
-  }
-
-  summary .count {
-    margin-left: 6px;
-    font-weight: 400;
   }
 
   details[open] .inside {
@@ -380,7 +387,7 @@
   .intro,
   .empty {
     margin: 0;
-    font-size: 14px;
+    font-size: 0.875rem;
     line-height: 1.5;
     max-width: 72ch;
   }
@@ -442,12 +449,12 @@
 
   .when {
     color: var(--soft);
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 
   .file {
     flex-basis: 100%;
-    font-size: 12px;
+    font-size: 0.75rem;
     overflow-wrap: anywhere;
   }
 
@@ -493,7 +500,7 @@
   .ask p {
     margin: 0;
     flex: 1 1 260px;
-    font-size: 14px;
+    font-size: 0.875rem;
     color: var(--text);
   }
 
@@ -507,7 +514,7 @@
   }
 
   .live {
-    font-size: 13px;
+    font-size: 0.8125rem;
     color: var(--ok);
   }
 
@@ -521,7 +528,7 @@
     align-items: flex-start;
     padding-top: 12px;
     border-top: 1px solid var(--line);
-    font-size: 14px;
+    font-size: 0.875rem;
     cursor: pointer;
   }
 
@@ -537,6 +544,6 @@
 
   .option small {
     color: var(--soft);
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 </style>

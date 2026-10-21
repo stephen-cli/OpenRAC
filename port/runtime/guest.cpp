@@ -363,6 +363,57 @@ gaddr openrac_folded_call(const uint32_t* places, int count, gaddr caller, uint3
     return result;
 }
 
+gaddr openrac_folded_address(const uint32_t* places, int count, gaddr caller, uint32_t size, int k,
+                             gaddr fallback) {
+    const int overlay = g_overlay_source != nullptr ? g_overlay_source() : g_overlay;
+    if (size == 0 || caller == 0 || caller + size > 0x02000000u) {
+        return fallback;
+    }
+    static std::mutex lock;
+    static std::map<std::tuple<int, gaddr, std::uint32_t, int, int>, gaddr> found;
+    std::scoped_lock hold(lock);
+    const auto key = std::make_tuple(overlay, caller, places[0], count, k);
+    if (auto it = found.find(key); it != found.end()) {
+        return it->second;
+    }
+    // The upper halves the code's lui instructions put in each register, as it reads in order.
+    std::uint32_t high[32] = {};
+    bool known[32] = {};
+    gaddr result = 0;
+    int seen = 0;
+    for (std::uint32_t i = 0; i * 4 < size && result == 0; ++i) {
+        std::uint32_t w;
+        std::memcpy(&w, G(caller + i * 4), 4);
+        const std::uint32_t op = w >> 26;
+        const std::uint32_t rs = (w >> 21) & 31;
+        const std::uint32_t rt = (w >> 16) & 31;
+        if (op == 0x0F) {  // lui
+            high[rt] = (w & 0xFFFFu) << 16;
+            known[rt] = true;
+            continue;
+        }
+        if ((op != 0x09 && op != 0x0D) || !known[rs]) {  // addiu, ori
+            continue;
+        }
+        const gaddr formed = op == 0x09 ? high[rs] + static_cast<std::uint32_t>(static_cast<std::int16_t>(w & 0xFFFFu))
+                                        : high[rs] | (w & 0xFFFFu);
+        for (int p = 0; p < count; ++p) {
+            const int o = static_cast<int>(places[p] >> 24) - 1;
+            if ((places[p] & 0x00FFFFFFu) == formed && (o == overlay || o == OPENRAC_OVERLAY_EXE)) {
+                if (seen++ == k) {
+                    result = formed;
+                }
+                break;
+            }
+        }
+    }
+    if (result == 0) {
+        result = fallback;
+    }
+    found.emplace(key, result);
+    return result;
+}
+
 const char* openrac_guest_function_name(gaddr address) {
     const Entry* e = find(address);
     return e == nullptr ? nullptr : e->name;
@@ -481,7 +532,17 @@ int openrac_guest_write_reach(const char* path, const char* game, long frames) {
     }
     std::fputs("\n]}\n", f);
     const bool ok = std::fclose(f) == 0;
-    return ok && std::rename(part.c_str(), path) == 0 ? 1 : 0;
+    if (!ok) {
+        return 0;
+    }
+#if defined(_WIN32)
+    // The Windows CRT's rename refuses an existing destination. Replace it in
+    // one operation so periodic reports refresh without discarding the last
+    // complete report if the move fails.
+    return MoveFileExA(part.c_str(), path, MOVEFILE_REPLACE_EXISTING) != 0 ? 1 : 0;
+#else
+    return std::rename(part.c_str(), path) == 0 ? 1 : 0;
+#endif
 }
 
 void openrac_guest_stop_on_missing(int stop) {
@@ -723,6 +784,65 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
     }
 }
 
+// Pairs each function of a reference program (`own`: its places and host functions, in address
+// order) with its copies in the loaded program: code addresses into `code`, globals into `out`
+// (the first pair of an address kept). A function the catalogue folded has several copies in one
+// program (rac1: the three text measurers, one per font, each on its own glyph table), and only one
+// of them is the reference's: paired with the wrong one, every use of its global in the level is
+// that copy's (the regular font's table read as the large font's). The copies are taken in address
+// order, so the result does not hang on a hash table's order:
+// - as many places of the function in the reference as copies: the k-th with the k-th;
+// - otherwise, each copy's pairs that every copy agrees on (an address all of them form the same
+//   way), and none of the others: those are each copy's own, which another function's pairs or
+//   openrac_data_in_copy give; the code address goes to the lowest copy.
+void pair_programs(WordReader reference, int program, const std::vector<std::pair<gaddr, openrac_host_fn>>& own,
+                   std::unordered_map<openrac_host_fn, std::vector<gaddr>> copies, gaddr low, gaddr high,
+                   bool skip_same_place, std::unordered_map<gaddr, gaddr>& code,
+                   std::map<gaddr, std::int32_t>& out) {
+    std::unordered_map<openrac_host_fn, std::size_t> own_count, own_rank;
+    for (const auto& [address, fn] : own) {
+        ++own_count[fn];
+    }
+    for (auto& [fn, places] : copies) {
+        std::sort(places.begin(), places.end());
+    }
+    for (std::size_t k = 0; k < own.size(); ++k) {
+        auto copy = copies.find(own[k].second);
+        const std::size_t rank = own_rank[own[k].second]++;
+        if (copy == copies.end() || copy->second.empty()) {
+            continue;
+        }
+        const std::vector<gaddr>& places = copy->second;
+        const std::uint32_t size =
+            k + 1 < own.size() ? std::min<std::uint32_t>(own[k + 1].first - own[k].first, 0x8000) : 0x400;
+        const gaddr at = own[k].first;
+        if (places.size() == 1 || places.size() == own_count[own[k].second]) {
+            const gaddr place = places.size() == 1 ? places[0] : places[rank];
+            if (!(skip_same_place && place == at)) {
+                code.emplace(at, place);
+            }
+            pair_code(reference, program, at, place, size, low, high, out);
+            continue;
+        }
+        if (!(skip_same_place && places[0] == at)) {
+            code.emplace(at, places[0]);
+        }
+        std::map<gaddr, std::int32_t> agreed;
+        pair_code(reference, program, at, places[0], size, low, high, agreed);
+        for (std::size_t c = 1; c < places.size() && !agreed.empty(); ++c) {
+            std::map<gaddr, std::int32_t> other;
+            pair_code(reference, program, at, places[c], size, low, high, other);
+            for (auto it = agreed.begin(); it != agreed.end();) {
+                auto o = other.find(it->first);
+                it = o != other.end() && o->second == it->second ? std::next(it) : agreed.erase(it);
+            }
+        }
+        for (const auto& pair : agreed) {
+            out.emplace(pair);
+        }
+    }
+}
+
 LevelMap& level_map(int overlay) {
     auto found = g_level_maps.find(overlay);
     if (found != g_level_maps.end()) {
@@ -745,21 +865,8 @@ LevelMap& level_map(int overlay) {
         copies[entry.fn].push_back(address);
     }
     std::map<gaddr, std::int32_t> pairs;
-    for (std::size_t k = 0; k < exe.size(); ++k) {
-        auto copy = copies.find(exe[k].second);
-        if (copy == copies.end()) {
-            continue;
-        }
-        const std::uint32_t size =
-            k + 1 < exe.size() ? std::min<std::uint32_t>(exe[k + 1].first - exe[k].first, 0x8000) : 0x400;
-        for (const gaddr place : copy->second) {
-            if (place != exe[k].first) {
-                map.code.emplace(exe[k].first, place);
-            }
-            pair_code(exe_reader, 0, exe[k].first, place, size, openrac_relocate_low,
-                      openrac_relocate_high, pairs);
-        }
-    }
+    pair_programs(exe_reader, 0, exe, std::move(copies), openrac_relocate_low, openrac_relocate_high, true,
+                  map.code, pairs);
     map.data.assign(pairs.begin(), pairs.end());
     info("level program {}: {} functions and {} global addresses relocated", overlay, map.code.size(),
          map.data.size());
@@ -830,18 +937,7 @@ LevelMap& level_pair_map(int from, int loaded) {
         copies[entry.fn].push_back(address);
     }
     std::map<gaddr, std::int32_t> pairs;
-    for (std::size_t k = 0; k < own.size(); ++k) {
-        auto copy = copies.find(own[k].second);
-        if (copy == copies.end()) {
-            continue;
-        }
-        const std::uint32_t size =
-            k + 1 < own.size() ? std::min<std::uint32_t>(own[k + 1].first - own[k].first, 0x8000) : 0x400;
-        for (const gaddr place : copy->second) {
-            map.code.emplace(own[k].first, place);
-            pair_code(level_reader, from, own[k].first, place, size, kLevelLow, kLevelHigh, pairs);
-        }
-    }
+    pair_programs(level_reader, from, own, std::move(copies), kLevelLow, kLevelHigh, false, map.code, pairs);
     map.data.assign(pairs.begin(), pairs.end());
     info("level program {} for level {}'s functions: {} functions and {} global addresses relocated",
          loaded, from, map.code.size(), map.data.size());

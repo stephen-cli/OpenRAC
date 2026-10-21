@@ -11,6 +11,7 @@ first, to know each definition (index_unit), before any is translated.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,6 +86,7 @@ class Program:
     symbols: dict[str, int] = field(default_factory=dict)  # other named globals -> address
     typedefs: dict[str, set] = field(default_factory=dict)  # name -> desugared type strings
     host: set = field(default_factory=set)  # functions the port writes by hand (port/game/<game>/)
+    from_assembly: set = field(default_factory=set)  # C left out for C from the instructions (hostgen.json "from_assembly")
     wrap: set = field(default_factory=set)  # translated as <name>__game, called by a host <name>
     aliases: dict = field(default_factory=dict)  # (unit, name) -> symbol, from labels Clang refused
     by_place: dict = field(default_factory=dict)  # (overlay, address) -> the symbol defined there
@@ -205,6 +207,45 @@ class Program:
             if f.unit is not None:
                 for place in self.code_places(sym):
                     self.by_place.setdefault(place, sym)
+
+    def code_tables(self) -> dict[int, list[tuple[int, str]]]:
+        """Every function with a code address, per overlay, as functions.c registers them for GFN:
+        (address, symbol), sorted. Worked out once (after the program is indexed)."""
+        tables = getattr(self, "_code_tables", None)
+        if tables is not None:
+            return tables
+        tables = {}
+        for sym, f in sorted(self.functions.items()):
+            if prototype(f, self.typedefs) is None:
+                continue
+            # Two spellings of one address (FUN_0020c828, func_0020C828): the one with C answers a
+            # call through the address too, not whichever sorts first.
+            own = self.canonical(sym)
+            if own != sym and own in self.functions and prototype(self.functions[own], self.typedefs) is not None:
+                continue
+            for overlay, addr in self.code_places(sym):
+                tables.setdefault(overlay, []).append((addr, sym))
+                # hostgen.json "entries": a function whose C starts this many bytes into its
+                # catalogue place answers calls through that address too.
+                offset = getattr(self, "entries", {}).get(sym)
+                if offset:
+                    tables[overlay].append((addr + offset, sym))
+        for entries in tables.values():
+            entries.sort()
+        self._code_tables = tables
+        return tables
+
+    def function_at(self, overlay: int, address: int) -> str | None:
+        """The function a call through address finds with overlay loaded: the first functions.c
+        lists there, which the runtime keeps (guest.cpp); None when there is none."""
+        index = getattr(self, "_function_at", None)
+        if index is None:
+            index = {}
+            for o, entries in self.code_tables().items():
+                for addr, sym in entries:
+                    index.setdefault((o, addr), sym)
+            self._function_at = index
+        return index.get((overlay, address))
 
     def canonical(self, symbol: str) -> str:
         """The symbol with C at the same place as symbol, or symbol: the port's own function
@@ -486,12 +527,42 @@ def canon(t: ctype.Type, typedefs: dict | None = None, depth: int = 0) -> str | 
 _SPLAT_SYMBOL = re.compile(r"^\s*([A-Za-z_][\w.$]*)\s*=\s*(0x[0-9A-Fa-f]+)\s*;")
 
 
+def read_catalogue(path: Path, program: Program) -> int:
+    """Seed functions absent from C using a name/address/size TSV.
+
+    Retain signatures learned from C. Let asmc infer registers for entries
+    declared nowhere. Catalogue sizes are not reliable function boundaries.
+    """
+    count = 0
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.startswith('#'):
+            continue
+        cols = line.split('\t')
+        if len(cols) < 3:
+            raise ValueError(f'{path}: expected name, address and size')
+        name, address = cols[0], int(cols[1], 0)
+        if name not in program.functions:
+            program.functions[name] = Function(
+                name, Signature(ctype.Base('int'), (), False, False), asm=True)
+            count += 1
+        program.symbols.setdefault(name, address)
+    return count
+
+
 def read_symbols(path: Path, program: Program) -> int:
     """Named symbols and their addresses from a splat symbol file
-    (`name = 0x00123456; // comment`)."""
+    (`name = 0x00123456; // comment`), or from a JSON table of the values a decompilation's
+    own build derived for names that state no address ({"values": {name: "0x..."}}: Going
+    Commando's build/boot/placed.json)."""
     if not path.exists():
         return 0
     count = 0
+    if path.suffix == ".json":
+        for name, value in json.loads(path.read_text(errors="replace")).get("values", {}).items():
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z_]\w*", name):
+                program.symbols.setdefault(name, int(value, 0))
+                count += 1
+        return count
     for line in path.read_text(errors="replace").splitlines():
         m = _SPLAT_SYMBOL.match(line)
         if m:

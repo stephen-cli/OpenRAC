@@ -81,13 +81,27 @@ pub fn bundled_root(resources: &Path) -> Option<PathBuf> {
 /// one that is gone gives way to the carried copy.
 pub fn settle(config: &mut crate::config::Config, bundled: Option<&Path>) {
     let Some(dir) = bundled else { return };
-    if !config.developer || !config.root.as_deref().is_some_and(is_openrac_root) {
+    if !config.developer
+        || !config.root.as_deref().is_some_and(is_openrac_root)
+        || on_the_copy(config.root.as_deref(), dir)
+    {
+        // The copy as this launcher names it: one an older launcher saved as `\\?\C:\...` is the
+        // same folder.
         config.root = Some(dir.to_path_buf());
     }
-    let on_copy = config.root.as_deref() == Some(dir);
+    let on_copy = on_the_copy(config.root.as_deref(), dir);
     if on_copy && (!config.developer || !config.python.as_deref().is_some_and(Path::is_file)) {
         config.python = bundled_python(dir);
     }
+}
+
+/// Whether `root` is the carried copy `bundled`: the same folder whether or not either is written
+/// with Windows' `\\?\` prefix. 0.7 saved the copy as `\\?\C:\...`, 0.8 names it `C:\...`: with
+/// developer tools on (which keep the saved folder) the launcher took its own copy for a checkout,
+/// and the Mods page looked for a checkout's assets/ in it ("The system cannot find the path
+/// specified").
+pub fn on_the_copy(root: Option<&Path>, bundled: &Path) -> bool {
+    root.is_some_and(|root| plain(root) == plain(bundled))
 }
 
 /// `path` without Windows' `\\?\` prefix, when it is a plain drive path (`\\?\C:\Users\...`): the
@@ -525,6 +539,9 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
             Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(25)),
             _ => {
                 let _ = child.kill();
+                // The killed process is reaped: one that is not waited for stays a zombie
+                // until the launcher exits, and a probe that times out is not rare.
+                let _ = child.wait();
                 return Err(format!("{program} did not finish within {} s", timeout.as_secs()));
             }
         }
@@ -567,6 +584,15 @@ mod tests {
         let found = godot_programs_in(base, false, 3);
         assert_eq!(found, vec![loose, steam, winget, unzipped, console]);
         assert_eq!(godot_programs_in(&base.join("missing"), false, 3), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn the_copy_is_the_copy_with_or_without_the_prefix() {
+        let copy = Path::new(r"C:\Users\me\AppData\Local\OpenRAC Launcher\openrac");
+        assert!(on_the_copy(Some(Path::new(r"\\?\C:\Users\me\AppData\Local\OpenRAC Launcher\openrac")), copy));
+        assert!(on_the_copy(Some(copy), copy));
+        assert!(!on_the_copy(Some(Path::new(r"C:\Users\me\OpenRAC")), copy));
+        assert!(!on_the_copy(None, copy));
     }
 
     #[test]

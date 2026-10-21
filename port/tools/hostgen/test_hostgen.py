@@ -198,6 +198,62 @@ class Translate(unittest.TestCase):
         """})
         self.assertEqual(out, ["0", "16", "5", "0", "0", "0"])
 
+    def test_a_three_float_local_has_a_quadword_slot(self):
+        # The console's compiler gives an array or record with no machine mode of its own a
+        # slot of whole quadwords; the game copies 16-byte points into `float v[3]`, and the
+        # fourth word must not land in the next local (Umbris's moby 1142: a path index
+        # became a segment length's bits, and the next lookup read far outside the path).
+        out = self.run_program({"a.c": """
+            typedef struct { float x, y, z; } P3;
+            static void put4(float *to) { to[0] = 1.0f; to[1] = 2.0f; to[2] = 3.0f; to[3] = 7.5f; }
+            static void set(int *to, int n) { *to = n; }
+            int test_main(void) {
+                float v[3];
+                int i;
+                P3 p;
+                int j;
+                short pair[2];
+                int k;
+                set(&i, 5); set(&j, 6); set(&k, 8);
+                put4(v);
+                put4(&p.x);
+                pair[0] = 1; pair[1] = 2;
+                test_print(i);
+                test_print(j);
+                test_print(k + pair[0] + pair[1] - 3);
+                test_print((int)((unsigned long)&v[0] & 15));
+                test_print((int)((unsigned long)&p & 15));
+                test_print((int)v[2] + (int)p.z);
+                return 0;
+            }
+        """})
+        self.assertEqual(out, ["5", "6", "8", "0", "0", "6"])
+
+    def test_a_bare_return_in_a_function_with_a_result(self):
+        # Matching C keeps the original's `return;` in an int (or pointer) function: old GCC took
+        # it, and today's Clang refuses to compile it. The translation returns zero.
+        out = self.run_program({"bare.c": """
+            int early(int x) {
+                if (x < 0) {
+                    return;
+                }
+                return x * 2;
+            }
+            char *nothing(int x) {
+                if (x) {
+                    return;
+                }
+                return 0;
+            }
+            int test_main(void) {
+                test_print(early(4));
+                test_print(early(-1));
+                test_print(nothing(1) == 0);
+                return 0;
+            }
+        """})
+        self.assertEqual(out, ["8", "0", "1"])
+
     def test_a_call_short_of_arguments_is_reported(self):
         # The caller has no argument of its own for the callee's second: the register held
         # whatever the caller left there, so the call is filled with 0 and listed.
@@ -256,6 +312,26 @@ class Translate(unittest.TestCase):
         self.assertEqual(out, ["234"])
         self.assertIn("GFN(void (*)(gaddr, int, float, float), ", self.last_generated)
         self.assertNotIn("GFN(void (*)(gaddr, float, float, int), ", self.last_generated)
+
+    def test_a_cast_to_fewer_arguments_passes_the_callers_own(self):
+        # rac3's text code casts a width function to take only its float (`((s32 (*)(f32))f)(1.0f)`):
+        # the integers stay what the caller's registers held. Through the definition's type, as a
+        # direct call: on Windows x64 the cast's float would land where the callee reads a pointer.
+        out = self.run_program({
+            "callee.c": """
+                int func_00110000(int *p, int n, float x) { return n * 10 + (int)x; }
+            """,
+            "caller.c": """
+                extern int func_00110000(int *, int, float);
+                int func_00120000(int *p, int n) { return ((int (*)(float))func_00110000)(2.0f); }
+                int test_main(void) {
+                    test_print(func_00120000(0, 5));
+                    return 0;
+                }
+            """,
+        })
+        self.assertEqual(out, ["52"])
+        self.assertIn("GFN(int (*)(gaddr, int, float), ", self.last_generated)
 
     def test_a_callee_typedef_the_caller_does_not_know(self):
         # The callee's file names its float and its pointer by typedefs the caller's file does
@@ -616,6 +692,28 @@ class Translate(unittest.TestCase):
         self.assertEqual(out, ["8", "1", "6"])
         self.assertIn("inline assembly Clang cannot read", self.last_report["stubbed"].values())
 
+    def test_float_to_integer_as_the_ee_converts(self):
+        # Out of the target's range C says nothing and the hosts differ (ARM gives 0 for a
+        # negative float into an unsigned type): the EE's conversion on every host.
+        out = self.run_program({"a.c": """
+            #include "common.h"
+            int test_main(void) {
+                u8 alpha;
+                volatile float minus = -1.5f, big = 3e9f, huge = 1e20f, fifty = 50.7f;
+                u32 u = minus;
+                u8 b = (u8)(minus * 2.0f);
+                alpha = fifty;
+                test_print((int)(u == 0xFFFFFFFFu));
+                test_print(b);
+                test_print((int)((u32)big == 3000000000u));
+                test_print((s32)huge == 0x7FFFFFFF);
+                test_print((s32)-huge == (s32)0x80000000);
+                test_print(alpha);
+                return 0;
+            }
+        """})
+        self.assertEqual(out, ["1", "253", "1", "1", "1", "50"])
+
     def test_variable_length_array_of_a_local_length(self):
         # A one-dimensional array whose length is a local goes on the guest stack for its
         # block, as on the console, and its address can be passed on.
@@ -805,8 +903,68 @@ class Translate(unittest.TestCase):
         self.assertEqual(out, ["1", "20"])
 
 
+class InputsDigest(unittest.TestCase):
+    """The fingerprint that lets a build skip a translation it already has."""
+
+    def test_changes_with_what_hostgen_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, game = Path(tmp) / "decomp", Path(tmp) / "game" / "g"
+            (source / "src").mkdir(parents=True)
+            (source / "include").mkdir()
+            (source / "asm").mkdir()
+            game.mkdir(parents=True)
+            (source / "src" / "a.c").write_text("int a(void) { return 1; }\n")
+            (source / "asm" / "big.s").write_text("nop\n")
+            config = game / "hostgen.json"
+            config.write_text("{}")
+            cfg = {"sources": ["src"], "includes": ["include"], "symbols": []}
+            first = hostgen.inputs_digest(source, config, cfg, [])
+            self.assertEqual(first, hostgen.inputs_digest(source, config, cfg, []))
+            # What it does not read leaves it as it is.
+            (source / "asm" / "big.s").write_text("nop\nnop\n")
+            self.assertEqual(first, hostgen.inputs_digest(source, config, cfg, []))
+            # The C, the game's configuration and the options change it.
+            (source / "src" / "a.c").write_text("int a(void) { return 2; }\n")
+            second = hostgen.inputs_digest(source, config, cfg, [])
+            self.assertNotEqual(first, second)
+            config.write_text('{"x": 1}')
+            self.assertNotEqual(second, hostgen.inputs_digest(source, config, cfg, []))
+            self.assertNotEqual(
+                hostgen.inputs_digest(source, config, cfg, []), hostgen.inputs_digest(source, config, cfg, ["src/a.c"])
+            )
+
+    def test_changes_with_the_assembly_and_disc_it_translates(self):
+        # With the assembly stage on, the assembly the setup wrote and the player's disc are
+        # inputs too: a new setup, or a disc set up after a build, must not reuse the old C.
+        with tempfile.TemporaryDirectory() as tmp:
+            source, game = Path(tmp) / "decomp", Path(tmp) / "game" / "g"
+            (source / "src").mkdir(parents=True)
+            (source / "asm").mkdir()
+            game.mkdir(parents=True)
+            (source / "src" / "a.c").write_text("int a(void) { return 1; }\n")
+            (source / "asm" / "f.s").write_text("nop\n")
+            disc = Path(tmp) / "disc.iso"
+            disc.write_bytes(b"\0" * 16)
+            config = game / "hostgen.json"
+            config.write_text("{}")
+            cfg = {"sources": ["src"], "includes": [], "symbols": [],
+                   "asm": {"enabled": True, "dirs": ["asm"]}}
+            first = hostgen.inputs_digest(source, config, cfg, [])
+            (source / "asm" / "f.s").write_text("nop\nnop\n")
+            second = hostgen.inputs_digest(source, config, cfg, [])
+            self.assertNotEqual(first, second)
+            off = {**cfg, "asm": {**cfg["asm"], "enabled": False}}
+            self.assertNotEqual(second, hostgen.inputs_digest(source, config, off, []))
+            with_disc = {**cfg, "asm": {**cfg["asm"], "retail": {"image": str(disc)}}}
+            third = hostgen.inputs_digest(source, config, with_disc, [])
+            self.assertNotEqual(second, third)
+            disc.write_bytes(b"\0" * 32)
+            self.assertNotEqual(third, hostgen.inputs_digest(source, config, with_disc, []))
+
+
 class SupersededDeclarations(unittest.TestCase):
-    def test_header_declaration_a_definition_contradicts_is_dropped(self):
+    def test_header_declaration_a_definition_contradicts_takes_its_prototype(self):
+        # Other files that take f from the header still have it, now with its real type.
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "include").mkdir()
@@ -816,7 +974,32 @@ class SupersededDeclarations(unittest.TestCase):
                    "include/h.h:2:13: note: previous declaration is here\n")
             done = clangast.drop_superseded_declarations(root, "a.c", text, err)
             self.assertEqual(len(done), 1)
-            self.assertEqual((root / "include/h.h").read_text(), "int keep;\n\nint tail;\n")
+            self.assertEqual((root / "include/h.h").read_text(), "int keep;\nvoid f(int *p, int n);\nint tail;\n")
+
+    def test_a_definition_over_several_lines_still_drops_the_declaration(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "include").mkdir()
+            (root / "include/h.h").write_text("extern void f(void *, int);\n")
+            text = '#include "include/h.h"\nvoid f(int *p,\n       int n) {\n}\n'
+            err = ("a.c:2:6: error: conflicting types for 'f'\n"
+                   "include/h.h:1:13: note: previous declaration is here\n")
+            clangast.drop_superseded_declarations(root, "a.c", text, err)
+            self.assertEqual((root / "include/h.h").read_text(), "\n")
+
+
+class CandidateStatics(unittest.TestCase):
+    def test_two_candidates_keep_their_own_static_helpers(self):
+        import prep
+        a = "static int sign(float f) { return f < 0; }\nint fa(float x) { return sign(x); }\n"
+        b = "static int sign(float f) { return f <= 0; }\nstatic int table[2];\nint fb(float x) { return sign(x) + table[0]; }\n"
+        a2, b2 = prep.own_statics(a, "_hc1"), prep.own_statics(b, "_hc2")
+        self.assertIn("static int sign_hc1(float f)", a2)
+        self.assertIn("return sign_hc1(x)", a2)
+        self.assertIn("static int sign_hc2(float f)", b2)
+        self.assertIn("static int table_hc2[2]", b2)
+        self.assertIn("table_hc2[0]", b2)
+        self.assertIn("int fb(float x)", b2)
 
 
 class SharedLibraries(unittest.TestCase):
@@ -1011,6 +1194,102 @@ class Places(unittest.TestCase):
             self.assertIn("0x00238128u", text)
             self.assertIn("0x00237B70u", text)
 
+    def test_the_address_of_a_folded_wrapper_is_the_one_the_code_forms(self):
+        # rac1's Umbris sea classes register func_00216270 as their draw callback: the catalogue
+        # folds 32-byte wrappers that each call another function into that name, and each class's
+        # own wrapper is a later place in the level, not the first. The address is found in the
+        # caller's code at run time, the first place when it forms none.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.generate(Path(tmp),
+                "void func_L07_0028E068(void) {}\n"
+                "extern void func_00300000(void (*)(void), void *);\n"
+                "void func_L07_002F9438(char *m) { func_00300000(func_L07_0028E068, m); }\n",
+                "func_L07_0028E068\tshared\t32\tfw\t2\t07:0028E068,07:002F9418,08:0028F000\n"
+                "func_L07_002F9438\tshared\t64\tfu\t2\t07:002F9438,08:002FA000\n",
+                {"relocate": [0x15F000, 0x500000]})
+            text = (out / "a.c").read_text()
+            self.assertIn("openrac_folded_address((const uint32_t[]){", text)
+            self.assertIn("0x082F9418u", text)
+            self.assertIn("0x0828E068u", text)
+
+    def test_a_larger_function_placed_twice_in_a_level_calls_its_copys_own_callee(self):
+        # rac1's func_L02_002D75F8 (76 bytes) is two of Eudora's circular saw hooks: 04:002C53B0
+        # calls the grab (func_L00_002DCDA8 there), 04:002C5400 the placing. Each copy's call goes
+        # where that copy's own jal goes, as in a folded wrapper of 64 bytes or less; a callee the
+        # function's own level does not have stays a direct call.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.generate(Path(tmp),
+                "extern int func_L00_002DCDA8(void *, void *, void *);\n"
+                "extern int func_00300000(void *);\n"
+                "int func_L02_002D75F8(char *a, void *p, void *t) {\n"
+                "    int r = func_L00_002DCDA8(a, p, t);\n"
+                "    if (r == 0) { if (a[0x20] == 9) a[0x20] = 1; } else a[0x20] = 9;\n"
+                "    return r + func_00300000(a);\n"
+                "}\n",
+                "func_L00_002DCDA8\tshared\t400\tfg\t3\t00:002DCDA8,02:002E7EC8,04:002DF068\n"
+                "func_L02_002D75F8\tshared\t76\tfw\t2\t02:002D75F8,02:002D76C8,04:002C53B0,04:002C5400\n",
+                {"relocate": [0x15F000, 0x500000]})
+            text = (out / "a.c").read_text()
+            self.assertIn("openrac_call_in_copy(2, 0x002D75F8u, 76u, openrac_self_, 0x002E7EC8u)", text)
+            self.assertIn("openrac_guest_entry((openrac_host_fn)func_L02_002D75F8)", text)
+            self.assertIn("func_00300000((gaddr)(a))", text)
+
+    def test_a_call_to_another_levels_function_follows_the_definition(self):
+        # rac1/ntsc's Rilgar creature (FUN_L05_002d1688) declared level 0's vector scale as
+        # (float, void *, void *) and called it through its level 0 address with that type: right
+        # on the EE and System V, where each kind has registers of its own; on Windows x64 the
+        # scale wrote through a pointer read from a register nobody set (0.8.0's crash). The
+        # call goes through the definition's type, each kind's arguments in order.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.generate(Path(tmp),
+                "void func_L00_001FF500(float *out, float *a, float len) { out[0] = a[0] * len; }\n"
+                "extern void scale(float, void *, void *) __asm__(\"func_L00_001FF500\");\n"
+                "extern float steer(float, void *, void *) __asm__(\"func_L00_0025BE00\");\n"
+                "float func_L00_0025BE00(void *a, void *b, float x) { return x; }\n"
+                "float func_L05_002D1688(char *moby, float len) {\n"
+                "    float w[4];\n"
+                "    scale(len, w, moby + 0xC0);\n"
+                "    return steer(len, moby, w);\n"
+                "}\n",
+                "func_L00_001FF500\tshared\t64\tfa\t1\t00:001FF500\n"
+                "func_L00_0025BE00\tshared\t64\tfc\t1\t00:0025BE00\n"
+                "func_L05_002D1688\tlevel\t64\tfb\t1\t05:002D1688\n")
+            text = (out / "a.c").read_text()
+            self.assertIn("GFN(void (*)(gaddr, gaddr, float), OPENRAC_LCODE(0, 0x001FF500u))(", text)
+            self.assertNotIn("GFN(void (*)(float, gaddr, gaddr)", text)
+            self.assertIn("GFN(float (*)(gaddr, gaddr, float), OPENRAC_LCODE(0, 0x0025BE00u))(", text)
+            import abicheck
+            problems, stats = abicheck.check(out)
+            self.assertEqual(problems, [])
+            self.assertEqual(stats["known"], 2)
+
+    def test_abicheck_finds_a_call_whose_positions_differ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = Path(tmp)
+            (gen / "game_protos.h").write_text(
+                "void func_L00_001FF500(gaddr a0, gaddr a1, float a2);\nint func_00100000(gaddr a0);\n")
+            (gen / "functions.c").write_text(
+                "static const openrac_fn_entry k_exe[] = {\n"
+                "    {0x00100000u, (openrac_host_fn)func_00100000, \"func_00100000\"},\n};\n"
+                "static const openrac_fn_entry k_overlay_00[] = {\n"
+                "    {0x001FF500u, (openrac_host_fn)func_L00_001FF500, \"func_L00_001FF500\"},\n};\n")
+            (gen / "a.c").write_text(
+                "void func_L05_002D1688(gaddr moby)\n{\n"
+                "    GFN(void (*)(float, gaddr, gaddr), OPENRAC_LCODE(0, 0x001FF500u))(1.0f, moby, moby);\n"
+                "    GFN(void (*)(gaddr, gaddr, float), OPENRAC_LCODE(0, 0x001FF500u))(moby, moby, 1.0f);\n"
+                "    float x = GFN(float (*)(gaddr), OPENRAC_CODE(0x00100000u))(moby);\n"
+                "    GFN(float (*)(gaddr), OPENRAC_CODE(0x00100000u))(moby);\n"
+                "    GFN(void (*)(float), GREF(gaddr, moby))(x);\n"
+                "}\n")
+            import abicheck
+            problems, stats = abicheck.check(gen)
+            self.assertEqual(len(problems), 2, problems)
+            self.assertIn("a.c:3:", problems[0])
+            self.assertIn("argument 1", problems[0])
+            self.assertIn("a.c:5:", problems[1])
+            self.assertIn("reads a float result, returns int", problems[1])
+            self.assertEqual(stats, {"calls": 5, "known": 4, "unknown": 1})
+
     def test_an_entry_inside_a_catalogue_place_answers_calls(self):
         # hostgen.json "entries": rac1's HUD gauge draw starts 0x20 bytes into its catalogue place.
         with tempfile.TemporaryDirectory() as tmp:
@@ -1062,6 +1341,28 @@ class Preparation(unittest.TestCase):
         both = 'void func_0022F4C0(void) {}\nvoid func_0022F4C8(char *m) {}\n'
         text = prep.use_candidates(out, {"func_0022F4C0": both}, set())
         self.assertEqual(text.count("void func_0022F4C8(char *m)"), 1)
+
+    def test_carried_names_become_the_address_names_of_their_values(self):
+        # Going Commando keeps rac1-decomp's names (rac1's addresses) for what it has not named;
+        # its build's table of derived values says where each is in this game, macro bodies too.
+        table = json.dumps({"values": {"r1_func_0011DB98": "0x0011f818", "r1_D_00158300": "0x00140300",
+                                       "D_00115E38": "0x00115e38", "Fbbb7bee1_FUN_00282A38": "0x00282a38"}})
+        aliases = prep.read_carried_aliases(table)
+        self.assertEqual(aliases, {"r1_func_0011DB98": "func_0011F818", "r1_D_00158300": "D_00140300"})
+        src = ('extern char r1_D_00158300[];\n'
+               '#define SIFCMD ((char *) r1_D_00158300)\n'
+               'void f(void) { r1_func_0011DB98(1, 2); /* r1_func_0011DB98 */ }\n')
+        out = prep.unalias(src, aliases)
+        self.assertIn('extern char D_00140300[];\n#define SIFCMD ((char *) D_00140300)\n', out)
+        self.assertIn('func_0011F818(1, 2); /* r1_func_0011DB98 */', out)
+
+    def test_a_table_of_derived_values_gives_symbols(self):
+        program = hostgen.Program()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "placed.json"
+            path.write_text(json.dumps({"values": {"BOOT_D_001395B8": "0x001395b8", "§.text": "0x1"}}))
+            self.assertEqual(hostgen.read_symbols(path, program), 1)
+        self.assertEqual(program.symbols, {"BOOT_D_001395B8": 0x001395B8})
 
     def test_each_declarator_keeps_its_own_assembler_name(self):
         # Batalia: several names in one extern statement each reach their own symbol, not the first's.
@@ -1404,6 +1705,266 @@ class FromAssembly(unittest.TestCase):
                 sq $10, 16($5)
             """)}, symbols={})
         self.assertEqual(out, ["20.000", "40.000", "60.000", "44.000", "1", "2", "1", "1"])
+
+    def test_parallel_halfword_multiply(self):
+        # Going Commando's sprite colour code: eight signed products, the even ones in rd, all
+        # of them in LO and HI, read back saturated to halfwords.
+        out = self.run_asm("""
+            extern short D_00300200[32];
+            INCLUDE_ASM("asm", func_00100000);
+            extern void func_00100000(short *v);
+            int test_main(void) {
+                static const short a[8] = {1, -2, 3, -4, 5, -6, 7, 300};
+                int i;
+                for (i = 0; i < 8; i++) { D_00300200[i] = a[i]; D_00300200[8 + i] = i == 7 ? 200 : 10; }
+                func_00100000(D_00300200);
+                for (i = 16; i < 24; i += 2) test_print((D_00300200[i] & 0xFFFF) | (D_00300200[i + 1] << 16));
+                for (i = 24; i < 32; i++) test_print(D_00300200[i]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                lq $8, 0($4)
+                lq $9, 16($4)
+                pmulth $10, $8, $9
+                sq $10, 32($4)
+                pmfhl.sh $11, $0, $0
+                jr $31
+                sq $11, 48($4)
+            """)}, symbols={})
+        self.assertEqual(out, ["10", "30", "50", "70", "10", "-20", "30", "-40", "50", "-60", "70", "32767"])
+
+    def test_parallel_word_multiplies_shifts_and_divides(self):
+        # The R5900's two-result word operations (HARDWARE_SEMANTICS.md, item 10): two 64-bit
+        # products, not a sum; the variable shifts, sign-extended to doublewords; the divides.
+        out = self.run_asm("""
+            extern int D_00300000[56];
+            INCLUDE_ASM("asm", func_00100000);
+            extern void func_00100000(int *v);
+            int test_main(void) {
+                static const int s[4] = {3, 100, -5, 200}, t[4] = {7, 0, 11, 0};
+                int i;
+                for (i = 0; i < 4; i++) { D_00300000[i] = s[i]; D_00300000[4 + i] = t[i]; }
+                func_00100000(D_00300000);
+                for (i = 8; i < 56; i++) test_print(D_00300000[i]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                lq $8, 0($4)
+                lq $9, 16($4)
+                pmultw $10, $8, $9     # (3 * 7, -5 * 11) as doublewords
+                sq $10, 32($4)
+                pmaddw $11, $8, $9     # HI:LO plus the products again
+                sq $11, 48($4)
+                pmfhi $12
+                sq $12, 64($4)
+                pmflo $13
+                sq $13, 80($4)
+                psllvw $14, $9, $8     # rt << rs: (3 << 7, -5 << 11)
+                sq $14, 96($4)
+                psravw $15, $9, $8
+                sq $15, 112($4)
+                psrlvw $16, $9, $8
+                sq $16, 128($4)
+                pdivw $0, $8, $9       # quotients to LO, remainders to HI
+                pmfhl.lw $17, $0, $0
+                sq $17, 144($4)
+                pmultuw $18, $8, $9    # 0xFFFFFFFB * 11, unsigned
+                sq $18, 160($4)
+                pmfhl.slw $19, $0, $0  # HI:LO saturated to 32 bits
+                sq $19, 176($4)
+                pdivbw $0, $8, $9      # each word over halfword 0 of rt (7)
+                pmflo $20
+                sq $20, 192($4)
+                pmfhi $21
+                jr $31
+                sq $21, 208($4)
+            """)}, symbols={})
+        self.assertEqual([int(x) for x in out], [
+            21, 0, -55, -1,  42, 0, -110, -1,  0, 0, -1, -1,  42, 0, -110, -1,
+            384, 0, -10240, -1,  0, 0, -1, -1,  0, 0, 2097151, 0,  0, 3, 0, -5,
+            21, 0, -55, 10,  21, 0, 2147483647, 0,  0, 14, 0, 28,  3, 2, -5, 4])
+
+    def test_parallel_halfword_multiply_add(self):
+        # The halfword family on LO and HI's eight words (item 10): phmadh's pair sums (and the
+        # higher product in the odd words), pmaddh's accumulation, pmfhl.lh, pmthl, padsbh, phmsbh.
+        out = self.run_asm("""
+            extern short D_00300000[16];
+            extern int D_00300100[28];
+            extern short D_00300200[16];
+            INCLUDE_ASM("asm", func_00100000);
+            extern void func_00100000(short *v, int *w, short *h);
+            int test_main(void) {
+                int i;
+                for (i = 0; i < 8; i++) { D_00300000[i] = (short)(i + 1); D_00300000[8 + i] = (short)(10 * (i + 1)); }
+                func_00100000(D_00300000, D_00300100, D_00300200);
+                for (i = 0; i < 28; i++) test_print(D_00300100[i]);
+                for (i = 0; i < 16; i++) test_print(D_00300200[i]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                lq $8, 0($4)           # 1 .. 8
+                lq $9, 16($4)          # 10 .. 80
+                phmadh $10, $8, $9
+                sq $10, 0($5)
+                pmfhl.uw $11, $0, $0   # the odd words: the higher products
+                sq $11, 16($5)
+                pmaddh $12, $8, $9
+                sq $12, 32($5)
+                pmfhl.lh $13, $0, $0
+                sq $13, 0($6)
+                pmthl $0, $9, $0       # rt's words to LO 0, HI 0, LO 2, HI 2
+                pmfhl.lw $14, $0, $0
+                sq $14, 48($5)
+                pmfhl.uw $15, $0, $0   # the odd words kept
+                sq $15, 64($5)
+                phmsbh $16, $8, $9
+                sq $16, 80($5)
+                pmfhl.uw $17, $0, $0
+                sq $17, 96($5)
+                padsbh $18, $9, $8     # rs - rt below, rs + rt above
+                jr $31
+                sq $18, 16($6)
+            """)}, symbols={})
+        self.assertEqual([int(x) for x in out], [
+            50, 250, 610, 1130,  40, 160, 360, 640,  60, 340, 860, 1620,
+            10 | 20 << 16, 30 | 40 << 16, 50 | 60 << 16, 70 | 80 << 16,  80, 320, 720, 1280,
+            30, 70, 110, 150,  -41, -161, -361, -641,
+            60, 80, 340, 320, 860, 720, 1620, 1280,  9, 18, 27, 36, 55, 66, 77, 88])
+
+    def test_conditional_call_tests_all_64_bits(self):
+        # bltzal on a register whose low word is positive and whose doubleword is negative
+        # (item 3): the EE calls; $ra is set either way.
+        out = self.run_asm("""
+            int func_00100100(int x) { return x * 2; }
+            INCLUDE_ASM("asm", func_00100000);
+            extern int func_00100000(int a);
+            int test_main(void) { test_print(func_00100000(-1)); test_print(func_00100000(1)); return 0; }
+        """, {"func_00100000": (0x00100000, """
+                addiu $29, $29, -16
+                sq $31, 0($29)
+                addiu $2, $0, 0
+                dsll32 $8, $4, 0
+                ori $8, $8, 1          # (a << 32) | 1
+                bltzal $8, func_00100100
+                addiu $4, $0, 21       # its argument, in the delay slot
+                lq $31, 0($29)
+                jr $31
+                addiu $29, $29, 16
+            """)}, symbols={"func_00100100": 0x00100100})
+        self.assertEqual(out, ["42", "0"])
+
+    def test_conversions_saturate_by_sign(self):
+        # cvt.w.s and vftoi0 of floats with exponent 255 (a NaN to the host, a large number to
+        # the EE) and of 3e9 (item 5): 0x7FFFFFFF or 0x80000000 by the sign, never x86's 0x80000000.
+        out = self.run_asm("""
+            extern unsigned int D_00300000[16];
+            INCLUDE_ASM("asm", func_00100000);
+            extern void func_00100000(unsigned int *v);
+            int test_main(void) {
+                int i;
+                D_00300000[0] = 0x7FFFEF02u; D_00300000[1] = 0xFFFFEF02u;
+                D_00300000[2] = 0x4F32D05Eu; D_00300000[3] = 0xBFC00000u; /* 3e9, -1.5 */
+                func_00100000(D_00300000);
+                for (i = 4; i < 12; i++) test_print((int)D_00300000[i]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                lwc1 $f0, 0($4)
+                cvt.w.s $f1, $f0
+                mfc1 $2, $f1
+                sw $2, 16($4)
+                lwc1 $f0, 4($4)
+                cvt.w.s $f1, $f0
+                mfc1 $2, $f1
+                sw $2, 20($4)
+                lqc2 $vf1, 0($4)
+                vftoi0.xyzw $vf2, $vf1
+                jr $31
+                sqc2 $vf2, 32($4)
+            """)}, symbols={})
+        self.assertEqual([int(x) for x in out], [2147483647, -2147483648, 0, 0,
+                                                 2147483647, -2147483648, 2147483647, -1])
+
+    def test_vu0_macro_memory_and_vf0(self):
+        # VSQI/VLQD/VILWR/VISWR reach VU0's data memory at (vi & 0xFF) * 16, not main RAM; the
+        # increments and decrements are vi's (item 8); vf0 stays (0, 0, 0, 1) (item 4).
+        out = self.run_asm("""
+            extern float D_00300000[24];
+            INCLUDE_ASM("asm", func_00100000);
+            extern void func_00100000(float *v);
+            int test_main(void) {
+                int i;
+                for (i = 0; i < 4; i++) D_00300000[i] = (float)(i + 1);
+                func_00100000(D_00300000);
+                for (i = 4; i < 12; i++) test_print_float(D_00300000[i]);
+                test_print(((int *)D_00300000)[12]);
+                test_print(((int *)D_00300000)[13]);
+                for (i = 16; i < 20; i++) test_print_float(D_00300000[i]);
+                test_print_float(((float *)0x11004020)[0]);
+                test_print(((int *)0x11004020)[2]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                addiu $8, $0, 0x102    # vi1 = 2 (only its low eight bits address a quadword)
+                ctc2 $8, $vi1
+                lqc2 $vf1, 0($4)
+                vsqi.xyzw $vf1, $vi1   # to quadword 2; vi1 = 3
+                vsqi.xyzw $vf0, $vi1   # (0, 0, 0, 1) to 3; vi1 = 4
+                vlqd.xyzw $vf2, $vi1   # vi1 = 3: (0, 0, 0, 1)
+                vlqd.xy $vf3, $vi1     # vi1 = 2: x and y of (1, 2, 3, 4)
+                sqc2 $vf2, 16($4)
+                sqc2 $vf3, 32($4)
+                addiu $9, $0, 0x1234
+                ctc2 $9, $vi2
+                viswr.z $vi2, $vi1     # the word z of quadword 2
+                vilwr.z $vi3, $vi1
+                vlqi.xyzw $vf0, $vi1   # vf0 is not written; vi1 = 3
+                cfc2 $2, $vi3
+                sw $2, 48($4)
+                cfc2 $3, $vi1
+                sw $3, 52($4)
+                qmtc2 $8, $vf0         # nor here
+                jr $31
+                sqc2 $vf0, 64($4)
+            """)}, symbols={})
+        self.assertEqual(out, ["0.000", "0.000", "0.000", "1.000", "1.000", "2.000", "0.000", "0.000",
+                               "4660", "259", "0.000", "0.000", "0.000", "1.000", "1.000", "4660"])
+
+    def test_vu0_flags_and_clipping(self):
+        # MAC and STATUS after a macro subtraction, read with CFC2 as the collision code does; the
+        # clip flag of two VCLIPw; the invalid flag of 0 / 0 (item 9).
+        out = self.run_asm("""
+            extern float D_00300000[12];
+            extern int D_00300100[4];
+            INCLUDE_ASM("asm", func_00100000);
+            extern void func_00100000(float *v, int *w);
+            int test_main(void) {
+                static const float v[12] = {1, -2, 0, 5,  1, 1, 0, 4,  10, -10, 3, 2};
+                int i;
+                for (i = 0; i < 12; i++) D_00300000[i] = v[i];
+                func_00100000(D_00300000, D_00300100);
+                for (i = 0; i < 4; i++) test_print(D_00300100[i]);
+                return 0;
+            }
+        """, {"func_00100000": (0x00100000, """
+                lqc2 $vf1, 0($4)
+                lqc2 $vf2, 16($4)
+                lqc2 $vf4, 32($4)
+                vsub.xyz $vf3, $vf1, $vf2   # (0, -3, 0): x and z zero, y negative
+                cfc2 $2, $vi17
+                sw $2, 0($5)
+                cfc2 $3, $vi16
+                sw $3, 4($5)
+                vclipw.xyz $vf4, $vf2       # (10, -10, 3) against 4: +x, -y
+                vclipw.xyz $vf1, $vf2       # inside
+                cfc2 $6, $vi18
+                sw $6, 8($5)
+                raw 0x4A0003BC              # vdiv Q, $vf0x, $vf0x: 0 / 0
+                cfc2 $7, $vi16
+                jr $31
+                sw $7, 12($5)
+            """)}, symbols={})
+        self.assertEqual([int(x) for x in out], [0x4A, 0xC3, 9 << 6, 0xC3 | 0x10 | 0x400])
 
     def test_declared_nowhere_gets_its_parameters_from_its_registers(self):
         # Called only through its code address; the C calls it as (int, int).

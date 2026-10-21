@@ -122,6 +122,17 @@ Consulted for what formats and fields mean; no code from them is included
 [Wrench](https://github.com/chaoticgd/wrench) (GPL-3.0-or-later) and
 [Replanetizer](https://github.com/RatchetModding/Replanetizer).
 
+The editor's reading of Going Commando's, Up Your Arsenal's and Deadlocked's
+levels (editor/wads.py, editor/games.py, the per-game paths in the readers)
+follows Wrench's `src/iso/table_of_contents.cpp`, `wad_identifier.cpp`,
+`src/wrenchbuild/level/`, `src/engine/` and `src/instancemgr/` (read at
+commit `46e8043`), re-implemented in Python; Deadlocked's pixel order
+(editor/level.py `unswizzle`) is its `map_pixel_index_rac4`
+(`src/core/texture.cpp`) written out again. The later games' level names
+in editor/games.py and launcher/src/lib/labels.ts are those of its
+`data/underlay/{gc,uya,dl}_levels.asset`. Wrench is GPL-3.0-or-later, as
+OpenRAC's top level is.
+
 ## The native port's libraries
 
 The port ([port/](port/README.md)) builds with these libraries. CMake fetches
@@ -134,6 +145,11 @@ none is copied into OpenRAC.
 | [cgltf](https://github.com/jkuhlmann/cgltf) | 1.15 | MIT | the level viewer: reading the editor's glTF meshes |
 | [stb_image](https://github.com/nothings/stb) | commit 2c980bb | MIT or public domain | the level viewer: reading textures (PNG) |
 | [Dear ImGui](https://github.com/ocornut/imgui) | 1.91.9b | MIT | the games' debug overlay ([docs/port/DEBUGGING.md](docs/port/DEBUGGING.md)) |
+| [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | vulkan-sdk-1.4.350.1 | Apache-2.0 or MIT | the Vulkan renderer |
+| [volk](https://github.com/zeux/volk) | vulkan-sdk-1.4.350.1 | MIT | the Vulkan renderer: the Vulkan loader, opened at run time |
+| [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | 3.3.0 | MIT | the Vulkan renderer: its memory |
+| [glslang](https://github.com/KhronosGroup/glslang) | vulkan-sdk-1.4.350.1 | BSD-3-Clause and others (its LICENSE.txt) | the Vulkan renderer: compiling its shaders |
+| [MoltenVK](https://github.com/KhronosGroup/MoltenVK) | 1.4.2 (Homebrew's `molten-vk`, or the Vulkan SDK's) | Apache-2.0 | the Vulkan renderer on macOS: Vulkan on Metal. Not fetched: its library is taken from the build machine and carried in each game's application bundle (`Contents/Frameworks/libMoltenVK.dylib`, its license in `Contents/Resources/MoltenVK-LICENSE.txt`; [port/cmake/MacApp.cmake](port/cmake/MacApp.cmake)) |
 
 The renderer's conventions (colour 0x80 as 1.0, reversed depth, the double
 draw for alpha-test fail modes, textures identified by the game's base

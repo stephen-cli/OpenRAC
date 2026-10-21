@@ -89,15 +89,32 @@ struct TextRegion D_001E78F0 = {0x50, 0x154, 0x60, 0x1a0, 0x100, 0x54, 0, 0, 0x1
 struct TextRegion D_001E7908 = {0x64, 0x12c, 0x60, 0x1a0, 0x100, 0x68, 0, 0, 0x10, 1, 0, 0};
 void draw_dialog_text(void) {
     enum {
+        FREEZE_SCALED_OUTLINE_DIALOG = 0,
         FREEZE_TITLE_DIALOG = 2,
-        FREEZE_MODE_MESSAGE_DIALOG = 3
+        FREEZE_MODE_MESSAGE_DIALOG = 3,
+        FREEZE_SPLIT_TEXT_ICON_DIALOG = 5,
+        FREEZE_CHOICE_MESSAGE_DIALOG = 6
+    };
+    enum {
+        FREEZE_CHOICE_PAIRED_FOOTER_MESSAGE = 0,
+        FREEZE_CHOICE_SHARED_PAIRED_FOOTER_MESSAGE = 1,
+        FREEZE_CHOICE_ALTERNATE_PAIRED_FOOTER_MESSAGE = 2,
+        FREEZE_CHOICE_CENTERED_FOOTER_MESSAGE = 3
+    };
+    enum {
+        MODE_FREEZE_TIMER_GATED_CENTERED_FOOTER_MESSAGE = 2,
+        MODE_FREEZE_FORMATTED_CENTERED_FOOTER_MESSAGE = 5,
+        MODE_FREEZE_ALTERNATE_LEFT_PAIRED_FOOTER_MESSAGE = 6,
+        MODE_FREEZE_CENTERED_FOOTER_MESSAGE = 17,
+        MODE_FREEZE_PAIRED_FOOTER_MESSAGE = 23,
+        MODE_FREEZE_FORMATTED_PAIRED_FOOTER_MESSAGE = 24
     };
     char buf[0x200];
     struct TextRegion box;
 
     setup_gif_paging(0);
     switch (freeze.state) {
-    case 5: {
+    case FREEZE_SPLIT_TEXT_ICON_DIALOG: {
         u8 *p;
         s32 color;
         s32 tint;
@@ -160,7 +177,7 @@ void draw_dialog_text(void) {
         mid = 0;
         right = 0;
         switch (mode_freeze_state) {
-        case 6:
+        case MODE_FREEZE_ALTERNATE_LEFT_PAIRED_FOOTER_MESSAGE:
             left = 0x524F;
             right = 0x524B;
             text = get_help_message_text(0x4FAF);
@@ -188,7 +205,7 @@ void draw_dialog_text(void) {
         case 15:
             text = get_help_message_text(0x4FB8);
             break;
-        case 17:
+        case MODE_FREEZE_CENTERED_FOOTER_MESSAGE:
             mid = 0x524A;
             text = get_help_message_text(0x4FBA);
             break;
@@ -196,7 +213,7 @@ void draw_dialog_text(void) {
             mid = 0x524A;
             text = get_help_message_text(0x4FBC);
             break;
-        case 2:
+        case MODE_FREEZE_TIMER_GATED_CENTERED_FOOTER_MESSAGE:
             mid = 0x524A;
             text = get_help_message_text(0x4FA6);
             if (freeze.timer != 0) {
@@ -225,13 +242,13 @@ void draw_dialog_text(void) {
             mid = 0x524A;
             text = get_help_message_text(0x4FBB);
             break;
-        case 24:
+        case MODE_FREEZE_FORMATTED_PAIRED_FOOTER_MESSAGE:
             left = 0x524E;
             right = 0x524B;
             sprintf(buf, freeze_fmt_scsc, get_help_message_text(0x4FAE), 1, 1, get_help_message_text(0x4FAA));
             text = buf;
             break;
-        case 23:
+        case MODE_FREEZE_PAIRED_FOOTER_MESSAGE:
             left = 0x524E;
             right = 0x524B;
             text = get_help_message_text(0x4FB1);
@@ -247,7 +264,7 @@ void draw_dialog_text(void) {
                 text = get_help_message_text(0x4FAC);
             }
             break;
-        case 5:
+        case MODE_FREEZE_FORMATTED_CENTERED_FOOTER_MESSAGE:
             mid = 0x4FA8;
             sprintf(buf, freeze_fmt_scsc, get_help_message_text(0x4FB0), 1, 1, get_help_message_text(0x4FA7));
             text = buf;
@@ -277,7 +294,7 @@ void draw_dialog_text(void) {
         }
         break;
     }
-    case 6: {
+    case FREEZE_CHOICE_MESSAGE_DIALOG: {
         s32 text_color;
         s32 button_color;
         s32 id;
@@ -289,18 +306,18 @@ void draw_dialog_text(void) {
         text_color = fast_tween_color(D_0015F4F0, D_0015F4F4, alpha);
         button_color = fast_tween_color(0x20FFFF, 0x8020FFFF, alpha);
         switch (freeze.choice) {
-        case 0:
-        case 1:
+        case FREEZE_CHOICE_PAIRED_FOOTER_MESSAGE:
+        case FREEZE_CHOICE_SHARED_PAIRED_FOOTER_MESSAGE:
             font_print_center(0xCA, 0x118, button_color, get_help_message_text(0x524E), -1);
             font_print_center(0x135, 0x118, button_color, get_help_message_text(0x524B), -1);
             id = 0x522A;
             break;
-        case 2:
+        case FREEZE_CHOICE_ALTERNATE_PAIRED_FOOTER_MESSAGE:
             font_print_center(0xCA, 0x118, button_color, get_help_message_text(0x524E), -1);
             font_print_center(0x135, 0x118, button_color, get_help_message_text(0x524B), -1);
             id = 0x522B;
             break;
-        case 3:
+        case FREEZE_CHOICE_CENTERED_FOOTER_MESSAGE:
             font_print_center(0x100, 0x118, button_color, get_help_message_text(0x524A), -1);
             id = 0x522C;
             break;
@@ -313,7 +330,7 @@ void draw_dialog_text(void) {
         }
         break;
     }
-    case 0: {
+    case FREEZE_SCALED_OUTLINE_DIALOG: {
         char line[0x40];
         s32 pulse;
         s32 c1;

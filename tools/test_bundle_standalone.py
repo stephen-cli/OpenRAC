@@ -1,5 +1,8 @@
 """The copy of OpenRAC an installed launcher carries: its actions and its files."""
 import json
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,8 +20,47 @@ class PlayerActions(unittest.TestCase):
         self.assertEqual(self.actions["repository"], [])
         for key, actions in self.actions["versions"].items():
             self.assertLessEqual({a["id"] for a in actions}, set(bundle.KEEP), key)
-        self.assertEqual(set(self.pal), {"port-levels", "port-levels-check", "play"})
-        self.assertEqual(set(self.ntsc), {"port-levels", "port-levels-check", "play"})
+        # Playing, and modding: every player gets the Mods page, not only a checkout's.
+        self.assertEqual(set(self.pal), set(bundle.KEEP))
+        self.assertEqual(set(self.ntsc), set(bundle.KEEP))
+
+    def test_the_later_games_levels_are_read_for_packs_in_the_data_folder(self):
+        # Going Commando, Up Your Arsenal and Deadlocked: early access, so no play and no packing
+        # back; their levels are read into the data folder for texture and model packs.
+        for key, first in (("rac2/ntsc", "00"), ("rac3/ntsc", "01"), ("rac4/ntsc", "00")):
+            with self.subTest(key):
+                actions = {a["id"]: a for a in self.actions["versions"][key]}
+                self.assertNotIn("editor-pack", actions)
+                levels = actions["port-levels"]
+                self.assertEqual(levels["args"][-3:], ["{data}/port/ntsc", "--anywhere", "--replace"])
+                self.assertEqual(levels["artifact"], f"{{data}}/port/ntsc/level_{first}/manifest.json")
+                self.assertEqual(actions["editor-extract"]["args"][-3:], ["{data}/levels/ntsc", "--split", "--anywhere"])
+                self.assertEqual([n["path"] for n in actions["assets-export"]["needs"]], [levels["artifact"]])
+
+    def test_mods_work_in_the_data_folder(self):
+        extract, pack = self.pal["editor-extract"], self.pal["editor-pack"]
+        self.assertEqual(extract["args"][-3:], ["{data}/levels/pal", "--split", "--anywhere"])
+        self.assertEqual(pack["args"][-3:], ["{data}/levels/pal", "{data}/packed/pal", "--anywhere"])
+        self.assertEqual(pack["artifact"], "{data}/levels/pal/level_00/project.godot")
+        self.assertEqual(self.pal["editor-open"]["artifact"], "{data}/levels/pal/level_{level}/project.godot")
+        self.assertIn("{data}/levels/pal/level_{level}", self.pal["editor-open"]["args"])
+        stack = self.pal["overrides-stack"]["args"]
+        self.assertEqual(stack[stack.index("--packed") + 1], "{data}/packed/pal")
+        self.assertEqual(stack[stack.index("--levels") + 1], "{data}/port/pal")
+        exported = self.pal["assets-export"]
+        self.assertEqual(exported["args"][2], "{data}/port/pal")
+        self.assertEqual([need["path"] for need in exported["needs"]], ["{data}/port/pal/level_99/manifest.json"])
+        edited = self.pal["play-edited"]
+        self.assertEqual(edited["args"][edited["args"].index("--levels") + 1], "{data}/port/pal")
+        self.assertEqual([need["path"] for need in edited["needs"]], [self.pal["port-levels-check"]["makes"]])
+        self.assertEqual(edited["cwd"], "{data}")
+        # NTSC-U's editor folders are its own.
+        self.assertEqual(self.ntsc["editor-extract"]["args"][-3], "{data}/levels/ntsc")
+
+    def test_no_mod_action_names_the_checkout(self):
+        for action in [*self.pal.values(), *self.ntsc.values()]:
+            text = json.dumps({k: action.get(k) for k in ("args", "artifact", "needs", "makes")})
+            self.assertNotIn("assets/", text.replace("{data}", ""), action["id"])
 
     def test_levels_go_to_the_data_folder(self):
         levels = self.pal["port-levels"]
@@ -101,6 +143,43 @@ class Bundle(unittest.TestCase):
             self.assertEqual((dest / app / "Contents/MacOS/Ratchet & Clank").read_bytes(), b"pal")
             self.assertTrue((dest / app / "Contents/Info.plist").is_file())
             self.assertEqual(sorted(p.name for p in dest.iterdir()), ["apps", "openrac-rac1-ntsc.exe"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc")
+                         and (shutil.which("llvm-strip") or shutil.which("strip")), "needs a Linux compiler and strip")
+    def test_linux_programs_go_without_their_debug_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, program = Path(tmp) / "main.c", Path(tmp) / "openrac-rac1-pal"
+            source.write_text("int main(void) { return 0; }\n")
+            subprocess.run(["cc", "-g", "-o", str(program), str(source)], check=True)
+            self.assertIn(b".debug_info", program.read_bytes())
+            self.assertTrue(bundle.strip_debug(program))
+            self.assertNotIn(b".debug_info", program.read_bytes())
+            self.assertIn(b"main", program.read_bytes())  # the symbols stay
+            subprocess.run([str(program)], check=True)
+            # Not an ELF program (a Windows .exe): left as it is.
+            exe = Path(tmp) / "openrac-rac1-pal.exe"
+            exe.write_bytes(b"MZ")
+            self.assertFalse(bundle.strip_debug(exe))
+            self.assertEqual(exe.read_bytes(), b"MZ")
+
+    def test_the_android_copy(self):
+        # The games and the Python program are the APK's libraries: the copy carries a PYTHONHOME.
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            home, out = Path(tmp) / "python", Path(tmp) / "openrac"
+            (home / "lib/python3.13/lib-dynload").mkdir(parents=True)
+            (home / "lib/python3.13/os.py").write_text("")
+            (home / "lib/python3.13/test").mkdir()
+            argv, sys.argv = sys.argv, ["bundle_standalone.py", str(out), "--android", "--python", str(home)]
+            try:
+                self.assertEqual(bundle.main(), 0)
+            finally:
+                sys.argv = argv
+            self.assertTrue((out / "python/lib/python3.13/os.py").is_file())
+            self.assertFalse((out / "python/lib/python3.13/test").exists())
+            self.assertFalse((out / "port").exists())
+            self.assertIn("Android", (out / "STANDALONE").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

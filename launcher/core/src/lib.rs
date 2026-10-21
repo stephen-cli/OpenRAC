@@ -15,16 +15,21 @@
 //! - [`detect`]: finding the checkout, Python, Godot and Docker.
 //! - [`install`]: setting a game up from the player's disc, OpenGOAL's way.
 //! - [`disc_choice`]: for developers with two discs of a game, which one is played.
+//! - [`differences`]: what the port does otherwise than the PS2 game, and the fixes a player switches back.
 //! - [`jobs`]: running an action as a child process and streaming its output.
 //! - [`overrides`]: a game's overrides packs (replacement textures and models): list, order, on/off.
 //! - [`library`]: all of the above, put together for the UI.
 //! - [`reports`]: a game's session logs and crash reports, the text and the .zip players send.
 //! - [`launcher_log`]: the launcher's own log, which goes in that .zip.
+//! - [`update`]: the launcher's own updates on Android: the manifest and the signature check.
 
 pub mod actions;
+pub mod android;
 pub mod catalog;
+pub mod chd;
 pub mod config;
 pub mod detect;
+pub mod differences;
 pub mod disc_choice;
 pub mod discord;
 pub mod discs;
@@ -33,10 +38,12 @@ pub mod jobs;
 pub mod launcher_log;
 pub mod library;
 pub mod overrides;
+pub mod port_build;
 pub mod reports;
 pub mod save_edit;
 pub mod saves;
 pub mod status;
+pub mod update;
 
 use std::path::{Path, PathBuf};
 

@@ -39,7 +39,13 @@ void draw_help(void) __asm__("FUN_001fe980");
 
 void draw_help(void) {
     enum {
-        HELP_PROMPT = 2
+        HELP_FRAME_OPENING = 1,
+        HELP_PROMPT = 2,
+        HELP_PROMPT_FRAME_TRANSITION = 3,
+        HELP_TEXT_FADE_IN = 4,
+        HELP_TEXT_STEADY = 5,
+        HELP_TEXT_FADE_OUT = 6,
+        HELP_FRAME_CLOSING = 7
     };
     if (((HelpState *)D_001996D0)->state == 0) {
         return;
@@ -51,15 +57,15 @@ void draw_help(void) {
         return;
     }
     switch (((HelpState *)D_001996D0)->state) {
-    case 1:
+    case HELP_FRAME_OPENING:
         if (D_0015EF1D_b) {
-            int s = ((HelpState *)D_001996D0)->x04 * 4 + 8;
+            int frame_half_extent = ((HelpState *)D_001996D0)->x04 * 4 + 8;
 
-            ((HelpState *)D_001996D0)->pad[4] = s;
-            ((HelpState *)D_001996D0)->pad[5] = s;
+            ((HelpState *)D_001996D0)->pad[4] = frame_half_extent;
+            ((HelpState *)D_001996D0)->pad[5] = frame_half_extent;
             draw_ui_frame(
-                ((HelpState *)D_001996D0)->pad[3] - s, ((HelpState *)D_001996D0)->pad[3] + s,
-                ((HelpState *)D_001996D0)->pad[2] - s, ((HelpState *)D_001996D0)->pad[2] + s, 0x60);
+                ((HelpState *)D_001996D0)->pad[3] - frame_half_extent, ((HelpState *)D_001996D0)->pad[3] + frame_half_extent,
+                ((HelpState *)D_001996D0)->pad[2] - frame_half_extent, ((HelpState *)D_001996D0)->pad[2] + frame_half_extent, 0x60);
         }
         break;
     case HELP_PROMPT:
@@ -67,7 +73,7 @@ void draw_help(void) {
             help_draw_prompt();
         }
         break;
-    case 3:
+    case HELP_PROMPT_FRAME_TRANSITION:
         if (D_0015EF1D_b) {
             int a =
                 (((HelpState *)D_001996D0)->pad[0] - 0x20) * ((HelpState *)D_001996D0)->x04 / 8 +
@@ -91,9 +97,9 @@ void draw_help(void) {
                                0x40, (alpha << 24) | 0x808080, get_effect_texture(4));
         }
         break;
-    case 4:
-    case 5:
-    case 6:
+    case HELP_TEXT_FADE_IN:
+    case HELP_TEXT_STEADY:
+    case HELP_TEXT_FADE_OUT:
         if (D_0015EF1D_b) {
             short win[12];
             int col = 0x80FFA888;
@@ -117,7 +123,7 @@ void draw_help(void) {
             font_print_window_small((void *)win, col, text, -1);
         }
         break;
-    case 7:
+    case HELP_FRAME_CLOSING:
         if (D_0015EF1D_b) {
             int b = ((HelpState *)D_001996D0)->pad[4] -
                     (((HelpState *)D_001996D0)->pad[4] - 8) * ((HelpState *)D_001996D0)->x04 / 8;

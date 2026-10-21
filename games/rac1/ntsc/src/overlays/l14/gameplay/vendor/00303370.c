@@ -11,13 +11,17 @@ extern unsigned char D_L14_001E9C60[];
 extern void register_audio_stream_callback(void) __asm__("FUN_00215420");
 
 void FUN_L14_00303370(struct Moby *moby) {
+    enum {
+        MOBY_STATE_INITIALIZE = 0,
+        MOBY_STATE_REGISTER_DRAW_CALLBACK = 1
+    };
     switch (moby->state) {
-    case 0:
+    case MOBY_STATE_INITIALIZE:
         FUN_L02_002a4058(D_L14_001E9C60, 0x40, 0.6666667f);
         moby->state = 1;
         moby->update_dist = 0xFF;
         break;
-    case 1:
+    case MOBY_STATE_REGISTER_DRAW_CALLBACK:
         add_draw_callback(register_audio_stream_callback, moby);
         break;
     }
@@ -36,8 +40,8 @@ typedef struct {
 } O_FUN_L14_00305a38;
 s32 random_integer_below(s32) __asm__("FUN_00213260");
 s32 scale_game_frames(s32) __asm__("FUN_001f96f8");
-void FUN_L14_00305a38(O_FUN_L14_00305a38 *o) {
-    M_FUN_L14_00305a38 *m = o->m;
+void FUN_L14_00305a38(O_FUN_L14_00305a38 *moby) {
+    M_FUN_L14_00305a38 *m = moby->m;
     s32 i;
     for (i = 0; i < 4; i++)
         m->r[i] = random_integer_below(0xFF);

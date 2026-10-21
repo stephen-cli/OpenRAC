@@ -34,10 +34,12 @@ The code is in [port/](../../port/README.md).
 |---|---|
 | [DESIGN.md](DESIGN.md) | What is decided, the shape of the port, the open decisions |
 | [ROADMAP.md](ROADMAP.md) | The order of work, and whether the decompilation must be finished first |
-| [SETTINGS.md](SETTINGS.md) | The PC settings and their file, frame pacing against the game's tick, the game's 50/60 Hz option, the graphics card checks, where a frame's time goes, and the settings beside OpenGOAL's and ReRAC's |
+| [SETTINGS.md](SETTINGS.md) | The PC settings and their file, frame pacing against the game's tick, the game's 50/60 Hz option, the graphics card checks, where a frame's time goes, the settings beside OpenGOAL's and ReRAC's, and the game fixes (what the port does otherwise than the original, and what a player switches back) |
 | [DECOMP_STATUS.md](DECOMP_STATUS.md) | How much of Ratchet & Clank (PAL) is C a PC could build, and what is not |
+| [HARDWARE_SEMANTICS.md](HARDWARE_SEMANTICS.md) | What the original code relies on in the PS2's processors (rounding, no NaN, 128-bit registers, VU0 flags, MMI, the GIF stream, ...) and how the port keeps each |
 | [DEBUGGING.md](DEBUGGING.md) | The debug overlay, the frame dump, pause and slow motion, every `OPENRAC_*` environment variable |
 | [RENDERER.md](RENDERER.md) | How the game builds a frame, everything it draws, the VU programs, the graphics chip's conventions |
+| [ANDROID.md](ANDROID.md) | The port and the launcher on Android: one APK, the game's activity, OpenGL ES 3.2, the tools on the device, GPU driver packages (Mali, Adreno); building and device tests in [port/android](../../port/android/README.md) |
 | [PORTABILITY.md](PORTABILITY.md) | What the matching C assumes about the console, and the choices for a PC build |
 | [RAC1_PAL_SURVEY.md](RAC1_PAL_SURVEY.md) | The first survey of the game for a native build (2026-10-08): frame loop, display list, menu path, disc, memory card, library surface |
 | [RAC1_PAL_CAMPAIGN.md](RAC1_PAL_CAMPAIGN.md) | The rules and the dated log of the campaign for a playable Ratchet & Clank (PAL) |

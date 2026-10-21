@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "renderer/math.h"
+#include "renderer/shadow_volume.h"
 #include "renderer/texture_pool.h"
 
 namespace openrac::renderer {
@@ -108,6 +109,9 @@ inline constexpr std::uint32_t kUiSprite = 2;
 inline constexpr std::uint32_t kUiGlyph = 1;
 
 struct FrameInput {
+    std::span<const ShadowCapsule> shadow_capsules;
+    Vec3 shadow_extrusion{};
+    std::optional<std::array<float,2>> shadow_heights;
     // The packets the game built for each bucket this frame (empty when a
     // bucket has nothing, or its renderer draws from elsewhere).
     std::array<std::span<const std::uint8_t>, kBucketCount> packets{};
@@ -161,6 +165,9 @@ struct RenderTarget {
     // the same size with one sample a pixel to resolve it into first (readable()); 0 for a plain
     // target, which is read as it is.
     unsigned resolve_framebuffer = 0;
+    // The GPU resolves the samples into resolve_framebuffer's colour itself (FrameBuffer::
+    // resolves_itself): it is read as it is, with nothing copied first.
+    bool resolves_itself = false;
     // On a target wider than the picture: what the game cut at the television's sides (a scissor
     // of the screen's whole width) is cut at the target's sides instead, so that the HUD's parts
     // the game moved out past its picture's sides (the player's "HUD: Edges") are seen.

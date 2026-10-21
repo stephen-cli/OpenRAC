@@ -68,20 +68,31 @@ void timed_activation_pads_update(unsigned char *moby)
 {
     enum {
         PAD_FLASH_APPLY_GREEN = 0,
-        PAD_FLASH_APPLY_WHITE = 1
+        PAD_FLASH_APPLY_WHITE = 1,
+        PAD_INITIALIZE_FLASHING = 6,
+        PAD_UPDATE_FLASHING = 7,
+        PAD_RESET_TO_ACTIVATION_WAIT = 8
     };
-    char *d;
+    enum {
+        PAD_INITIALIZE = 0,
+        PAD_WAIT_FOR_ACTIVATION = 1,
+        PAD_ADVANCE_TO_FLASH_ACTIVATION_GATE = 2,
+        PAD_WAIT_TO_ENTER_FLASH_ACTIVATION_WAIT = 3,
+        PAD_ENTER_FLASH_ACTIVATION_WAIT = 4,
+        PAD_WAIT_FOR_FLASH_ACTIVATION = 5
+    };
+    char *pad_data;
     char *p;
-    float o[4];
-    float q[16];
+    float activation_offset[4];
+    float transposed_pad_rotation[16];
     int flag;
     int on;
     int st;
 
     if (moby == 0)
         return;
-    d = *(char **)(moby + 0x78);
-    if (d == 0)
+    pad_data = *(char **)(moby + 0x78);
+    if (pad_data == 0)
         return;
 
     flag = 0;
@@ -92,7 +103,7 @@ void timed_activation_pads_update(unsigned char *moby)
         }
     }
 
-    if (*(int *)(d + 0x8) == 0) {
+    if (*(int *)(pad_data + 0x8) == 0) {
         p = (char *)D_0013E633_30D370;
         if (*(short *)(p + 0x30E) == 0)
             flag = *(unsigned char **)(p + 0x2FC) == moby;
@@ -100,13 +111,13 @@ void timed_activation_pads_update(unsigned char *moby)
             if (vector_distance(moby + 0x10, p + 0x80) < 2.0f) {
                 if (*(int *)(p + 0x2084) == 0x11) {
                     if (*(float *)(p + 0xAA8) < 7.0f) {
-                        subtract_vector_xyz(o, moby + 0x10, p + 0x80);
-                        func_001FA190_30D370(q);
-                        func_001FA4A0_30D370(q, moby + 0xC0);
-                        transform_vector(o, o, q);
-                        if (absolute_float(o[0]) < 0.6f) {
-                            if (absolute_float(o[1]) < 0.6f) {
-                                if (absolute_float(o[2]) < 0.957f)
+                        subtract_vector_xyz(activation_offset, moby + 0x10, p + 0x80);
+                        func_001FA190_30D370(transposed_pad_rotation);
+                        func_001FA4A0_30D370(transposed_pad_rotation, moby + 0xC0);
+                        transform_vector(activation_offset, activation_offset, transposed_pad_rotation);
+                        if (absolute_float(activation_offset[0]) < 0.6f) {
+                            if (absolute_float(activation_offset[1]) < 0.6f) {
+                                if (absolute_float(activation_offset[2]) < 0.957f)
                                     flag = 1;
                             }
                         }
@@ -119,91 +130,91 @@ void timed_activation_pads_update(unsigned char *moby)
     st = moby[0x20];
     if ((unsigned int)(st - 2) < 4) {
         if (moby[0xBC] == 1) {
-            if (func_001F9908_30D370((int *)d)) {
+            if (func_001F9908_30D370((int *)pad_data)) {
                 func_0022ED80_30D370(2, 0, (int)moby);
                 func_L01_0026F090_30D370(moby[0x21], 8);
-            } else if (func_001F9908_30D370((int *)(d + 4))) {
+            } else if (func_001F9908_30D370((int *)(pad_data + 4))) {
                 func_0022ED80_30D370(0, 0, (int)moby);
-                *(int *)(d + 4) = func_001F9850_30D370(0x2D) < func_001F9850_30D370(5) + *(int *)d / func_001F9850_30D370(0x28)
-                    ? func_001F9850_30D370(0x2D) : func_001F9850_30D370(5) + *(int *)d / func_001F9850_30D370(0x28);
+                *(int *)(pad_data + 4) = func_001F9850_30D370(0x2D) < func_001F9850_30D370(5) + *(int *)pad_data / func_001F9850_30D370(0x28)
+                    ? func_001F9850_30D370(0x2D) : func_001F9850_30D370(5) + *(int *)pad_data / func_001F9850_30D370(0x28);
             }
         }
     }
 
     switch (moby[0x20]) {
-    case 0:
+    case PAD_INITIALIZE:
         glow_n(moby, 0x80, 0x80, 0x80);
         func_L01_0026F040_30D370(moby[0x21], 0);
         func_L01_0026F090_30D370(moby[0x21], 1);
         break;
-    case 1:
-        *(int *)(d + 0x8) = 0;
+    case PAD_WAIT_FOR_ACTIVATION:
+        *(int *)(pad_data + 0x8) = 0;
         glow_n(moby, 0x80, 0x80, 0x80);
         if (flag) {
-            if (*(int *)(d + 0x10) > 0)
-                *(int *)d = func_001F9850_30D370(*(int *)(d + 0x10) * 60);
+            if (*(int *)(pad_data + 0x10) > 0)
+                *(int *)pad_data = func_001F9850_30D370(*(int *)(pad_data + 0x10) * 60);
             else
-                *(int *)d = func_001F9850_30D370(900);
+                *(int *)pad_data = func_001F9850_30D370(900);
             on = 1;
             glow_n(moby, 0, 0xFF, 0);
-            *(int *)(d + 0x8) = on;
+            *(int *)(pad_data + 0x8) = on;
             func_L01_0026F040_30D370(moby[0x21], 0);
             moby[0xBC] = on;
             func_0022ED80_30D370(3, 0, (int)moby);
             func_L01_0026F090_30D370(moby[0x21], 2);
         }
         break;
-    case 2:
+    case PAD_ADVANCE_TO_FLASH_ACTIVATION_GATE:
         moby[0x20] = 3;
         break;
-    case 3:
+    case PAD_WAIT_TO_ENTER_FLASH_ACTIVATION_WAIT:
         if (flag) {
-            *(int *)(d + 0x8) = 1;
+            *(int *)(pad_data + 0x8) = 1;
             glow_n(moby, 0, 0xFF, 0);
             func_0022ED80_30D370(3, 0, (int)moby);
             func_L01_0026F090_30D370(moby[0x21], 4);
         }
         break;
-    case 4:
+    case PAD_ENTER_FLASH_ACTIVATION_WAIT:
         moby[0x20] = 5;
         break;
-    case 5:
+    case PAD_WAIT_FOR_FLASH_ACTIVATION:
         if (flag) {
-            *(int *)(d + 0x8) = 1;
+            *(int *)(pad_data + 0x8) = 1;
             glow_n(moby, 0, 0xFF, 0);
             func_L01_0026F090_30D370(moby[0x21], 6);
             func_0022ED80_30D370(1, 0, (int)moby);
         }
         break;
-    case 6:
-        *(short *)(d + 0xC) = func_001F9850_30D370(0x14);
-        *(short *)(d + 0xE) = 0;
+    case PAD_INITIALIZE_FLASHING:
+        *(short *)(pad_data + 0xC) = func_001F9850_30D370(0x14);
+        *(short *)(pad_data + 0xE) = 0;
         glow_n(moby, 0x80, 0xFF, 0x80);
         moby[0x20] = 7;
         break;
-    case 7:
+    case PAD_UPDATE_FLASHING:
         if (moby[0xB0] != 0xFF) {
             if (visited52[moby[0xB0] + (current_level_index << 4)] != 0xFF)
                 func_L00_002512D8_30D370(moby[0xB0]);
         }
-        if (func_001F9938_30D370(d + 0xC)) {
-            *(short *)(d + 0xC) = func_001F9850_30D370(0x14);
-            switch (*(short *)(d + 0xE)) {
+        if (func_001F9938_30D370(pad_data + 0xC)) {
+            *(short *)(pad_data + 0xC) = func_001F9850_30D370(0x14);
+            switch (*(short *)(pad_data + 0xE)) {
             case PAD_FLASH_APPLY_GREEN:
                 glow_n(moby, 0, 0xFF, 0);
-                *(short *)(d + 0xE) = 1;
+                *(short *)(pad_data + 0xE) = 1;
                 break;
             case PAD_FLASH_APPLY_WHITE:
                 glow_n(moby, 0xFF, 0xFF, 0xFF);
-                *(short *)(d + 0xE) = 0;
+                *(short *)(pad_data + 0xE) = 0;
                 break;
             case 2 ... 5:
-                *(short *)(d + 0xE) = 0;
+                *(short *)(pad_data + 0xE) = 0;
                 break;
             }
         }
         break;
-    case 8:
+    case PAD_RESET_TO_ACTIVATION_WAIT:
         glow_n(moby, 0x80, 0x80, 0x80);
         moby[0xBC] = 0;
         moby[0x20] = 1;
@@ -223,6 +234,13 @@ extern void play_sound_310df0(s32, s32, void *) __asm__("FUN_0022da68");
 void door_update(u8 *moby) __asm__("FUN_L07_00310df0");
 void door_update(u8 *moby)
 {
+    enum {
+        DOOR_INITIALIZE = 0,
+        DOOR_WAIT_TO_MOVE_TO_OFFSET_POSITION = 1,
+        DOOR_MOVE_TO_OFFSET_POSITION = 2,
+        DOOR_WAIT_TO_RETURN_TO_INITIAL_POSITION = 3,
+        DOOR_RETURN_TO_INITIAL_POSITION = 4
+    };
     u8 *data = *(u8 **)(moby + 0x78);
     u8 *other;
     f32 vectors[8];
@@ -236,14 +254,14 @@ void door_update(u8 *moby)
 
     state = moby[0x20];
     switch (state) {
-    case 0:
+    case DOOR_INITIALIZE:
         qcopy(data, moby + 0x10);
         if (*(s32 *)(data + 0x38) != -1)
             D_L07_00184528[*(s32 *)(data + 0x38)] = 0;
         moby[0x20] = 1;
         *(s32 *)(data + 0x0c) = 0;
         return;
-    case 1:
+    case DOOR_WAIT_TO_MOVE_TO_OFFSET_POSITION:
         if (*(s32 *)(data + 0x38) != -1)
             D_L07_00184528[*(s32 *)(data + 0x38)] = 0;
         if (*(s32 *)(data + 0x10) != -1) {
@@ -262,7 +280,7 @@ void door_update(u8 *moby)
             play_sound_310df0(*(s32 *)(data + 0x30), 0, moby);
         moby[0x20] = 2;
         return;
-    case 2:
+    case DOOR_MOVE_TO_OFFSET_POSITION:
         if (*(s32 *)(data + 0x38) != -1)
             D_L07_00184528[*(s32 *)(data + 0x38)] = 1;
         if (*(s32 *)(data + 0x10) != -1) {
@@ -292,7 +310,7 @@ void door_update(u8 *moby)
         if (*(s32 *)(data + 0x34) != -1)
             play_sound_310df0(*(s32 *)(data + 0x30), 0, moby);
         return;
-    case 3:
+    case DOOR_WAIT_TO_RETURN_TO_INITIAL_POSITION:
         if (*(s32 *)(data + 0x38) != -1)
             D_L07_00184528[*(s32 *)(data + 0x38)] = 1;
         if (*(s32 *)(data + 0x10) == -1)
@@ -306,7 +324,7 @@ void door_update(u8 *moby)
             play_sound_310df0(*(s32 *)(data + 0x30), 0, moby);
         moby[0x20] = 4;
         return;
-    case 4:
+    case DOOR_RETURN_TO_INITIAL_POSITION:
         if (*(s32 *)(data + 0x38) != -1)
             D_L07_00184528[*(s32 *)(data + 0x38)] = 0;
         if (*(s32 *)(data + 0x10) == -1 ||
@@ -354,6 +372,13 @@ extern char *level_mobys __asm__("D_L07_0015FFD8");
 void bridge_update(u8 *moby) __asm__("FUN_L07_0031aee0");
 void bridge_update(u8 *moby)
 {
+    enum {
+        BRIDGE_INITIALIZE = 0,
+        BRIDGE_WAIT_TO_MOVE_TO_OFFSET_POSITION = 1,
+        BRIDGE_MOVE_TO_OFFSET_POSITION = 2,
+        BRIDGE_WAIT_TO_RETURN_TO_INITIAL_POSITION = 3,
+        BRIDGE_RETURN_TO_INITIAL_POSITION = 4
+    };
     u8 *data = *(u8 **)(moby + 0x78);
     u8 *other;
     f32 delta[4];
@@ -372,14 +397,14 @@ void bridge_update(u8 *moby)
 
     state = moby[0x20];
     switch (state) {
-    case 0:
+    case BRIDGE_INITIALIZE:
         qcopy(data + 0xa0, moby + 0x10);
         if (*(s32 *)(data + 0xd8) != -1)
             D_L07_00184528[*(s32 *)(data + 0xd8)] = 0;
         moby[0x20] = 1;
         *(s32 *)(data + 0xac) = 0;
         break;
-    case 1:
+    case BRIDGE_WAIT_TO_MOVE_TO_OFFSET_POSITION:
         if (*(s32 *)(data + 0xb0) != -1) {
             other = level_mobys + *(s32 *)(data + 0xb0) * 0x100;
             if (other != 0 && other[0x20] != 0xfe && other[0x20] != 0xfd &&
@@ -396,7 +421,7 @@ void bridge_update(u8 *moby)
             play_sound_31aee0(*(s32 *)(data + 0xd0), 0, moby);
         moby[0x20] = 2;
         break;
-    case 2:
+    case BRIDGE_MOVE_TO_OFFSET_POSITION:
         if (*(s32 *)(data + 0xb0) != -1) {
             other = level_mobys + *(s32 *)(data + 0xb0) * 0x100;
             if (other != 0 && other[0x20] != 0xfe && other[0x20] != 0xfd &&
@@ -426,7 +451,7 @@ void bridge_update(u8 *moby)
                 play_sound_31aee0(*(s32 *)(data + 0xd0), 0, moby);
         }
         break;
-    case 3:
+    case BRIDGE_WAIT_TO_RETURN_TO_INITIAL_POSITION:
         if (*(s32 *)(data + 0xb0) != -1) {
             other = level_mobys + *(s32 *)(data + 0xb0) * 0x100;
             if (other != 0 && other[0x20] != 0xfe && other[0x20] != 0xfd &&
@@ -438,7 +463,7 @@ void bridge_update(u8 *moby)
             }
         }
         break;
-    case 4:
+    case BRIDGE_RETURN_TO_INITIAL_POSITION:
         if (*(s32 *)(data + 0xb0) == -1 ||
             (other = level_mobys + *(s32 *)(data + 0xb0) * 0x100) == 0 ||
             other[0x20] == 0xfe || other[0x20] == 0xfd ||

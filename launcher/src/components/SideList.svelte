@@ -2,8 +2,10 @@
   // The list on the left of the Games, Mods and Develop tabs: one entry per place, all the same
   // size, the open one marked (the header's selected-tab colours on the list's dark ground).
   // Each entry is a picture (a game's, framed in its colours) or an icon, a name, and a line on
-  // where it stands. In a narrow window only the pictures show, the names in their tooltips.
-  import type { SideEntry } from "$lib/labels";
+  // where it stands. In a narrow window only the pictures show, the names in their tooltips. On
+  // Android it is a row of pictures above the page (SideFrame), each named across its foot.
+  import { onAndroid } from "$lib/api";
+  import { shortTitle, type SideEntry } from "$lib/labels";
   import { hideMissing } from "$lib/media";
   import Icon from "./Icon.svelte";
 
@@ -33,10 +35,11 @@
             name={e.icon}
             size={20}
           />{/if}
-        {#if e.mark}<span class="mark" aria-label="It crashed recently"></span>{/if}
+        {#if e.mark}<span class="mark" aria-hidden="true"></span>{/if}
       </span>
       <span class="text">
-        <span class="name">{e.name}</span>
+        <span class="name">{onAndroid ? shortTitle(e.name) : e.name}</span>
+        {#if e.mark}<span class="sr-only">, crashed recently</span>{/if}
         {#if e.state}
           <span class={`state ${e.state.tone}`}>
             {#if e.state.busy}<span class="spinner"></span>{:else}<span class="dot"></span>{/if}{e.state.text}
@@ -60,7 +63,7 @@
 
   .group {
     padding: 14px 8px 6px;
-    font: 600 11px/1 var(--font-head);
+    font: 600 0.75rem/1 var(--font-head);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--dim);
@@ -179,7 +182,7 @@
   }
 
   .name {
-    font-size: 13.5px;
+    font-size: 0.8438rem;
     font-weight: 600;
     line-height: 1.3;
     color: var(--text);
@@ -189,7 +192,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--dim);
   }
 
@@ -236,5 +239,71 @@
       width: 52px;
       height: 40px;
     }
+  }
+
+  :global(html[data-platform="android"]) .list {
+    flex-direction: row;
+    gap: 10px;
+    width: max-content;
+    min-width: 100%;
+    min-height: 0;
+    padding: var(--page-top) var(--page-x) 0;
+    background: none;
+    border-right: none;
+  }
+
+  :global(html[data-platform="android"]) .group {
+    display: none;
+  }
+
+  :global(html[data-platform="android"]) .entry {
+    position: relative;
+    flex: none;
+    width: auto;
+    padding: 0;
+    border: none;
+    border-radius: 10px;
+  }
+
+  :global(html[data-platform="android"]) .entry.on,
+  :global(html[data-platform="android"]) .entry:hover:not(.on) {
+    background: none;
+    transform: none;
+  }
+
+  :global(html[data-platform="android"]) .thumb {
+    width: 112px;
+    height: 63px;
+    border-radius: 10px;
+  }
+
+  :global(html[data-platform="android"]) .entry:not(.on) .thumb {
+    opacity: 0.7;
+  }
+
+  /* The name across the picture's foot, the state left to the page. */
+  :global(html[data-platform="android"]) .text {
+    position: absolute;
+    inset: auto 0 0;
+    width: auto;
+    height: auto;
+    padding: 16px 8px 5px;
+    clip-path: none;
+    border-radius: 0 0 10px 10px;
+    background: linear-gradient(transparent, rgb(0 0 0 / 0.8));
+    pointer-events: none;
+  }
+
+  :global(html[data-platform="android"]) .name {
+    overflow: hidden;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: #fff;
+  }
+
+  :global(html[data-platform="android"]) .state {
+    display: none;
   }
 </style>

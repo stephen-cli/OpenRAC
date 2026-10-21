@@ -68,9 +68,19 @@ __extension__ typedef unsigned __int128 openrac_u128;
 
 /* ---- Addresses ---- */
 
+/* The runtime's globals that translated code reads all the time (each game
+ * memory access reads openrac_guest_base). On Android the game is a shared
+ * library, whose globals are otherwise reached through its global offset
+ * table, one more load each time: there they are the library's own. */
+#if defined(__ANDROID__)
+#define OPENRAC_GUEST_GLOBAL __attribute__((visibility("hidden")))
+#else
+#define OPENRAC_GUEST_GLOBAL
+#endif
+
 /* Where game memory starts in the host's address space. Set once by the
  * runtime before any game code runs. */
-extern uint8_t* openrac_guest_base;
+extern OPENRAC_GUEST_GLOBAL uint8_t* openrac_guest_base;
 
 /* The host pointer for a game address, and an lvalue of type T there. */
 #define G(a) ((void*)(openrac_guest_base + (gaddr)(a)))
@@ -93,7 +103,7 @@ extern uint8_t* openrac_guest_base;
  * gives the function a frame on the game stack (GUEST_STACK_*): GFRAME(n)
  * reserves n bytes, aligned to 16, and gives them back when the function
  * returns, by whatever path. */
-extern gaddr openrac_guest_sp;
+extern OPENRAC_GUEST_GLOBAL gaddr openrac_guest_sp;
 gaddr openrac_guest_frame(uint32_t size);
 
 static inline void openrac_guest_frame_end(gaddr* saved) {
@@ -103,6 +113,19 @@ static inline void openrac_guest_frame_end(gaddr* saved) {
 #define GFRAME(name, size)                                                                         \
     gaddr name##_saved_sp __attribute__((cleanup(openrac_guest_frame_end))) = openrac_guest_sp;    \
     const gaddr name = openrac_guest_frame(size)
+
+/* The slot an aggregate local gets in such a frame, as the console's compiler
+ * (GCC 2.95 for the R5900) gives it: a local with no machine mode of its own
+ * (an array or record that is not 1, 2, 4, 8 or 16 bytes at that size's
+ * alignment) gets a stack slot aligned to 16 bytes and its size rounded up to
+ * 16. The game relies on it: a `float v[3]` is written with quadword stores
+ * (a copy of a 16-byte point into it), whose fourth word lands in the slot's
+ * padding on the console, not in the next local. T is a type name. */
+#define OPENRAC_FRAME_BLK(T)                                                                       \
+    (!((sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8 || sizeof(T) == 16) && \
+       _Alignof(T) >= sizeof(T)))
+#define OPENRAC_FRAME_ALIGN(T) (OPENRAC_FRAME_BLK(T) ? 16 : _Alignof(T))
+#define OPENRAC_FRAME_SIZE(T) (OPENRAC_FRAME_BLK(T) ? (sizeof(T) + 15) & ~(size_t)15 : sizeof(T))
 
 /* A static local whose address the game takes: storage in game memory for
  * the life of the program, zeroed (the port's statics region). */
@@ -191,7 +214,7 @@ void openrac_guest_set_overlay_source(int (*current)(void));
  * code (the two differ only in addresses), so nothing of the game is stored. */
 void openrac_guest_set_relocation(gaddr low, gaddr high, gaddr gp, const uint8_t* exe_code,
                                   gaddr exe_base, uint32_t exe_size);
-extern gaddr openrac_relocate_low, openrac_relocate_high;
+extern OPENRAC_GUEST_GLOBAL gaddr openrac_relocate_low, openrac_relocate_high;
 /* The executable as its loader placed it before the game ran (load_elf keeps a copy, openrac/elf.h):
  * its bytes in [low, high) copied back into memory; returns how many. For a game that loads its boot
  * program again over a level's in another build of it (rac1: Quit Game reads one from the disc whose
@@ -217,6 +240,13 @@ gaddr openrac_guest_nearest(const uint32_t* places, int count, gaddr caller);
  * `size` bytes, in the program loaded) to any of `places`; openrac_guest_nearest's when the caller's
  * code has no such call (or its size is not known). */
 gaddr openrac_folded_call(const uint32_t* places, int count, gaddr caller, uint32_t size, int k);
+/* The address of a folded function a function takes (a draw callback it registers): the k-th
+ * address of any of `places` the caller's code forms (a lui and an addiu or ori on its register,
+ * in the program loaded); `fallback` when it forms none (or its size is not known). The places of a
+ * folded wrapper call other functions (rac1's Umbris sea: each class registers its own wrapper of
+ * the liquid grid's draw), so the address of the first in the level is not the one retail takes. */
+gaddr openrac_folded_address(const uint32_t* places, int count, gaddr caller, uint32_t size, int k,
+                             gaddr fallback);
 
 /* Level to level: a function several levels' programs carry is written with the addresses of the
  * level its name gives (rac1: func_L05_... has level 5's). OPENRAC_LDATA and OPENRAC_LCODE give
@@ -239,8 +269,8 @@ gaddr openrac_relocate_level_code(int from, gaddr address);
  * where the copy at `canon` (in level `from`'s program, `size` bytes) forms `target`, and reads
  * the same instructions at `self`. Without a place, or one that does not form it, it is
  * OPENRAC_LCODE's. */
-extern gaddr openrac_guest_last_entry;
-extern openrac_host_fn openrac_guest_last_fn;
+extern OPENRAC_GUEST_GLOBAL gaddr openrac_guest_last_entry;
+extern OPENRAC_GUEST_GLOBAL openrac_host_fn openrac_guest_last_fn;
 static inline gaddr openrac_guest_entry(openrac_host_fn self) {
     return openrac_guest_last_fn == self ? openrac_guest_last_entry : 0;
 }
@@ -280,6 +310,31 @@ static inline float openrac_fdiv(float a, float b) {
         return q < 0.0f ? -3.40282347e38f : 3.40282347e38f;
     }
     return q;
+}
+
+/* The EE FPU's float to integer (cvt.w.s, trunc.w.s), for the game's conversions to an integer
+ * type: toward zero, saturating at the int's limits (the EE has no NaN). A narrower target keeps
+ * the low bits of that int, as the console's code stored them. C leaves a value out of range
+ * undefined and the hosts disagree there: x86 wraps -1.0 into an unsigned 0xFFFFFFFF as the EE
+ * did, ARM gives 0. */
+static inline int32_t openrac_f2i(double x) {
+    if (x >= 2147483647.0) {
+        return 2147483647;
+    }
+    if (x > -2147483648.0) {
+        return (int32_t)x;
+    }
+    return (int32_t)-2147483647 - 1;  /* and a NaN, which the EE never makes */
+}
+
+/* To a 32-bit unsigned int, as the console's compiler wrote it: below 2^31 the signed conversion
+ * (a negative value wraps), above it the signed conversion of the value less 2^31 with the top
+ * bit set. */
+static inline uint32_t openrac_f2u(double x) {
+    if (x >= 2147483648.0) {
+        return (uint32_t)openrac_f2i(x - 2147483648.0) ^ 0x80000000u;
+    }
+    return (uint32_t)openrac_f2i(x);
 }
 
 /* A function the game calls that has no C in the port yet: still assembly in

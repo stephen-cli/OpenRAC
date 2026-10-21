@@ -5,6 +5,7 @@
 #include "debug_menu.h"
 #include "debug_overlay.h"
 #include "fps_counter.h"
+#include "touch_overlay.h"
 #include "options_menu.h"
 #include "settings.h"
 
@@ -27,7 +28,9 @@
 #include "common/stats.h"
 #include "openrac/game_host.h"
 #include "openrac/guest.h"
+#include "platform/gpu_driver.h"
 #include "platform/input.h"
+#include "platform/performance_hint.h"
 #include "platform/pump.h"
 #include "platform/window.h"
 #include "renderer/direct.h"
@@ -36,10 +39,12 @@
 #include "renderer/gl.h"
 #include "renderer/gl_stats.h"
 #include "renderer/renderer.h"
+#include "renderer/shadows.h"
 #include "viewer/game_state.h"
 #include "viewer/level.h"
 #include "viewer/level_renderer.h"
 #include "viewer/moby_pose.h"
+#include "viewer/moby_shadow.h"
 #include "viewer/screenshot.h"
 
 #include <cstdio>
@@ -74,6 +79,9 @@ struct Kept {
     std::vector<std::uint32_t> addresses;  // each live moby's address, for its last matrix
     std::unordered_map<std::uint32_t, renderer::Mat4> prev_matrices;
     std::vector<viewer::LevelScene::JointColumns> palette;
+    std::vector<renderer::ShadowCapsule> shadows, prev_shadows;
+    std::uint32_t shadow_moby = 0, prev_shadow_moby = 0;
+    viewer::MobyShadowState shadow_state, prev_shadow_state;
     // The last tick's poses, by moby: where its joints start in prev_palette and how many.
     std::vector<viewer::LevelScene::JointColumns> prev_palette;
     std::unordered_map<std::uint32_t, std::pair<int, int>> prev_poses;
@@ -619,6 +627,13 @@ gaddr light_bank_address() {
     return openrac_game_front_end != nullptr ? openrac_game_front_end->light_bank : 0;
 }
 
+// The four shadow directions in each version's executable (relocated when read).
+gaddr shadow_directions_address() {
+    if (g->game == "rac1-pal") return 0x001CAE00u;
+    if (g->game == "rac1-ntsc") return 0x001CAA80u;
+    return 0;
+}
+
 // Uploads a level's geometry; while the boot program runs (the title and the main menu), the title
 // world's, or level 0's when the title world was not extracted.
 void use_level(int number) {
@@ -656,7 +671,22 @@ void use_level(int number) {
                  / "placements.json";
     }
     debug_overlay::notice({});
-    if (!viewer::load_level(dir, g->level, error, edited)) {
+    // Only Ratchet & Clank's levels are extracted for the port so far. The other games (Going
+    // Commando, Up Your Arsenal, Deadlocked at their menus) have no scenery to read: their whole
+    // picture is the 2D path, both its parts, and nothing is missing to tell the player about.
+    const bool has_levels = g->game == "rac1-pal" || g->game == "rac1-ntsc";
+    if (!has_levels && !viewer::load_level(dir, g->level, error, edited)) {
+        log::info("level {}: no scenery for this game yet ({}); the 2D path is drawn alone", wanted, error);
+        auto hud = std::make_unique<renderer::DirectRenderer>("hud", renderer::Bucket::Hud, renderer::DirectConfig{},
+                                                              renderer::DirectRenderer::Input::Vif);
+        g->renderer->add(std::make_unique<renderer::DirectBackground>(*hud), error);
+        g->renderer->add(std::move(hud), error);
+        if (fresh) {
+            g->renderer->init(error);
+        }
+        return;
+    }
+    if (has_levels && !viewer::load_level(dir, g->level, error, edited)) {
         log::warn("level {}: {} (extract it with editor/extract.py port)", wanted, error);
         // Said in the picture: the game goes on, its HUD over a black world, and a player takes
         // that for the game being broken.
@@ -677,12 +707,28 @@ void use_level(int number) {
                                                           renderer::DirectRenderer::Input::Vif);
     g->renderer->add(std::make_unique<renderer::DirectBackground>(*hud), error);
     for (std::size_t layer = 0; layer < viewer::kLayerCount; ++layer) {
+        // The caster is drawn after its shadow, so its proxy cannot darken
+        // Ratchet himself. Opaque scenery has already filled the depth buffer.
+        if (shadow_directions_address() != 0 && layer == static_cast<std::size_t>(viewer::Layer::Mobys)) {
+            if (g->renderer->add(std::make_unique<renderer::ShadowRenderer>(), error) == nullptr) {
+                log::error("shadow renderer: {}", error);
+            }
+        }
         g->renderer->add(
             std::make_unique<viewer::LayerRenderer>(g->scene, static_cast<viewer::Layer>(layer)),
             error
         );
+        // The liquids (the seas and lava the game draws solid) after the ties, where retail's draw
+        // callback list 3 draws them, before the shrubs and mobys (renderer/effects.h).
+        if (static_cast<viewer::Layer>(layer) == viewer::Layer::Ties
+            && g->renderer->add(std::make_unique<renderer::EffectRenderer>("liquids", renderer::EffectPart::Liquids,
+                                                                           renderer::Bucket::Ties),
+                                error) == nullptr) {
+            log::error("liquid renderer: {}", error);
+        }
     }
-    if (g->renderer->add(std::make_unique<renderer::EffectRenderer>(), error) == nullptr) {
+    if (g->renderer->add(std::make_unique<renderer::EffectRenderer>("effects", renderer::EffectPart::Rest), error)
+        == nullptr) {
         log::error("effect renderer: {}", error);
     }
     g->renderer->add(std::move(hud), error);
@@ -806,6 +852,8 @@ void sky_sprite_quads(const viewer::GameState& state) {
     const std::array<float, 3> right{-state.left[0], -state.left[1], -state.left[2]};
     const std::array<float, 3> down{-state.up[0], -state.up[1], -state.up[2]};
     const float tan_y = state.tan_half_fov_y > 0.0f ? state.tan_half_fov_y : 0.476f;
+    std::vector<renderer::EffectQuad> quads;
+    quads.reserve(g->sky_sprites.size());
     for (const auto& [r, tex0] : g->sky_sprites) {
         float pos[3];
         float theta;
@@ -851,7 +899,14 @@ void sky_sprite_quads(const viewer::GameState& state) {
         q.clamp = 5;
         q.tex1 = 0xFF9000000120ull;
         q.alpha = r[3];
-        g->effects.insert(g->effects.begin(), q);
+        quads.push_back(q);
+    }
+    if (!quads.empty()) {
+        std::stable_sort(quads.begin(), quads.end(), [](const renderer::EffectQuad& a, const renderer::EffectQuad& b) {
+            if (a.tbp != b.tbp) return a.tbp < b.tbp;
+            return a.alpha < b.alpha;
+        });
+        g->effects.insert(g->effects.begin(), quads.begin(), quads.end());
     }
     g->sky_sprites.clear();
 }
@@ -1157,6 +1212,12 @@ bool open(const std::string& game_id, const std::filesystem::path& levels, std::
 #endif
     platform::set_app_metadata(OPENRAC_GAME_TITLE, app_id.c_str());
     platform::prefer_discrete_gpu();
+    platform::prepare_gpu_driver();
+#if defined(__ANDROID__)
+    // Back opens and shuts the options drawer instead of leaving the game (debug_overlay.h), from
+    // the first moment the window is there.
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+#endif
     g->sdl = std::make_unique<platform::Platform>(platform::kVideo | platform::kGamepad | platform::kAudio);
     if (!g->sdl->ok()) {
         error = g->sdl->error();
@@ -1356,6 +1417,25 @@ void world_drawn(std::span<const std::uint8_t> ram) {
     g->world_camera = viewer::read_game_state(ram, a);
 }
 
+// The on-screen pad, kept inside the screen's safe area (a camera's notch at a phone's side).
+static void draw_touch_pad(int window_width, int window_height) {
+    platform::TouchPad& touch = g->input.touch_pad();
+    SDL_Rect safe{};
+    int w = 0;
+    int h = 0;
+    if (SDL_GetWindowSafeArea(g->window->sdl(), &safe) && SDL_GetWindowSize(g->window->sdl(), &w, &h) && h > 0) {
+        const float height = static_cast<float>(h);
+        touch.set_safe_area(static_cast<float>(safe.x) / height,
+                            static_cast<float>(w - safe.x - safe.w) / height);
+    }
+    // Android's options are in a drawer (debug_overlay.h), opened with the pad's own button.
+    touch.set_menu_button(debug_overlay::drawer_available());
+    if (touch.take_menu_press()) {
+        debug_overlay::toggle_drawer();
+    }
+    touch_overlay::draw(touch, window_width, window_height);
+}
+
 bool show_picture(const std::uint8_t* rgba, int width, int height, float black) {
     using namespace gl;
     if (!g || width <= 0 || height <= 0) {
@@ -1406,6 +1486,7 @@ bool show_picture(const std::uint8_t* rgba, int width, int height, float black) 
     }
     // The picture fills the frame the game's own frames fill; its first row is the top.
     present(g->picture.id(), width, height, window_width, window_height, true);
+    draw_touch_pad(window_width, window_height);
     {
         // [debug tools] The overlay over a picture too (no renderer or camera then).
         const Box box = frame_box(window_width, window_height);
@@ -1492,6 +1573,7 @@ float alpha_at(std::chrono::steady_clock::time_point display) {
 void swapped(std::chrono::steady_clock::time_point started) {
     using namespace std::chrono;
     const auto before = steady_clock::now();
+    platform::frame_work_done();
     g->window->swap();
     const auto after = steady_clock::now();
     const double cost = duration<double>(before - started).count();
@@ -1504,6 +1586,10 @@ void swapped(std::chrono::steady_clock::time_point started) {
         pacing.interval = rate > 20.0f ? 1.0 / rate : 0.0;
         pacing.interval_stale = false;
     }
+    // What a frame may take, for the system's CPU clocks (performance_hint.h): a refresh, or the
+    // player's frame cap when it is lower.
+    const double cap = frame_cap();
+    platform::set_frame_target(cap > 0.0 ? std::max(1.0 / cap, pacing.interval) : pacing.interval);
     if (g->swap == platform::SwapInterval::Immediate) {
         // No refresh is waited for: there is no phase to draw the next frame for.
         pacing.last_swap = {};
@@ -1523,7 +1609,7 @@ void swapped(std::chrono::steady_clock::time_point started) {
     // next ones; one more than a frame late starts the count again. It holds beside the swap's
     // wait: 60 frames a second on a 120 Hz display are every other refresh. Nothing sleeps here:
     // the game's tick may be due before the next frame is (frame_due).
-    if (const double cap = frame_cap(); cap > 0.0) {
+    if (cap > 0.0) {
         const auto step = duration_cast<steady_clock::duration>(duration<double>(1.0 / cap));
         const auto now = steady_clock::now();
         pacing.due = pacing.due.time_since_epoch().count() == 0 || now > pacing.due + 2 * step ? now
@@ -1531,6 +1617,8 @@ void swapped(std::chrono::steady_clock::time_point started) {
     } else {
         pacing.due = {};
     }
+    // The next frame's work counts from here: the swap, and any wait in it, is the display's.
+    platform::work_resumed();
 }
 
 // Whether the frame cap lets a frame start now (within a millisecond: a sleep wakes that coarsely).
@@ -1746,6 +1834,36 @@ void draw_kept(bool first) {
         g->renderer->textures().set_anisotropy(static_cast<float>(settings::get().anisotropy));
     }
     renderer::FrameInput input;
+    input.shadow_extrusion = k.shadow_state.extrusion;
+    if (k.shadow_state.enabled) input.shadow_heights = k.shadow_state.heights;
+    auto shadows = k.shadows;
+    if (alpha < 1.0f && k.shadow_moby != 0 && k.shadow_moby == k.prev_shadow_moby
+        && shadows.size() == k.prev_shadows.size()) {
+        const auto prev = k.prev_matrices.find(k.shadow_moby);
+        const auto now = std::find(k.addresses.begin(),k.addresses.end(),k.shadow_moby);
+        if (prev != k.prev_matrices.end() && now != k.addresses.end()
+            && same_moby(prev->second,k.live[static_cast<std::size_t>(now-k.addresses.begin())].matrix)) {
+            for (std::size_t i=0; i<shadows.size(); ++i) {
+                for (int j=0; j<3; ++j) {
+                    shadows[i].a[j] = k.prev_shadows[i].a[j] + (shadows[i].a[j]-k.prev_shadows[i].a[j])*alpha;
+                    shadows[i].b[j] = k.prev_shadows[i].b[j] + (shadows[i].b[j]-k.prev_shadows[i].b[j])*alpha;
+                }
+                shadows[i].radius_a = k.prev_shadows[i].radius_a + (shadows[i].radius_a-k.prev_shadows[i].radius_a)*alpha;
+                shadows[i].radius_b = k.prev_shadows[i].radius_b + (shadows[i].radius_b-k.prev_shadows[i].radius_b)*alpha;
+            }
+            if (k.prev_shadow_state.enabled && k.shadow_state.enabled) {
+                for (int j=0;j<3;++j)
+                    input.shadow_extrusion[j] = k.prev_shadow_state.extrusion[j]
+                        + (k.shadow_state.extrusion[j]-k.prev_shadow_state.extrusion[j])*alpha;
+                std::array<float,2> heights{};
+                for (int j=0;j<2;++j)
+                    heights[j] = k.prev_shadow_state.heights[j]
+                        + (k.shadow_state.heights[j]-k.prev_shadow_state.heights[j])*alpha;
+                input.shadow_heights = heights;
+            }
+        }
+    }
+    input.shadow_capsules = shadows;
     // No camera yet (loading, fades between programs): a black frame, not the level's background.
     const bool has_camera = k.has_camera;
     input.clear_colour = has_camera
@@ -1860,6 +1978,7 @@ void draw_kept(bool first) {
         const stats::Scope render_scope("render");
         renderer::RenderTarget target{g->frame.id(), width, height, picture_scale};
         target.resolve_framebuffer = g->frame.resolve_target();
+        target.resolves_itself = g->frame.resolves_itself();
         target.wide_2d = picture_scale < 1.0f && settings::get().hud == settings::Hud::Edges;
         g->renderer->render(input, target);
     }
@@ -1897,6 +2016,7 @@ void draw_kept(bool first) {
     }
     slow_frame();
     present(shown, width, height, window_width, window_height, false, aspect);
+    draw_touch_pad(window_width, window_height);
     // [debug tools] The overlay, over the frame in the window.
     debug_overlay::draw({g->window->sdl(), window_width, window_height, box.x, box.y, box.width, box.height,
                          g->renderer.get(), &input.camera, g->frame.width(), g->frame.height(),
@@ -1921,6 +2041,16 @@ void draw_kept(bool first) {
 }
 
 namespace {
+
+// A window the player sizes: never on Android, where the game covers the screen whatever the
+// settings say (Window::set_display_mode).
+bool windowed() {
+#if defined(__ANDROID__)
+    return false;
+#else
+    return g->display_mode == settings::DisplayMode::Windowed;
+#endif
+}
 
 // The window as the player's settings want it: its display mode, display and fullscreen size, its
 // shape, and each swap waiting for a refresh or not. Called when they may have changed; all of
@@ -1948,7 +2078,7 @@ void apply_settings() {
         // A window takes the picture's new shape, at the height it has.
         int w = 0;
         int h = 0;
-        if (g->display_mode == settings::DisplayMode::Windowed && s.aspect != settings::Aspect::Window
+        if (windowed() && s.aspect != settings::Aspect::Window
             && SDL_GetWindowSize(g->window->sdl(), &w, &h) && h > 0) {
             SDL_SetWindowSize(g->window->sdl(), static_cast<int>(std::lround(static_cast<float>(h) * picture_aspect(w, h))), h);
         }
@@ -1974,7 +2104,7 @@ void window_event(const SDL_Event& event) {
             break;
         case SDL_EVENT_WINDOW_RESIZED:
             // Remembered in memory; written with the next setting saved and when the window closes.
-            if (g->display_mode == settings::DisplayMode::Windowed && event.window.data1 >= 320
+            if (windowed() && event.window.data1 >= 320
                 && event.window.data2 >= 240) {
                 settings::get().window_width = event.window.data1;
                 settings::get().window_height = event.window.data2;
@@ -2059,9 +2189,11 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
         g->input.handle_event(event);
     }
     g->input.update();
-    // The port's rows on the game's Video options page (options_menu.h): a changed one is applied.
-    // Before the debug menu, which adds its entry to the Options list options_menu gives the game.
-    if (options_menu::update(openrac_game_loaded_overlay())) {
+    // The port's rows on the game's Video options page (options_menu.h), and the overlay's drawer
+    // and menus: a changed one is applied. Before the debug menu, which adds its entry to the
+    // Options list options_menu gives the game.
+    const bool changed = options_menu::update(openrac_game_loaded_overlay());
+    if (debug_overlay::take_settings_changed() || changed) {
         apply_settings();
     }
     debug_menu::update(openrac_game_loaded_overlay(), g->index);
@@ -2071,7 +2203,21 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
     const viewer::GameAddresses& a =
         viewer::rac1_addresses(g->game, level);
     // The boot program's worlds: the flight between planets (game mode 6), else the title world.
-    use_level(level >= 0 && level < 19 ? level : word_at(ram, game_mode_address()) == 6 ? -2 : -1);
+    // A flight between planets also plays inside a planet's program. The game draws it by the ship's
+    // state (dispatch_game_state_update): the planet in the take-off (0), the landing (8) and while
+    // the ship leaves along its path (3, 7); space only in state 4 (DrawSpaceFlightFrame), whose
+    // world is the flight world's. The mode there is the level's own copy of the word
+    // (openrac_game_mode), not the boot program's.
+    int world = level >= 0 && level < 19 ? level : word_at(ram, game_mode_address()) == 6 ? -2 : -1;
+    std::uint32_t level_mode = 0xFFFFFFFFu;
+    if (world >= 0 && openrac_game_front_end != nullptr && openrac_game_front_end->ship_state != 0
+        && openrac_game_mode != nullptr && openrac_game_mode(&level_mode) != 0 && level_mode == 6) {
+        const std::uint32_t ship = word_at(ram, openrac_game_front_end->ship_state);
+        if (ship == 4) {
+            world = -2;
+        }
+    }
+    use_level(world);
     viewer::GameState state = viewer::read_game_state(ram, a);
     // The world is drawn from the camera the game's world renderers used, not from whatever the
     // camera globals hold at the end of the frame (the page menu sets its own camera, at
@@ -2289,6 +2435,9 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
     std::vector<std::uint32_t> live_addresses;
     std::vector<int> live_joints;
     std::vector<viewer::LevelScene::JointColumns> palette;
+    std::vector<renderer::ShadowCapsule> shadows;
+    std::uint32_t shadow_moby = 0;
+    viewer::MobyShadowState shadow_state;
     std::vector<Kept::TargetMoby> target_mobys;
     // Mobys the game drew into a texture, and the ones it drew that are not in its list. The game
     // renders some mobys into a target the 2D layer then copies onto the screen: the vendor's item
@@ -2339,6 +2488,18 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
         // it. Volumes and blockers the levels place as mobys (Veldin's grey box behind the start, the
         // walls of Kalebo III's landing) are such: untextured, they showed as solid grey walls.
         if (!extra && m.address + 0x34 <= ram.size() && (ram[m.address + 0x32] | ram[m.address + 0x33]) == 0) {
+            continue;
+        }
+        // Beyond its draw distance, or wholly behind the eye: MobyProc does not draw it
+        // (viewer::moby_beyond_draw_distance). Pokitaru places two mobys of class 1161 with a turn of -5 pi,
+        // past the reach of the game's sine; their rows come out thousands long and their spheres
+        // thousands of units away, so the game never draws them, while drawn here they covered the
+        // sky in cyan. A moby the game draws with a camera of its own (the menus', the vendor's) is
+        // not the world camera's to cull.
+        if (!extra && world_ran && m.address + 0x34 <= ram.size()
+            && std::none_of(g->moby_cameras.begin(), g->moby_cameras.end(),
+                            [&](const auto& c) { return c.first == m.address; })
+            && viewer::moby_beyond_draw_distance(ram.data() + m.address, state.camera_position, state.forward)) {
             continue;
         }
         if (only_own_camera
@@ -2455,6 +2616,21 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
             continue;
         }
         live_joints.push_back(instance.palette >= 0 ? joints : 0);
+        if (shadow_directions_address() != 0 && g->loaded >= 0 && g->loaded < 19 && animate
+            && m.class_id == 0 && !extra && instance.moby_light[3] < 1.5f && instance.tint[3] > 0.0f) {
+            const auto directions = OPENRAC_DATA(shadow_directions_address());
+            shadow_state = viewer::moby_shadow_state(ram, m.address, directions, state.view());
+            if (shadow_state.enabled) {
+                shadows = viewer::moby_shadows(ram, m.address, m.matrix, shadow_state.scale);
+                shadow_moby = m.address;
+            }
+            if (debug && g->index%100 == 0) {
+                log::info("Ratchet shadow: {} proxies, slot {}, table {:#x}, extrusion {:.2f} {:.2f} {:.2f}, slab {:.3f}..{:.3f}, scale {:.3f}",
+                          shadows.size(), shadow_state.direction_index, directions,
+                          shadow_state.extrusion[0], shadow_state.extrusion[1], shadow_state.extrusion[2],
+                          shadow_state.heights[0], shadow_state.heights[1], shadow_state.scale);
+            }
+        }
         live.push_back(instance);
         live_addresses.push_back(m.address);
     }
@@ -2480,6 +2656,8 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
         k.live.clear();
         k.addresses.clear();
         k.joints.clear();
+        k.shadows.clear();
+        k.shadow_moby = 0;
         k.level = g->loaded;
     }
     k.prev_state = k.state;
@@ -2493,6 +2671,12 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
         }
     }
     k.prev_palette = std::move(k.palette);
+    k.prev_shadows = std::move(k.shadows);
+    k.prev_shadow_moby = k.shadow_moby;
+    k.shadows = std::move(shadows);
+    k.shadow_moby = shadow_moby;
+    k.prev_shadow_state = k.shadow_state;
+    k.shadow_state = shadow_state;
     k.state = state;
     k.has_state = true;
     k.live = std::move(live);
@@ -2516,13 +2700,17 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
         log::info("frame {}: the 2D path's draws", k.frame);
     }
     // The 2D path: the frame's direct GIF data, drawn by the direct renderer.
-    (void)chain;
+    // RAC1 keeps two alternating list buffers and the sent list is one tick behind; Deadlocked
+    // submits the title's list through VIF1 DMA without that RAC1 buffer-index convention, and
+    // so does Going Commando.
+    const bool sent_chain = g->game == "rac4-ntsc" || g->game == "rac2-ntsc";
+    const std::uint32_t shown = sent_chain ? chain : viewer::shown_chain(ram, a);
     std::vector<renderer::EffectVertex> strip_vertices;
     std::vector<renderer::EffectStrip> strips;
     std::size_t before_world = SIZE_MAX;
     std::size_t first_offscreen = SIZE_MAX;
     std::size_t world_marker = SIZE_MAX;
-    std::vector<std::uint8_t> packets = direct_packets(ram, viewer::shown_chain(ram, a), &strip_vertices, &strips,
+    std::vector<std::uint8_t> packets = direct_packets(ram, shown, &strip_vertices, &strips,
                                                        &g->effect_uploads, &before_world, &first_offscreen,
                                                        &world_marker);
     // The markers in a list index the quads of the tick that built it, and the list shown is the
@@ -2721,6 +2909,7 @@ int between(std::chrono::steady_clock::time_point next_tick) {
             return 0;
         }
         std::this_thread::sleep_until(pacing.due);
+        platform::work_resumed();
         now = std::chrono::steady_clock::now();
     }
     const auto display = next_display(now);
@@ -2773,6 +2962,9 @@ bool hold() {
             }
             g->input.handle_event(event);
         }
+        if (debug_overlay::take_settings_changed()) {
+            apply_settings();  // the drawer is open over the paused game
+        }
         const auto started = std::chrono::steady_clock::now();
         const bool dump = renderer::g_dump_draws;
         renderer::g_dump_draws = false;
@@ -2780,8 +2972,11 @@ bool hold() {
         draw_kept(false);
         g_held = false;
         renderer::g_dump_draws = dump;
-        // No faster than 60 pictures a second, whatever the frame pacing does with a held tick.
-        std::this_thread::sleep_until(started + std::chrono::milliseconds(16));
+        // No faster than the display shows them (a 120 Hz screen's drawer moves at 120), and no
+        // faster than 60 a second where its rate is not known.
+        const double interval = pacing.interval > 0.0 ? pacing.interval : 1.0 / 60.0;
+        std::this_thread::sleep_until(
+            started + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(interval * 0.9)));
     }
     return true;
 }
@@ -2878,6 +3073,7 @@ void close() {
         debug_overlay::release();
         settings::save();  // the window's size, if it was changed
         fps_counter::release();
+        touch_overlay::release();
         debug_menu::release();
         g->frame.release();
         g->picture.release();

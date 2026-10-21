@@ -39,11 +39,11 @@ s32 truncate_float_to_s32(f32) __asm__("FUN_001fa6d0");
 void FUN_001f5210_c(s32, s32, s32, s32) __asm__("FUN_001f5210");
 void reset_gs_registers(void) __asm__("FUN_001f3868");
 void setup_gif_paging(s32) __asm__("FUN_001f4280");
-void FUN_L00_001fcca0(void *, s32);
+void draw_timed_text(void *, s32) __asm__("FUN_L00_001fcca0");
 void do_gif_paging(void) __asm__("FUN_001f4398");
 void FUN_L00_001f8f78(void) {
     s32 i;
-    u8 *p;
+    u8 *timed_text_entry;
     if (D_L00_0015F5D8)
         return;
     FUN_L00_001fc558(D_L00_0015F628);
@@ -54,10 +54,10 @@ void FUN_L00_001f8f78(void) {
     }
     reset_gs_registers();
     setup_gif_paging(0);
-    p = D_L00_00173080;
+    timed_text_entry = D_L00_00173080;
     for (i = 0xB6; i >= 0; i--) {
-        FUN_L00_001fcca0(p, D_L00_0015F626);
-        p += 16;
+        draw_timed_text(timed_text_entry, D_L00_0015F626);
+        timed_text_entry += 16;
     }
     do_gif_paging();
 }

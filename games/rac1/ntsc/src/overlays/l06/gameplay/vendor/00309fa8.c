@@ -37,36 +37,41 @@ extern char *mk_a(int) __asm__("FUN_0020c4f8");
 extern void upd_a(void *) __asm__("FUN_L00_00250df8");
 
 void FUN_L06_00309fa8(char *self) {
+    enum {
+        INITIALIZE = 0,
+        WAIT_FOR_HIT = 1,
+        SPAWN_AND_REMOVE = 2
+    };
     int flag = 0;
-    char *o = find_moby_hit(self, 0x10000, 0);
+    char *hit_moby = find_moby_hit(self, 0x10000, 0);
     switch (((unsigned char *)self)[0x20]) {
-    case 0:
+    case INITIALIZE:
         self[0x20] = 1;
         break;
-    case 1:
-        if (o != 0 && *(float *)(o + 0x2C) > 0.0f) {
+    case WAIT_FOR_HIT:
+        if (hit_moby != 0 && *(float *)(hit_moby + 0x2C) > 0.0f) {
             flag = 1;
         }
         if (flag) {
             self[0x20] = 2;
         }
         break;
-    case 2: {
-        char *m;
+    case SPAWN_AND_REMOVE: {
+        char *spawned_moby;
         FUN_0022da68_c(0, 0, (int)self);
         FUN_L01_002787a0(self);
         FUN_L00_00263fd8(self, 0x682, self + 0x10, self + 0x40, 0, 0, 0.0f, D_L06_0015F580,
                          D_L06_0015F580, D_L06_0015F580);
         FUN_L00_00263fd8(self, 0x682, self + 0x10, self + 0x40, 0, 0, 0.0f, D_L06_0015F580,
                          D_L06_0015F580, D_L06_0015F580);
-        m = mk_a(0x681);
-        if (m != 0) {
-            m[0x31] = 1;
-            *(short *)(m + 0x32) = 0xFF;
-            qcopy(m + 0x10, self + 0x10);
-            qcopy(m + 0x40, self + 0x40);
-            *(long *)(m + 0x38) = *(long *)(self + 0x38);
-            upd_a(m);
+        spawned_moby = mk_a(0x681);
+        if (spawned_moby != 0) {
+            spawned_moby[0x31] = 1;
+            *(short *)(spawned_moby + 0x32) = 0xFF;
+            qcopy(spawned_moby + 0x10, self + 0x10);
+            qcopy(spawned_moby + 0x40, self + 0x40);
+            *(long *)(spawned_moby + 0x38) = *(long *)(self + 0x38);
+            upd_a(spawned_moby);
         }
         mark_moby_for_removal_c(self);
         break;

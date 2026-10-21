@@ -90,14 +90,25 @@ extern short D_L00_00161530;
 
 typedef struct {
     float v[4];
-    float a;
-    float b;
     unsigned char *m;
     int x;
     unsigned char c;
     float f;
     int i;
 } VCs_c2b77f0;
+
+/* The flame's hit record, as the hit writers (func_L00_001F2868, func_L00_00259A88) copy it into the
+ * moby hit table (D_L00_00178100): its +0x10 becomes the entry's source moby, which every moby's hit
+ * reaction (FUN_00213928) reads as a pointer. The US assembly builds it at sp+0x60: m at 0x70, x 0x74,
+ * c 0x78, f 0x7C, i 0x80. 0.8.0's copy had two floats before m, so the flame's length went in as the
+ * source and the Novalis birdbots crashed reading it (a read at 0x41221E2F). */
+#define VCS_OFFSET_c2b77f0(field, off) \
+    typedef char vcs_offset_##field##_c2b77f0[__builtin_offsetof(VCs_c2b77f0, field) == (off) ? 1 : -1]
+VCS_OFFSET_c2b77f0(m, 0x10);
+VCS_OFFSET_c2b77f0(x, 0x14);
+VCS_OFFSET_c2b77f0(c, 0x18);
+VCS_OFFSET_c2b77f0(f, 0x1C);
+VCS_OFFSET_c2b77f0(i, 0x20);
 
 /* Pyrocitor update: steps the moby's state machine, moves its effect points and runs the per-frame blend. */
 void FUN_L00_002b77f0(unsigned char *m) {
@@ -213,7 +224,7 @@ L8D58:
     goto L94A8;
 
 L8D94:
-    r = func_L00_0028D8C0(m, 0);
+    r = func_L00_0028D8C0(m, *(short *)(d + 0x4A));
     if (r == 0) {
         r = func_0022ED80_B8208(1, 4, m);
         *(short *)(d + 0x4A) = (short)r;
@@ -332,13 +343,15 @@ L8FEC:
     fa = func_001FA6C0(W[0x10]);
     vc.m = m;
     vc.x = 0x10000;
+    vc.c = 0;
+    vc.i = 1;
     *(u128_B8AE8_c2b77f0 *)vc.v = *(u128_B8AE8_c2b77f0 *)v10;
-    vc.f = fa + f20;
-    vc.a = f20;
-    vc.b = 5627.9248046875f;
+    vc.f = fa + 1.0f;
+    func_L00_001FF550(&vc, &vc, 1.0f);
+    vc.v[3] = 5627.9248046875f;
+    vc.v[2] = 1.0f;
     vc.c = 5;
     vc.i = 1;
-    func_L00_001FF550(v50, &vc, f20);
     func_L00_001F2868(v50, 0.42f, 5, *(void **)(Q + 0x2080), &vc);
     v40[0] = -0.8f;
     func_001F9CF8(v50, v40, R);
@@ -349,26 +362,26 @@ L8FEC:
         float q2 = func_001F96B0(q1);
         *(short *)(d + 0x4E) = (short)func_001FA898_r(q2);
         func_L00_00257D78(v50, 0.0f, D_0015ED6C + D_0015ED6C);
+        {
+            float q3 = func_002132A8(0.5f, 0.1f);
+            func_001F9A68(v40, v10, q3);
+            func_001F9A10(v40, v40, v50);
+            func_L00_0026D598((char *)v20, (char *)v40, W[0x10]);
+        }
     }
-    {
-        float q3 = func_002132A8(0.5f, 0.1f);
-        func_001F9A68(v40, v10, q3);
-        func_001F9A10(v40, v40, v50);
-        func_L00_0026D598((char *)v20, (char *)v40, W[0x10]);
-    }
-    r = func_001F9850_4198(D_L00_00161530);
+    r = func_001F9850_4198(*(int *)&D_L00_00161530);
     if (r != 0) {
         if (*(int *)&D_L00_0015F6B0_i % r != 0) goto L93F8;
     }
     func_L00_00233DB8(-1, 1);
 
 L93F8:
-    func_L00_00233E98(-1);
+    hh = func_L00_00233E98(-1);
     r = func_001F9770(d + 0x4C);
     if (r == 0) goto L94A4;
     if ((*(int *)(D_0013A4E0 + 0x2600) & *(int *)(Q + 0x10A0)) == 0) goto L9440;
     if (*(unsigned char *)(Q + 0x20AC) != 0) goto L9440;
-    if (r != 0) goto L94A8;
+    if (hh != 0) goto L94A8;
 L9440:
     m[0x20] = 2;
     func_L00_0020E698();
@@ -382,7 +395,7 @@ L9440:
         }
     }
     *(short *)(d + 0x4A) = -1;
-    if (r == 0) func_0022ED80_B8208(0, 0, m);
+    if (hh == 0) func_0022ED80_B8208(0, 0, m);
 
 L94A4:
 L94A8:

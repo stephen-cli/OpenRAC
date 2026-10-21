@@ -28,6 +28,11 @@
   --bar-bottom: #cd8300;
   --bar-ink: #2a1800;
   --bar-ink-deep: #1b1206;
+  /* The name on the bar, and the site's white button on it (Discord). */
+  --bar-name: #000;
+  --bar-button: #fff;
+  /* A field's edge: 3:1 against the panel, so it is seen as a field. */
+  --line-field: rgb(156 161 212 / 0.6);
   /* States. The site has none; these sit with its palette. */
   --ok: #8fd694;
   --warn: var(--amber);
@@ -45,49 +50,73 @@
   --radius-sm: 10px;
   --shadow: 0 18px 50px rgb(0 0 0 / 0.45);
   --shadow-sm: 0 8px 24px rgb(0 0 0 / 0.35);
+
+  /* Motion: one curve for what arrives and settles, and three lengths. */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --fast: 0.15s;
+  --medium: 0.28s;
+  --slow: 0.5s;
+
+  /* A page's margins and the space between its sections (--page-x, --page-top, --page-bottom,
+     --page-gap) are each page's own on a desktop, its fallback values; a narrow window and Android
+     set them below, the same on every page. */
+  /* What the navigation takes of the window: the header bar on top, or on Android the rail on
+     the left or the bar at the bottom (Header.svelte). */
+  --nav-top: 60px;
+  --nav-left: 0px;
+  --nav-bottom: 0px;
   color-scheme: dark;
+}
+
+@media (max-width: 600px) {
+  :root {
+    --page-x: 16px;
+    --page-top: 16px;
+    --page-gap: 16px;
+  }
+}
+
+/* Android: Material's margins (24 dp beside the content, 16 on a phone held upright), and the
+   navigation as its apps have it: a rail on the left, or a bar at the bottom when the window is
+   narrow. */
+html[data-platform="android"] {
+  --page-x: 24px;
+  --page-top: 20px;
+  --page-bottom: 32px;
+  --page-gap: 16px;
+  --nav-top: 0px;
+  --nav-left: 80px;
+}
+
+@media (max-width: 599px) {
+  html[data-platform="android"] {
+    --page-x: 16px;
+    --page-top: 16px;
+    --nav-left: 0px;
+    --nav-bottom: 80px;
+  }
 }
 
 * {
   box-sizing: border-box;
+  /* No blue flash on a tap (Android's WebView): a press shows in the launcher's own colours. */
+  -webkit-tap-highlight-color: transparent;
 }
 
+/* The system's text size (1rem) is kept: every size is in rem, so a player who reads larger has it. */
 html,
 body {
   margin: 0;
   height: 100%;
   background: var(--ink);
   color: var(--text);
-  font: 15px/1.55 var(--font-sans);
+  font: 0.9375rem/1.55 var(--font-sans);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 
 #app {
   height: 100%;
-}
-
-/* The orange bar at the top of the app */
-header,
-.site-header {
-  position: relative;
-  z-index: 20;
-  display: flex !important;
-  flex-direction: row;
-  align-items: center;
-  gap: 22px;
-  height: 60px;
-  min-height: 60px;
-  width: 100%;
-  padding: 0 18px;
-  background: linear-gradient(to bottom, var(--bar-top), var(--bar-bottom)) !important;
-  border-bottom: 1px solid rgb(0 0 0 / 0.3);
-  color: #000;
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.35),
-    0 4px 24px rgb(0 0 0 / 0.45);
-  flex: none;
-  box-sizing: border-box;
 }
 
 h1,
@@ -97,23 +126,40 @@ h3 {
   color: var(--gold);
   margin: 0;
   letter-spacing: 0.01em;
+  text-wrap: balance;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--amber) 38%, transparent);
+  color: var(--text);
+}
+
+input,
+textarea {
+  caret-color: var(--amber);
+}
+
+::placeholder {
+  color: var(--dim);
+  opacity: 1;
 }
 
 h1 {
-  font-size: 26px;
+  font-size: 1.625rem;
 }
 
 h2 {
-  font-size: 18px;
+  font-size: 1.125rem;
 }
 
 h3 {
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--text);
 }
 
 p {
   margin: 0;
+  text-wrap: pretty;
 }
 
 a {
@@ -123,7 +169,7 @@ a {
 code,
 .mono {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
 }
 
 .muted {
@@ -158,7 +204,7 @@ code,
 
 .sec-num {
   font-family: var(--font-head);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--brand);
   letter-spacing: 0.2em;
@@ -176,11 +222,17 @@ code,
   padding: 20px 22px;
 }
 
+@media (max-width: 600px) {
+  .panel {
+    padding: 16px;
+  }
+}
+
 /* Buttons. The primary one is the header bar's orange. */
 button,
 .button {
   font: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   border-radius: 999px;
   border: 1px solid var(--line-strong);
@@ -193,19 +245,37 @@ button,
   gap: 8px;
   text-decoration: none;
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    filter 0.15s;
+    background var(--fast),
+    border-color var(--fast),
+    color var(--fast),
+    filter var(--fast),
+    transform var(--fast) var(--ease);
 }
 
-button:hover:not(:disabled),
-.button:hover {
-  border-color: var(--soft);
+@media (hover: hover) {
+  button:hover:not(:disabled),
+  .button:hover {
+    border-color: var(--soft);
+  }
 }
 
-button:disabled {
+button:disabled,
+button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* Read out, not shown: what a mark on its own says (a dot for a crash, for an update). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 button:focus-visible,
@@ -215,6 +285,20 @@ input:focus-visible {
   outline-offset: 2px;
 }
 
+/* With a controller (src/lib/pad.ts) the focus is where A presses: always drawn. */
+html[data-input="pad"] :focus {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* A press dims the button and pushes it in a little; on a touch screen that is all it shows, as
+   hover styles apply only where there is a pointer that hovers. */
+button:active:not(:disabled),
+.button:active {
+  filter: brightness(0.88);
+  transform: scale(0.97);
+}
+
 button.primary {
   background: linear-gradient(to bottom, var(--bar-top), var(--bar-bottom));
   border-color: rgb(0 0 0 / 0.3);
@@ -222,9 +306,11 @@ button.primary {
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35);
 }
 
-button.primary:hover:not(:disabled) {
-  filter: brightness(1.08);
-  border-color: rgb(0 0 0 / 0.3);
+@media (hover: hover) {
+  button.primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+    border-color: rgb(0 0 0 / 0.3);
+  }
 }
 
 button.ghost {
@@ -233,25 +319,179 @@ button.ghost {
   color: var(--soft);
 }
 
-button.ghost:hover:not(:disabled) {
-  background: var(--panel-hi);
-  border-color: var(--line);
+@media (hover: hover) {
+  button.ghost:hover:not(:disabled) {
+    background: var(--panel-hi);
+    border-color: var(--line);
+  }
 }
 
 button.small {
-  font-size: 13px;
+  font-size: 0.8125rem;
   padding: 4px 12px;
 }
 
 input[type="text"] {
   font: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
   width: 100%;
   background: var(--ink-deep);
   color: var(--text);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-field);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
+}
+
+/* Settings (Settings.svelte, GpuDrivers.svelte): a row per setting, its name and at most a line
+   about it on the left, its control on the right, as Android's and the desktop systems' own
+   settings are laid out. */
+.setting {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding: 10px 0;
+}
+
+.setting + .setting {
+  border-top: 1px solid var(--line);
+}
+
+label.setting {
+  cursor: pointer;
+}
+
+.setting > .text {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting strong {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.setting small {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.8125rem;
+  color: var(--soft);
+}
+
+/* An on/off setting: a checkbox drawn as a switch. */
+input.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 42px;
+  height: 24px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--ink-deep);
+  border: 1px solid var(--line-strong);
+  cursor: pointer;
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+
+input.switch::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition:
+    transform var(--medium) var(--ease),
+    background var(--fast) var(--ease);
+}
+
+input.switch:checked {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+input.switch:checked::before {
+  transform: translateX(18px);
+  background: var(--text);
+}
+
+input.switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* One of a few choices, side by side: the chosen one filled. */
+.segmented {
+  flex: none;
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 999px;
+  background: var(--ink-deep);
+  border: 1px solid var(--line-strong);
+}
+
+.segmented button {
+  border: 0;
+  background: transparent;
+  color: var(--soft);
+  font-size: 0.8125rem;
+  padding: 5px 14px;
+}
+
+.segmented button[aria-checked="true"] {
+  background: var(--panel-hi);
+  color: var(--gold);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+@media (hover: hover) {
+  .segmented button:hover:not(:disabled) {
+    color: var(--text);
+  }
+}
+
+/* What most players never change, folded away (Settings, "Advanced"). */
+details.more > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-sm);
+}
+
+details.more > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.more > summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  border-right: 2px solid var(--soft);
+  border-bottom: 2px solid var(--soft);
+  transform: rotate(45deg);
+  transition: transform var(--medium) var(--ease);
+}
+
+details.more[open] > summary::after {
+  transform: rotate(225deg);
+}
+
+details.more > summary:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 4px;
+}
+
+details.more[open] > :not(summary) {
+  animation: rise var(--medium) var(--ease) both;
 }
 
 /* Status pills: a dot and a word. */
@@ -262,7 +502,7 @@ input[type="text"] {
   border-radius: 999px;
   border: 1px solid var(--line);
   padding: 2px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--soft);
   white-space: nowrap;
@@ -369,7 +609,57 @@ input[type="text"] {
 }
 
 .rise {
-  animation: rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: rise 0.6s var(--ease) both;
+}
+
+/* A page's sections arrive one after another when it opens. */
+.page > :is(section, .panel, h1):not(.rise) {
+  animation: rise var(--slow) var(--ease) both;
+}
+
+.page > :nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.page > :nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.page > :nth-child(4) {
+  animation-delay: 120ms;
+}
+
+.page > :nth-child(5) {
+  animation-delay: 160ms;
+}
+
+.page > :nth-child(n + 6) {
+  animation-delay: 200ms;
+}
+
+/* Android's touch feedback (src/lib/ripple.ts): a wave from the finger, inside the control. */
+.ripples {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.2;
+  transform: translate(-50%, -50%) scale(0);
+  animation: ripple 0.5s var(--ease) forwards;
+}
+
+@keyframes ripple {
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 
 .spinner {
@@ -399,11 +689,63 @@ input[type="text"] {
   border: 2px solid var(--ink);
 }
 
+/* A touch screen scrolls by dragging, and Android's own apps show no bars: these styled bars,
+   which the WebView draws all the time, read there as stray strips at a panel's edge. */
+html[data-platform="android"] ::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+html[data-platform="android"] * {
+  scrollbar-width: none;
+}
+
+/* Android's WebView flickers under a blurred backdrop (main.ts): the panels stay translucent. */
+html[data-platform="android"] * {
+  backdrop-filter: none !important;
+}
+
+/* An app's controls are not text to select: a long press does nothing, as in Android's own apps.
+   What is text (fields, paths, logs) still is. */
+html[data-platform="android"] body {
+  user-select: none;
+}
+
+html[data-platform="android"] :is(input, textarea, pre, code, .mono, .selectable) {
+  user-select: text;
+}
+
+/* A finger needs 44 px (Material's 48 dp less the space around): the small buttons and the
+   segmented choices keep their look, and grow to that height. */
+html[data-platform="android"] :is(button.small, .segmented button) {
+  min-height: 44px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+
+  /* Still says it is working, without anything sliding: the spinner turns slowly, and a bar
+     whose end is not known (JobProgress, Activity, the update) fills its track and fades in and
+     out, rather than standing still at a third as if a third were done. */
+  .spinner {
+    animation: spin 2.4s linear infinite !important;
+  }
+
+  .track i.moving,
+  .progress-fill.indeterminate {
+    width: 100% !important;
+    transform: none !important;
+    animation: breathe 1.6s ease-in-out infinite alternate !important;
+  }
+}
+
+@keyframes breathe {
+  to {
+    opacity: 0.4;
   }
 }

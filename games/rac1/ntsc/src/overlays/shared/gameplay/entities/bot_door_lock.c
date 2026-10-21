@@ -17,32 +17,25 @@ extern float D_L06_00167400[];
 extern OvlVec4 D_L06_001fe8d0[];
 extern float D_L06_001fe960[][2];
 extern u32 D_L06_001fe9a8[];
-extern int D_L06_001fe9d0[];
+extern int D_L06_001fe9d0[][4];
 void FUN_L06_00307578(char *moby) {
     struct GeometryQuad quad;
     OvlVec4 result[4];
-    float rotation[3];
+    float rotation[4];
     float matrix[12];
     OvlVec4 pos[4];
     OvlVec4 corners[4];
-    volatile int i;
+    int i;
     OvlVec4 *pos0, *pos1, *pos2, *pos3;
     OvlVec4 *result0, *result1, *result2, *result3;
     float *data = *(float **)(moby + 0x78);
-    int *indices;
-    int *index1, *index2;
-    OvlVec4 *vertices;
-    float (*uvs)[2];
-    u32 *colors;
     rotation[0] = 0.0f; rotation[1] = 0.0f; rotation[2] = D_L06_00167400[86];
     euler_rotation_basis(matrix, rotation);
     data[7] += 0.01f;
     if (1.0f < data[7]) data[7] -= 1.0f;
     quad.texture_state = 1;
-    *(volatile u64 *)&quad.primitive = 0x4000000044ULL;
+    quad.primitive = 0x4000000044ULL;
     quad.reserved.value = 0;
-    indices = D_L06_001fe9d0;
-    i = 0;
     quad.texture = get_effect_texture(0x18);
     result0 = &result[0];
     result1 = &result[1];
@@ -52,18 +45,11 @@ void FUN_L06_00307578(char *moby) {
     pos1 = &pos[1];
     pos2 = &pos[2];
     pos3 = &pos[3];
-    vertices = D_L06_001fe8d0;
-    uvs = D_L06_001fe960;
-    colors = D_L06_001fe9a8;
-    do {
-        volatile int offset = i * 4;
-        i++;
-        transform_vector_by_basis(result0, &vertices[indices[0]], matrix);
-        index1 = D_L06_001fe9d0 + 1 + offset;
-        transform_vector_by_basis(result1, &vertices[*index1], matrix);
-        index2 = D_L06_001fe9d0 + 2 + offset;
-        transform_vector_by_basis(result2, &vertices[*index2], matrix);
-        transform_vector_by_basis(result3, &vertices[indices[3]], matrix);
+    for (i = 0; i < 4; i++) {
+        transform_vector_by_basis(result0, &D_L06_001fe8d0[D_L06_001fe9d0[i][0]], matrix);
+        transform_vector_by_basis(result1, &D_L06_001fe8d0[D_L06_001fe9d0[i][1]], matrix);
+        transform_vector_by_basis(result2, &D_L06_001fe8d0[D_L06_001fe9d0[i][2]], matrix);
+        transform_vector_by_basis(result3, &D_L06_001fe8d0[D_L06_001fe9d0[i][3]], matrix);
         quad.positions[0].f[0] = *(float *)(moby + 16) + result[0].f[0] * data[9];
         quad.positions[0].f[1] = *(float *)(moby + 20) + result[0].f[1] * data[9];
         quad.positions[0].f[2] = *(float *)(moby + 24) + result[0].f[2];
@@ -76,21 +62,20 @@ void FUN_L06_00307578(char *moby) {
         quad.positions[3].f[0] = *(float *)(moby + 16) + result[3].f[0] * data[9];
         quad.positions[3].f[1] = *(float *)(moby + 20) + result[3].f[1] * data[9];
         quad.positions[3].f[2] = *(float *)(moby + 24) + result[3].f[2];
-        quad.colors[0] = colors[indices[0]];
-        quad.colors[1] = colors[*index1];
-        quad.colors[2] = colors[*index2];
-        quad.colors[3] = colors[indices[3]];
-        quad.texture_coordinates[0][0] = uvs[indices[0]][0];
-        quad.texture_coordinates[0][1] = uvs[indices[0]][1] + data[7];
-        quad.texture_coordinates[1][0] = uvs[*index1][0];
-        quad.texture_coordinates[1][1] = uvs[*index1][1] + data[7];
-        quad.texture_coordinates[2][0] = uvs[*index2][0];
-        quad.texture_coordinates[2][1] = uvs[*index2][1] + data[7];
-        quad.texture_coordinates[3][0] = uvs[indices[3]][0];
-        quad.texture_coordinates[3][1] = uvs[indices[3]][1] + data[7];
-        indices += 4;
+        quad.colors[0] = D_L06_001fe9a8[D_L06_001fe9d0[i][0]];
+        quad.colors[1] = D_L06_001fe9a8[D_L06_001fe9d0[i][1]];
+        quad.colors[2] = D_L06_001fe9a8[D_L06_001fe9d0[i][2]];
+        quad.colors[3] = D_L06_001fe9a8[D_L06_001fe9d0[i][3]];
+        quad.texture_coordinates[0][0] = D_L06_001fe960[D_L06_001fe9d0[i][0]][0];
+        quad.texture_coordinates[0][1] = D_L06_001fe960[D_L06_001fe9d0[i][0]][1] + data[7];
+        quad.texture_coordinates[1][0] = D_L06_001fe960[D_L06_001fe9d0[i][1]][0];
+        quad.texture_coordinates[1][1] = D_L06_001fe960[D_L06_001fe9d0[i][1]][1] + data[7];
+        quad.texture_coordinates[2][0] = D_L06_001fe960[D_L06_001fe9d0[i][2]][0];
+        quad.texture_coordinates[2][1] = D_L06_001fe960[D_L06_001fe9d0[i][2]][1] + data[7];
+        quad.texture_coordinates[3][0] = D_L06_001fe960[D_L06_001fe9d0[i][3]][0];
+        quad.texture_coordinates[3][1] = D_L06_001fe960[D_L06_001fe9d0[i][3]][1] + data[7];
         draw_geometry_quad(&quad, 0, 1);
-    } while (i < 4);
+    }
     quad.texture = get_effect_texture(0x1b);
     data[8] += 0.01f;
     if (1.0f < data[8]) data[8] = 0.0f;
@@ -109,12 +94,12 @@ void FUN_L06_00307578(char *moby) {
     corners[3].q = 0;
     corners[3].f[0] = data[8] * 1.2f * data[9];
     corners[3].f[1] = data[8] * 1.2f * data[9];
-    corners[3].f[2] = data[8] * 1.4f + 1.1f - 0.2f;
-    pos[0].q = corners[0].q;
-    pos[1].q = corners[1].q;
-    pos[2].q = corners[2].q;
-    pos[3].q = corners[3].q;
     rotation[0] = 0.0f; rotation[1] = 0.0f; rotation[2] = D_L06_00167400[86];
+    pos[0].q = corners[0].q;
+    pos[2].q = corners[2].q;
+    pos[1].q = corners[1].q;
+    corners[3].f[2] = data[8] * 1.4f + 1.1f - 0.2f;
+    pos[3].q = corners[3].q;
     euler_rotation_basis(matrix, rotation);
     transform_vector_by_basis(result0, pos0, matrix);
     transform_vector_by_basis(result1, pos1, matrix);
@@ -135,9 +120,9 @@ void FUN_L06_00307578(char *moby) {
     quad.colors[0] = ((u32)(int)((1.0f - data[8]) * 128.0f) << 24) | 0x808080;
     quad.colors[3] = quad.colors[2] = quad.colors[1] = quad.colors[0];
     quad.texture_coordinates[0][0] = 0.0f; quad.texture_coordinates[0][1] = 0.0f;
-    quad.texture_coordinates[1][0] = 1.0f; quad.texture_coordinates[2][1] = 1.0f;
+    quad.texture_coordinates[1][0] = 1.0f; quad.texture_coordinates[1][1] = 0.0f;
+    quad.texture_coordinates[2][0] = 0.0f; quad.texture_coordinates[2][1] = 1.0f;
     quad.texture_coordinates[3][0] = 1.0f; quad.texture_coordinates[3][1] = 1.0f;
-    quad.texture_coordinates[1][1] = 0.0f; quad.texture_coordinates[2][0] = 0.0f;
     draw_geometry_quad(&quad, 0, 1);
 }
 #endif
@@ -197,6 +182,11 @@ extern void draw_number(void *, void *, int, unsigned int, int, int, int, float)
 extern int D_L06_0015FFD8_gp __asm__("D_L06_0015FFD8") __attribute__((sda));
 void bot_door_lock_update(char *moby) __asm__("FUN_L06_00307d30");
 void bot_door_lock_update(char *moby) {
+    enum {
+        BOT_DOOR_LOCK_STATE_INITIALIZE = 0,
+        BOT_DOOR_LOCK_STATE_ACTIVE = 1,
+        BOT_DOOR_LOCK_STATE_SHRINK_EFFECT = 2
+    };
     float *data = *(float **)(moby + 0x78);
     int *idata = (int *)data;
     float pos[4];
@@ -212,14 +202,14 @@ void bot_door_lock_update(char *moby) {
     data[10] = fast_add_rotations(data[10], (360.0f / D_L06_001622E4) * 0.017453292f * frame_time);
     *(unsigned int *)(moby + 0x90) = fast_tween_color((fast_cos(data[10]) + 1.0f) * 0.5f, 0x80464646, 0x80828282);
     switch ((unsigned char)moby[0x20]) {
-    case 0:
+    case BOT_DOOR_LOCK_STATE_INITIALIZE:
         idata[5] = idata[4];
         data[6] = random_angle_radians();
         data[10] = random_angle_radians();
         moby[0x20] = 1;
         data[9] = D_L06_001622EC;
         return;
-    case 1:
+    case BOT_DOOR_LOCK_STATE_ACTIVE:
         *(OvlQuad *)pos = *(OvlQuad *)(moby + 0x10);
         pos[2] += 2.75f;
         if (FUN_001f9b48(D_L06_00167540, moby + 0x10) < 32.0f) {
@@ -281,7 +271,7 @@ void bot_door_lock_update(char *moby) {
             moby[0x20] = 2;
         }
         break;
-    case 2:
+    case BOT_DOOR_LOCK_STATE_SHRINK_EFFECT:
         data[9] -= frame_time + frame_time;
         if (data[9] < 0.0f) data[9] = 0.0f;
         if (0.0f < data[9]) enqueue_callback_list_1((int)FUN_L06_00307578, (int)moby);
@@ -328,22 +318,27 @@ extern char *mk_a(int) __asm__("FUN_0020c4f8");
 extern void upd_a(void *) __asm__("FUN_L00_00250df8");
 
 void FUN_L06_00309860(char *self) {
+    enum {
+        MOBY_STATE_INITIALIZE = 0,
+        MOBY_STATE_WAIT_FOR_HIT = 1,
+        MOBY_STATE_SPAWN_AND_REMOVE = 2
+    };
     int flag = 0;
-    char *o = find_moby_hit(self, 0x10000, 0);
+    char *hit_moby = find_moby_hit(self, 0x10000, 0);
     switch (((unsigned char *)self)[0x20]) {
-    case 0:
+    case MOBY_STATE_INITIALIZE:
         self[0x20] = 1;
         break;
-    case 1:
-        if (o != 0 && *(float *)(o + 0x2C) > 0.0f) {
+    case MOBY_STATE_WAIT_FOR_HIT:
+        if (hit_moby != 0 && *(float *)(hit_moby + 0x2C) > 0.0f) {
             flag = 1;
         }
         if (flag) {
             self[0x20] = 2;
         }
         break;
-    case 2: {
-        char *m;
+    case MOBY_STATE_SPAWN_AND_REMOVE: {
+        char *spawned_moby;
         FUN_0022da68_c(0, 0, (int)self);
         FUN_L01_002787a0(self);
         FUN_L00_00263fd8(self, 0x679, self + 0x10, self + 0x40, 0, 0, 0.0f, D_L06_0015F580,
@@ -352,14 +347,14 @@ void FUN_L06_00309860(char *self) {
                          D_L06_0015F580, D_L06_0015F580);
         FUN_L00_00263fd8(self, 0x67b, self + 0x10, self + 0x40, 0, 0, 0.0f, D_L06_0015F580,
                          D_L06_0015F580, D_L06_0015F580);
-        m = mk_a(0x678);
-        if (m != 0) {
-            m[0x31] = 1;
-            *(short *)(m + 0x32) = 0xFF;
-            qcopy(m + 0x10, self + 0x10);
-            qcopy(m + 0x40, self + 0x40);
-            *(long *)(m + 0x38) = *(long *)(self + 0x38);
-            upd_a(m);
+        spawned_moby = mk_a(0x678);
+        if (spawned_moby != 0) {
+            spawned_moby[0x31] = 1;
+            *(short *)(spawned_moby + 0x32) = 0xFF;
+            qcopy(spawned_moby + 0x10, self + 0x10);
+            qcopy(spawned_moby + 0x40, self + 0x40);
+            *(long *)(spawned_moby + 0x38) = *(long *)(self + 0x38);
+            upd_a(spawned_moby);
         }
         mark_moby_for_removal_c(self);
         break;
@@ -373,17 +368,21 @@ void FUN_L06_0030bfa8(char *moby);
 void enqueue_callback_list_1(s32 arg0, s32 arg1) __asm__("FUN_001f4600");
 void mark_moby_for_removal(struct Obj *obj) __asm__("FUN_0020c828");
 
-void FUN_L06_0030be60(char *m) {
-    float *d = *(float **)(m + 0x78);
-    switch ((unsigned char)m[0x20]) {
-    case 0:
-        mark_moby_for_removal(m);
+void FUN_L06_0030be60(char *moby) {
+    enum {
+        SPRITE_EFFECT_STATE_REMOVE = 0,
+        SPRITE_EFFECT_STATE_ANIMATE = 1
+    };
+    float *effect_data = *(float **)(moby + 0x78);
+    switch ((unsigned char)moby[0x20]) {
+    case SPRITE_EFFECT_STATE_REMOVE:
+        mark_moby_for_removal(moby);
         break;
-    case 1:
-        enqueue_callback_list_1(FUN_L06_0030bfa8, m);
-        d[0] = d[0] + d[1];
-        if (2.0f < d[0]) {
-            mark_moby_for_removal(m);
+    case SPRITE_EFFECT_STATE_ANIMATE:
+        enqueue_callback_list_1(FUN_L06_0030bfa8, moby);
+        effect_data[0] = effect_data[0] + effect_data[1];
+        if (2.0f < effect_data[0]) {
+            mark_moby_for_removal(moby);
         }
         break;
     }
@@ -395,19 +394,19 @@ extern float convert_integer_to_float(int) __asm__("FUN_001fa6c0");
 void FUN_L06_0030bef8(char *src, int duration_updates, int start_color, int end_color) {
     OvlQuad v;
     char *vp = (char *)&v;
-    unsigned char *m;
+    unsigned char *effect_moby;
     v = *(OvlQuad *)src;
-    m = (unsigned char *)mk_b(0x76A);
-    if (m) {
-        char *e = *(char **)(m + 0x78);
-        float f;
-        qcopy(m + 0x10, vp);
-        f = convert_integer_to_float(duration_updates);
-        *(int *)(e + 0xC) = end_color;
-        *(int *)(e + 0x8) = start_color;
-        *(float *)(e + 0x4) = 2.0f / f;
-        m[0x30] = 0xFF;
-        m[0x20] = 1;
+    effect_moby = (unsigned char *)mk_b(0x76A);
+    if (effect_moby) {
+        char *effect_data = *(char **)(effect_moby + 0x78);
+        float duration_as_float;
+        qcopy(effect_moby + 0x10, vp);
+        duration_as_float = convert_integer_to_float(duration_updates);
+        *(int *)(effect_data + 0xC) = end_color;
+        *(int *)(effect_data + 0x8) = start_color;
+        *(float *)(effect_data + 0x4) = 2.0f / duration_as_float;
+        effect_moby[0x30] = 0xFF;
+        effect_moby[0x20] = 1;
     }
 }
 extern void vu1_add_g_sregister(s32, s64) __asm__("FUN_00233980");
@@ -426,7 +425,7 @@ extern s32 D_L06_00162428 __attribute__((sda));
 
 /* Draws a screen-space sprite at the moby, grown and faded in by the first data float. */
 void FUN_L06_0030bfa8(char *moby) {
-    float *d = *(float **)(moby + 0x78);
+    float *effect_data = *(float **)(moby + 0x78);
     OvlVec4 pos;
     s64 corners[4];
     u32 colors[4];
@@ -442,9 +441,9 @@ void FUN_L06_0030bfa8(char *moby) {
     float screen_offset;
 
     qcopy(&pos, moby + 0x10);
-    size = d[0];
+    size = effect_data[0];
     if (1.0f < size) size = 1.0f;
-    fade = d[0] - 1.0f;
+    fade = effect_data[0] - 1.0f;
     if (1.0f < fade) fade = 1.0f;
     else if (fade < 0.0f) fade = 0.0f;
     vu1_add_g_sregister(0x47, 0x5380B);
@@ -459,7 +458,7 @@ void FUN_L06_0030bfa8(char *moby) {
     uvs[1] = D_L06_00162420;
     uvs[2] = D_L06_00162424;
     uvs[3] = D_L06_00162428;
-    color = fast_tween_color(fade, *(s32 *)&d[2], *(s32 *)&d[3]);
+    color = fast_tween_color(fade, *(s32 *)&effect_data[2], *(s32 *)&effect_data[3]);
     colors[3] = color;
     colors[2] = color;
     colors[1] = color;

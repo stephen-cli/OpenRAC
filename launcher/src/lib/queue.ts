@@ -42,6 +42,8 @@ export class Queue {
   private nextKey = 0;
   /** Events for ids no job has yet (the start call has not returned). */
   private early = new Map<number, JobEvent[]>();
+  /** The jobs that ended, waiting to be reported (see takeEnded). */
+  private ended: Job[] = [];
 
   constructor(jobs: Job[] = []) {
     this.jobs = jobs;
@@ -91,6 +93,16 @@ export class Queue {
     this.early.delete(id);
   }
 
+  /** A detached start (Android's game, an activity of its own): there is no process to follow, so
+   *  the job is done once it started; it must not hold the queue up nor offer a stop that cannot
+   *  stop anything. */
+  launched(job: Job, command: string, now = Date.now()) {
+    job.state = "succeeded";
+    job.command = command;
+    job.startedAt = now;
+    job.endedAt = now;
+  }
+
   /** The start call failed: the job never ran. */
   refused(job: Job, error: string, now = Date.now()) {
     job.state = "failed";
@@ -119,6 +131,7 @@ export class Queue {
     job.code = event.code;
     job.endedAt = now;
     job.state = event.cancelled ? "cancelled" : event.code === 0 ? "succeeded" : "failed";
+    this.ended.push(job);
   }
 
   /** Forgets finished jobs. */
@@ -127,5 +140,17 @@ export class Queue {
       const state = this.jobs[i]?.state;
       if (state !== "queued" && state !== "running") this.jobs.splice(i, 1);
     }
+    this.ended = this.ended.filter((job) => this.jobs.includes(job));
+  }
+
+  /**
+   * The job that ended, if one has and the app has not taken it yet.
+   *
+   * A job's end is reported here, and only here, so that it is acted on once
+   * whether its exit event came before the start call returned (the event was
+   * kept until the id was known) or after it.
+   */
+  takeEnded(): Job | undefined {
+    return this.ended.shift();
   }
 }

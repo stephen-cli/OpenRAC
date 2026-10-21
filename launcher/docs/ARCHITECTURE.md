@@ -73,6 +73,10 @@ gets focus, and when settings change.
   is a job's turn, `run_action` starts it and returns its id; output arrives
   as `job-output` events and the end as `job-exit`. Events that arrive before
   `run_action` has returned are kept until the id is known.
+- A job's end is acted on once, wherever its event landed: the queue keeps
+  the jobs that ended (`takeEnded`) and the app takes them, so an end that
+  came before the start call returned is acted on just like one that came
+  after it.
 - `run_action` checks the action again against the checkout as it is now; a
   job whose needs went missing in the meantime fails with the reason.
 
@@ -88,9 +92,11 @@ library reports each game's set-up state (`GameView.install`), read from
 `job-exit`. An exit status other than 0, or none (a signal), is not a failed
 task: `gameStopped` in `lib/app.svelte.ts` asks `latest_crash` for the report
 the port wrote since the job started and sets `app.stopped`, which the game's
-page shows as `components/CrashNotice.svelte`; `components/ReportsBlock.svelte`
-lists the game's logs and reports under its saves, and `app.crashes` (counted
-after every refresh and every game's end) marks the game in the list after a recent crash.
+page shows as `components/CrashNotice.svelte`. A game that ended **without**
+such a report was closed, not crashed: the notice says so, in plain words,
+and asks for nothing. `components/ReportsBlock.svelte` lists the game's logs
+and reports under its saves, and `app.crashes` (counted after every refresh
+and every game's end) marks the game in the list after a recent crash.
 Every command run and every exit is written to `launcher.log`
 (`core/src/launcher_log.rs`), which goes in the report's .zip.
 
@@ -127,17 +133,22 @@ mirrored in `src/lib/api.ts`.
 | `latest_crash`                                                  | `{game, since}`                                         | the newest crash report since a time: after the game stopped                                     |
 | `report_text` / `report_save`                                   | `{game, file}`                                          | the text to copy; the .zip saved in Downloads and shown (its path, home as `~`)                  |
 | `open_reports_folder`                                           | `{game, crashes}`                                       | opens the game's data folder, or its `crashes/`                                                  |
+| `differences` / `set_game_fix`                                  | `{game, version}` / `{game, version, id, on}`           | what the port does otherwise than the PS2 game (`core/src/differences.rs`); a fix switched       |
 | `cancel_job`                                                    | `{id}`                                                  |                                                                                                  |
 | `open_path`                                                     | `{path}` relative to the checkout                       | opens it with the system; refuses paths outside the checkout                                     |
 | `open_url`                                                      | `{url}`                                                 | opens an `https://` address in the browser                                                       |
 | `sync_progress_from_web`                                        |                                                         | fetches openrac.dev's progress, writes `progress/summary.json`, returns the catalogue            |
 | `apply_progress_json`                                           | `{json}`                                                | the same from JSON the page fetched                                                              |
 | `set_discord_status`                                            | `{status}`                                              | sets Discord Rich Presence (idle, viewing, playing)                                              |
+| `pick_disc` (Android)                                           |                                                         | the system's picker; the image copied into the app (`disc-copy` events), its path or null        |
+| `gpu_drivers` (Android)                                         |                                                         | the GPU driver packages, the one chosen, the device (`OpenracPlugin.kt`)                         |
+| `gpu_driver_import` / `_select` / `_remove` (Android)           | - / `{id}` (null: the system's) / `{id}`                | adds a package's zip; chooses the one the game loads; removes one                                |
 
 | Event        | Payload                                                    |
 | ------------ | ---------------------------------------------------------- |
 | `job-output` | `{type: "output", id, stream: "stdout" \| "stderr", line}` |
 | `job-exit`   | `{type: "exit", id, code, cancelled}`                      |
+| `disc-copy`  | `{name, copied, total}` (Android: a picked disc's copy)    |
 
 ### Adding a command
 
@@ -348,3 +359,12 @@ Tauri builds for Linux (AppImage, deb, rpm), macOS (app, dmg) and Windows
 equally portable: each action lists the platforms it runs on, and the game
 page tucks the others away ("N more for other platforms"). The platform the
 launcher runs on comes from `Platform::current()` in `core/src/actions.rs`.
+
+Android (`Platform::Android`) is an APK built by `tools/build_android.py`
+(docs/port/ANDROID.md): the same UI and Rust, a project of its own in
+`src-tauri/gen/android` (kept in git), and Kotlin for what only Android does
+(`OpenracPlugin.kt`, reached from `src-tauri/src/android.rs`): the system's
+file picker, the game's activity, the GPU driver packages. It always plays
+from the copy it carries, unpacked from the APK by `OpenracSetup.kt`; Play
+starts the game's activity instead of a program, and the updater is the
+desktop's only (`capabilities/updater.json`).

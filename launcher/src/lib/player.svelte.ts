@@ -2,10 +2,23 @@
 // tile and the game's page, so the main button says and does the same thing in both.
 import type { ActionView, GameView, VersionView } from "./api";
 import type { IconName } from "$components/Icon.svelte";
-import { pickFolder } from "./api";
-import { app, cancel, installGame, jobs, refresh, run, runChain, saveConfig, toast } from "./app.svelte";
+import { onAndroid, pickFolder, pickIso } from "./api";
+import {
+  app,
+  cancel,
+  copyingDisc,
+  gameWindow,
+  installGame,
+  jobs,
+  refresh,
+  run,
+  runChain,
+  saveConfig,
+  toast,
+} from "./app.svelte";
 import { choiceFor, pickVersion } from "./discChoice";
 import { phaseLabel } from "./progress";
+import { PLAY_ACTIONS } from "./reports";
 import type { Job } from "./queue";
 
 export type PlayerKind =
@@ -14,6 +27,7 @@ export type PlayerKind =
   | "unavailable" // set up, but this game has no port to play yet
   | "other-disc" // the player's disc is another version of this game
   | "playing"
+  | "return" // Android: the game runs beside the launcher, in a window of its own
   | "building"
   | "play"
   | "build"
@@ -47,9 +61,10 @@ function jobOf(v: VersionView, ids: string[]): Job | null {
   );
 }
 
-/** The launcher is running V's game, which writes its memory card too. */
+/** The launcher is running V's game, which writes its memory card too. The game with
+ *  the player's mods counts too: it is the same program, writing the same card. */
 export function isPlaying(v: VersionView): boolean {
-  return jobOf(v, ["play"]) !== null;
+  return jobOf(v, PLAY_ACTIONS) !== null;
 }
 
 const action = (v: VersionView, id: string): ActionView | null =>
@@ -84,13 +99,20 @@ export async function setUp(game: string, title: string, image?: string): Promis
  * games the folder holds (0: none found), or null when no folder was chosen.
  */
 export async function chooseGamesFolder(): Promise<number | null> {
-  const dir = await pickFolder("Choose the folder with your PlayStation 2 games");
-  if (!dir || !app.config) return null;
-  await saveConfig({ ...app.config, discsDir: dir });
+  if (onAndroid) {
+    // Android's picker gives files, not folders: the player picks a disc image, which is copied
+    // into the app's own games folder (the Rust side's default there); its games are set up below.
+    if (!(await copyingDisc((progress) => pickIso("Select your legitimately obtained disc image", progress))))
+      return null;
+  } else {
+    const dir = await pickFolder("Choose the folder with your PlayStation 2 games");
+    if (!dir || !app.config) return null;
+    await saveConfig({ ...app.config, discsDir: dir });
+  }
   await refresh();
   const found = [...app.discs];
   if (!found.length) {
-    toast("No Ratchet & Clank disc image (.iso) was found in that folder.", "error");
+    toast("No Ratchet & Clank disc image (.iso or .chd) was found in that folder.", "error");
     return 0;
   }
   for (const disc of found) {
@@ -159,7 +181,7 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
         ? "This game cannot be played yet. You can set your disc up now, ready for when it can."
         : found
           ? `Found in your games folder: ${fileName(found.path)}`
-          : "Choose the image (.iso) of your own disc. OpenRAC never downloads a game.",
+          : "Choose the image (.iso or .chd) of your own disc. OpenRAC never downloads a game.",
       primary: !planned,
       status: planned ? "Not playable yet" : "Not set up",
       tone: planned ? "info" : "warn",
@@ -191,7 +213,19 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       tone: "info",
     };
   }
-  const playing = jobOf(v, ["play"]);
+  if (onAndroid && app.game?.running && (!app.game.library || app.game.library.startsWith(`openrac-${v.game}`))) {
+    return {
+      ...base,
+      kind: "return",
+      label: "Return to game",
+      icon: "play",
+      hint: "The game is running. It waits where you left it while the launcher is open.",
+      primary: true,
+      status: "Running",
+      tone: "ok",
+    };
+  }
+  const playing = jobOf(v, PLAY_ACTIONS);
   if (playing) {
     return {
       ...base,
@@ -204,7 +238,7 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       tone: "ok",
     };
   }
-  const building = jobOf(v, ["port-build", "port-levels", "port-levels-check"]);
+  const building = jobOf(v, ["port-build", "port-rebuild", "port-levels", "port-levels-check"]);
   if (building) {
     return {
       ...base,
@@ -213,11 +247,13 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       icon: "x",
       hint: phaseLabel(building),
       job: building,
-      status: building.actionId === "port-build" ? "Building…" : "Getting ready…",
+      status:
+        building.actionId.startsWith("port-") && building.actionId.endsWith("build") ? "Building…" : "Getting ready…",
       tone: "warn",
     };
   }
   if (play.runnable) {
+    // Play never builds: an outdated game is recommended a rebuild, in a notice on its page.
     return {
       ...base,
       kind: "play",
@@ -252,7 +288,7 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       kind: "build",
       label: "Build and play",
       icon: "build",
-      hint: "Compiles the game for this computer, gets its levels from your disc, then starts it. A few minutes the first time.",
+      hint: "Makes the game for this computer from OpenRAC's code (nothing is downloaded), reads its levels from your disc, then starts it. A few minutes, the first time only.",
       primary: true,
       status: "Needs building",
       tone: "warn",
@@ -281,16 +317,15 @@ const freshVersion = (v: VersionView) =>
   app.library?.games.flatMap((g) => g.versions).find((x) => x.key === v.key) ?? v;
 
 /**
- * Everything playing still needs, in order: the game built for this computer as its sources are
- * now, then the levels read and checked (prepareLevels). The build comes first even when a game is
- * already built (only what changed is redone): the levels' check runs the game, and a game older
- * than its sources refuses levels of a newer format, so they would be read again for nothing and
- * fail the same check again. True when the game can be played.
+ * Everything playing still needs, in order: the game built for this computer if it is not built
+ * yet, then the levels read and checked (prepareLevels). A game already built is not built again
+ * here: only Rebuild now, in the update notice, or Rebuild the game, in the menu, does that. True
+ * when the game can be played.
  */
 export async function prepare(v: VersionView): Promise<boolean> {
   const scope = { kind: "version" as const, key: v.key };
   const build = action(v, "port-build");
-  if (build?.runnable) {
+  if (build?.runnable && !action(v, "play")?.done) {
     if (!(await runChain(scope, [build]))) return false;
     await refresh();
   }
@@ -346,6 +381,10 @@ export async function playerAct(v: VersionView, state: PlayerState): Promise<voi
     await cancel(state.job);
     return;
   }
+  if (state.kind === "return") {
+    await gameWindow(false);
+    return;
+  }
   if (state.kind === "set-up") {
     await setUp(v.game, v.title, foundDisc(v.game)?.path);
     return;
@@ -359,13 +398,6 @@ export async function playerAct(v: VersionView, state: PlayerState): Promise<voi
     return;
   }
   if (state.kind !== "play") return;
-  // A computer that builds the game builds it again first: only what changed is redone (a moment
-  // when nothing did), so Play always starts the game as its sources are now, never an old build.
-  const build = action(v, "port-build");
-  if (build?.runnable) {
-    if (!(await runChain(scope, [build]))) return;
-    await refresh();
-  }
-  const act = action(freshVersion(v), "play");
+  const act = action(v, "play");
   if (act?.runnable) await run(scope, act);
 }
