@@ -41,7 +41,7 @@ def problems() -> list[str]:
     for group in data["groups"]:
         paths = [ROOT / p for p in group["copies"]]
         missing = [p for p in paths if not p.is_file()]
-        out += [f"missing: {p.relative_to(ROOT)} ({group['what']})" for p in missing]
+        out += [f"missing: {p.relative_to(ROOT).as_posix()} ({group['what']})" for p in missing]
         if not missing and len({digest(p) for p in paths}) > 1:
             out.append(f"copies differ: {', '.join(group['copies'])} ({group['what']})")
     for entry in data.get("related", []):
