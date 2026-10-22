@@ -101,6 +101,9 @@ GameState g_state;
 std::atomic<MobySource> g_moby_source{nullptr};
 std::atomic<int> g_reporting{0};
 char g_written[1100] = {};
+const ModImage* g_mods = nullptr;
+int g_mod_count = 0;
+const char* const* g_running_script = nullptr;
 
 void copy(char* to, std::size_t size, const std::string& from) {
     const std::size_t n = from.size() < size - 1 ? from.size() : size - 1;
@@ -282,6 +285,47 @@ void capture() {
 #endif
 }
 
+// The library holding a code address: where the system loaded it, or null.
+const void* module_base(const void* address) {
+#if defined(_WIN32)
+    HMODULE module = nullptr;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address), &module) != 0) {
+        return module;
+    }
+    return nullptr;
+#else
+    Dl_info info{};
+    return dladdr(address, &info) != 0 ? info.dli_fbase : nullptr;
+#endif
+}
+
+// The mods loaded, and the frames of the backtrace that are in one of them (docs/port/MODS.md,
+// section 7).
+void write_mods(Out& out) {
+    if (g_mod_count <= 0) {
+        return;
+    }
+    if (g_running_script != nullptr && *g_running_script != nullptr) {
+        out.str("\nA script of mod ").str(*g_running_script).str(" was running (its log lines say more).\n");
+    }
+    out.str("\nMods loaded (docs/port/MODS.md; Purist mode starts the game without them):\n");
+    for (int m = 0; m < g_mod_count; ++m) {
+        out.str("  ").str(g_mods[m].id).str(" ").str(g_mods[m].version).str(" (").str(g_mods[m].file).str(")\n");
+    }
+    for (int i = 0; i < g_frame_count; ++i) {
+        const void* base = module_base(g_frames[i]);
+        for (int m = 0; base != nullptr && m < g_mod_count; ++m) {
+            if (base == g_mods[m].base) {
+                Text t;
+                t.str("Frame ").dec(i).str(" is in mod ").str(g_mods[m].id).str(" (").str(g_mods[m].file).str("+");
+                t.hex(reinterpret_cast<std::uintptr_t>(g_frames[i]) - reinterpret_cast<std::uintptr_t>(base)).str(")\n");
+                out.text(t);
+            }
+        }
+    }
+}
+
 void write_backtrace(Out& out) {
     out.str("\nBacktrace (the newest call first):\n");
     out.flush();
@@ -337,6 +381,7 @@ void write_backtrace(Out& out) {
         t.str("(the program is loaded at ").hex(g_base).str("; less that, an address is the one in its symbols)\n");
         out.text(t);
     }
+    write_mods(out);
 }
 
 void write_head(Out& out, const char* reason, Kind kind, long long now) {
@@ -533,6 +578,15 @@ void set_state(const GameState& s) {
 
 const GameState& state() {
     return g_state;
+}
+
+void set_mods(const ModImage* mods, int count) {
+    g_mods = mods;
+    g_mod_count = mods != nullptr ? count : 0;
+}
+
+void set_running_script(const char* const* current) {
+    g_running_script = current;
 }
 
 void set_moby_source(MobySource source) {

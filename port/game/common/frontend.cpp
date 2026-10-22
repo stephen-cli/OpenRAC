@@ -114,6 +114,8 @@ struct State {
     std::unique_ptr<platform::Platform> sdl;
     std::unique_ptr<platform::Window> window;
     platform::Input input;
+    bool capture_wanted = false;  // a mod's asking (capture_mouse)
+    bool keyboard_taken = false;  // a mod took the keyboard (take_keyboard)
     std::unique_ptr<renderer::Renderer> renderer;
     renderer::FrameBuffer frame;
     renderer::FrameBuffer picture;  // show_picture's: a movie frame, a boot still
@@ -1436,6 +1438,8 @@ static void draw_touch_pad(int window_width, int window_height) {
     touch_overlay::draw(touch, window_width, window_height);
 }
 
+void apply_mouse_capture();  // below, beside pad()
+
 bool show_picture(const std::uint8_t* rgba, int width, int height, float black) {
     using namespace gl;
     if (!g || width <= 0 || height <= 0) {
@@ -1451,6 +1455,7 @@ bool show_picture(const std::uint8_t* rgba, int width, int height, float black) 
         }
         g->input.handle_event(event);
     }
+    apply_mouse_capture();
     g->input.update();
     stats::begin_frame(stats::FrameKind::Picture, g->index);  // [debug tools]
 
@@ -2188,6 +2193,7 @@ bool frame(std::span<const std::uint8_t> ram, std::uint32_t chain, std::uint32_t
         }
         g->input.handle_event(event);
     }
+    apply_mouse_capture();
     g->input.update();
     // The port's rows on the game's Video options page (options_menu.h), and the overlay's drawer
     // and menus: a changed one is applied. Before the debug menu, which adds its entry to the
@@ -2985,6 +2991,84 @@ std::int64_t since_control() {
     return g && g_route.control >= 0 ? static_cast<std::int64_t>(g->index) - g_route.control : -1;
 }
 
+// The cursor as the mods ask for it, while nothing else has the mouse: captured only with the
+// window focused and the overlay and the debug menu shut.
+void apply_mouse_capture() {
+    if (!g || !g->window || g->window->sdl() == nullptr) {
+        return;
+    }
+    SDL_Window* w = g->window->sdl();
+    const bool focused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    const bool capture = g->capture_wanted && focused && !debug_overlay::visible() && !debug_menu::is_open();
+    if (SDL_GetWindowRelativeMouseMode(w) != capture) {
+        SDL_SetWindowRelativeMouseMode(w, capture);
+    }
+    g->input.set_captured(capture);
+}
+
+KeyboardMouseView keyboard_mouse() {
+    if (!g) {
+        return {};
+    }
+    KeyboardMouseView view{&g->input.keyboard_mouse(), debug_overlay::visible() || debug_menu::is_open()};
+    SDL_Window* w = g->window ? g->window->sdl() : nullptr;
+    if (w == nullptr) {
+        return view;
+    }
+    // The cursor in the window's points, then in its pixels, then over the game's 4:3 picture: the
+    // picture's box for the aspect setting, and the 4:3 middle of it where it is wider (where the
+    // game's 2D screen, its menus, are drawn).
+    float mx = 0.0f;
+    float my = 0.0f;
+    SDL_GetMouseState(&mx, &my);
+    int points_w = 0;
+    int points_h = 0;
+    SDL_GetWindowSize(w, &points_w, &points_h);
+    int window_width = 0;
+    int window_height = 0;
+    g->window->drawable_size(window_width, window_height);
+    if (points_w <= 0 || points_h <= 0 || window_width <= 0 || window_height <= 0) {
+        return view;
+    }
+    const float px = mx * static_cast<float>(window_width) / static_cast<float>(points_w);
+    const float py = my * static_cast<float>(window_height) / static_cast<float>(points_h);
+    const Box box = frame_box(window_width, window_height, picture_aspect(window_width, window_height));
+    if (box.width <= 0 || box.height <= 0) {
+        return view;
+    }
+    const float tv_width = std::min(static_cast<float>(box.width), static_cast<float>(box.height) * kTvAspect);
+    const float tv_x = static_cast<float>(box.x) + (static_cast<float>(box.width) - tv_width) / 2.0f;
+    view.pointer_x = (px - tv_x) / tv_width;
+    view.pointer_y = (py - static_cast<float>(box.y)) / static_cast<float>(box.height);
+    view.pointer_inside = SDL_GetMouseFocus() == w && view.pointer_x >= 0.0f && view.pointer_x <= 1.0f
+                          && view.pointer_y >= 0.0f && view.pointer_y <= 1.0f;
+    return view;
+}
+
+void take_keyboard() {
+    if (g) {
+        g->keyboard_taken = true;
+        g->input.set_keyboard_table(false);
+    }
+}
+
+void capture_mouse(bool capture) {
+    if (g) {
+        g->capture_wanted = capture;
+    }
+}
+
+void skip_after_mods(int port, std::uint16_t& buttons) {
+    if (port == 0 && settings::get().skip_cutscenes && (buttons & 0x8) == 0) {
+        if (openrac_game_skip_buttons != nullptr) {
+            buttons = static_cast<std::uint16_t>(buttons & ~(openrac_game_skip_buttons() & 0xFFFF));
+        }
+        if (openrac_game_skip != nullptr) {
+            openrac_game_skip();
+        }
+    }
+}
+
 bool pad(int port, std::uint16_t* buttons, std::uint8_t analog[4]) {
     if (!g || port < 0 || port >= platform::kPadPorts) {
         return false;
@@ -3045,13 +3129,10 @@ bool pad(int port, std::uint16_t* buttons, std::uint8_t analog[4]) {
     // since the game skips one on Start with L1, L2, R1 and R2 held, Start alone only once it is
     // beaten, ReRAC cutscenes_transitions.md, "skip"; in the ship's landing and take-off Cross).
     // Bits are active low: 0x8 Start, 0x4000 Cross, 0x0F00 L2 R2 L1 R1.
-    if (port == 0 && settings::get().skip_cutscenes && (*buttons & 0x8) == 0) {
-        if (openrac_game_skip_buttons != nullptr) {
-            *buttons = static_cast<std::uint16_t>(*buttons & ~(openrac_game_skip_buttons() & 0xFFFF));
-        }
-        if (openrac_game_skip != nullptr) {
-            openrac_game_skip();
-        }
+    // With a mod on the pad's reports, after the mods (skip_after_mods), so a Start a mod presses
+    // (a key bound to it) skips as the pad's does.
+    if (openrac_game_pad_report_hook == nullptr) {
+        skip_after_mods(port, *buttons);
     }
     if (port == 0) {
         debug_menu::filter_pad(*buttons, openrac_game_loaded_overlay());

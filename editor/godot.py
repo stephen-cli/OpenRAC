@@ -25,17 +25,22 @@ level node says (rc1_packable, and its description in the Scene dock).
 import colorsys
 from dataclasses import replace
 import json
+import math
 import shutil
 import struct
 from pathlib import Path
 
 from collision import collision_mesh, decode
-from formats import png, unpack
+import collision_scene
+from formats import FormatError, png, unpack
+from lighting import light_bank
+import gamedata
 import games
 from gltf import Gltf
 from level import Level
 from mesh import Mesh
 from moby_class import GREY, METAL_CHROME, METAL_GLASS, UNTEXTURED, MobyClass, moby_classes
+import moby_collision_scene
 from mobys import LEVEL_NAMES, moby_logic, node_name, moby_class_names, moby_instances
 from shrubs import shrub_classes, shrub_instances
 from sky import panorama, sky
@@ -43,10 +48,18 @@ from terrain import terrain
 from ties import tie_classes, tie_instances
 
 SCRIPTS = Path(__file__).parent / "rc1"
+# The Collision dock, an editor plugin (addons/openrac_collision/plugin.gd): editor tooling only.
+ADDON = Path(__file__).parent / "addons" / "openrac_collision"
+ADDON_CFG = "res://addons/openrac_collision/plugin.cfg"
 GAME_TO_GODOT = [1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1]  # (x, y, z) -> (x, z, -y)
 # Placements store W = 0.01 (0.0 on some); only other values become metadata.
 STORED_W = struct.unpack("<f", struct.pack("<f", 0.01))[0]
+# level.json's schema: what a Godot level of this extractor holds. Raised when the scene changes in
+# a way the packer or a newer extractor tells apart (3: the editable collision); extract.py writes a
+# level of an older schema again, after backing it up with its edits.
+SCHEMA = 3
 COLLISION_ALPHA = 0.55
+MIN_SCALE = 1e-4  # the smallest joint scale the editor's models get (LevelWriter.scale)
 PANORAMA = (2048, 1024)  # About one texel per pixel around the horizon.
 
 PROJECT = """config_version=5
@@ -62,13 +75,18 @@ scene={{
 "meshes/create_shadow_meshes": false,
 "meshes/ensure_tangents": false,
 "meshes/force_disable_compression": true,
-"meshes/generate_lods": false
+"meshes/generate_lods": false,
+"import_script/path": "res://rc1/import_lit.gd"
 }}
 texture={{
 "compress/mode": 0,
 "detect_3d/compress_to": 0,
 "mipmaps/generate": true
 }}
+
+[editor_plugins]
+
+enabled=PackedStringArray("{addon}")
 """
 
 
@@ -145,8 +163,17 @@ class Scene:
 class LevelWriter:
     """Textures, meshes and the scene for one level."""
 
-    def __init__(self, project: Path, level: Level):
+    # The collision as tiles to edit (collision_scene.py) where the level packs back; the port's
+    # writer keeps the one collision.glb its viewer draws.
+    editable_collision = True
+    # Zero joint scales become MIN_SCALE in the models (scale()); the port's writer keeps them.
+    godot_scales = True
+
+    def __init__(self, project: Path, level: Level, normals=None):
         self.level = level
+        # The executable's (cos, sin) table: with it the terrain is lit as the game lights it at
+        # level load (lighting.py), so the editor shows the level's own light and shade.
+        self.normals = normals
         self.name = f"level_{level.id:02}"
         self.dir = project / "levels" / self.name
         self.res = f"res://levels/{self.name}"
@@ -154,11 +181,13 @@ class LevelWriter:
         self.scene = Scene()
         self.corners = []
         self.fmt = games.of(level)
-        self.stats = {"schema": 1, "level": level.id,
+        self.moby_extra = {}  # moby index -> its pvar metadata (gamedata.py)
+        self.stats = {"schema": SCHEMA, "level": level.id,
                       "overlay": {"entry_point": level.overlay["entry_point"],
                                   "sections": [{k: s[k] for k in ("address", "bytes", "type")}
                                                for s in level.overlay["sections"]]},
                       "mesh_instances": 0, "meshes": 0, "triangles": 0}
+        self.editable_collision = self.editable_collision and self.fmt.packable
         if self.fmt.game != "rac1":  # Ratchet & Clank's level.json stays as it was
             self.stats["game"] = self.fmt.game
 
@@ -214,7 +243,8 @@ class LevelWriter:
             children = [first + c for c, other in enumerate(bones.joints) if other.parent == j]
             children += [post[j]] if j in post else []
             gltf.node(f"joint_{j:03}", root=joint.parent is None, translation=list(joint.translation),
-                      rotation=list(joint.rotation), scale=list(joint.scale), **({"children": children} if children else {}))
+                      rotation=list(joint.rotation), scale=self.scale(joint.scale),
+                      **({"children": children} if children else {}))
         for j in post:
             gltf.node(f"joint_{j:03}_post", root=False)
         skin = gltf.skin(list(range(first, first + count + len(scaled))),
@@ -229,12 +259,22 @@ class LevelWriter:
             gltf.node(moby.metal.name, metal, skin=skin)
         for animation in bones.animations:
             gltf.animation(animation.name + ("_loop" if animation.loop else ""), animation.times,
-                           [(post[j], "scale", values) if kind == "post_scale" else (first + j, kind, values)
+                           [(post[j], "scale", [self.scale(v) for v in values]) if kind == "post_scale"
+                            else (first + j, kind, [self.scale(v) for v in values] if kind == "scale" else values)
                             for (j, kind), values in animation.tracks.items()])
         target = self.dir / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(gltf.glb())
         return f"{self.res}/{path}"
+
+    def scale(self, value) -> list[float]:
+        """A joint's scale as Godot can import it. The game hides a part by scaling its joint to
+        zero; Godot's importer cannot take a rotation out of a zero basis and reports an error for
+        each, so the editor's models get MIN_SCALE instead, too small to see (the same picture).
+        The port's models keep the game's zeros (PortLevelWriter)."""
+        if not self.godot_scales:
+            return list(value)
+        return [v if abs(v) >= MIN_SCALE else math.copysign(MIN_SCALE, v) for v in value]
 
     def place(self, mesh: Mesh, matrix: list[float] | None = None) -> None:
         """Count a placed mesh, and keep its corners in Godot space for check.gd."""
@@ -263,13 +303,18 @@ class LevelWriter:
         sky_offset, = unpack("<I", level.index, 0x10)
         self.write_environment(sky(level.block(sky_offset), fmt) if sky_offset else None)
         self.scene.node("Game", ".", "Node3D", transform=transform(GAME_TO_GODOT))
-        self.write_terrain(terrain(level.block(unpack("<I", level.index, 0x08)[0]), lod, problems=problems)
-                           + chunk_terrain(level, lod, None, problems), lod)
+        lights = (light_bank(level.gameplay), self.normals) if self.normals is not None and fmt.lighting else None
+        self.write_terrain(terrain(level.block(unpack("<I", level.index, 0x08)[0]), lod, lights, problems)
+                           + chunk_terrain(level, lod, lights, problems), lod)
         ties = tie_classes(level)
         self.write_objects("tie", ties, tie_instances(level.instances, ties, fmt, problems))
         shrubs = shrub_classes(level)
         self.write_objects("shrub", shrubs, shrub_instances(level.instances, shrubs, fmt, problems))
+        if fmt.packable:  # the gameplay data, packed back by pack.py (gamedata.py)
+            self.moby_extra = gamedata.moby_metadata(level.gameplay)
         self.write_mobys(moby_instances(level.gameplay, fmt), moby_classes(level))
+        if fmt.packable:
+            self.stats["gameplay"] = gamedata.write_scene(self.scene, self.dir, self.res, level.gameplay)
         collision, = unpack("<I", level.index, 0x14)
         if collision:  # Deadlocked's multiplayer menu has none
             self.write_collision(level.block(collision), [block for _, _, block in level.chunks if block])
@@ -290,6 +335,12 @@ class LevelWriter:
                                    "hero_groups": data.hero_groups}
         if not data.triangles:
             return
+        if self.editable_collision and not more:
+            # Ratchet & Clank's levels: tiles and hero walls the packer reads back (collision_scene.py).
+            manifest = collision_scene.export(self.dir, block)
+            self.stats["collision"]["hero_triangles"] = sum(h["triangles"] for h in manifest["hero_walls"].values())
+            collision_scene.scene_nodes(self.scene, self.res, manifest)
+            return
         gltf = Gltf()
         gltf.node("Collision", gltf.coloured(collision_mesh(data), gltf.overlay("collision", COLLISION_ALPHA)))
         (self.dir / "collision.glb").write_bytes(gltf.glb())
@@ -303,6 +354,12 @@ class LevelWriter:
         self.scene.editable.append("Game/Collision")
 
     def write_terrain(self, fragments: list[Mesh], lod: int) -> None:
+        if self.godot_scales:
+            # The game multiplies a texel by the vertex colour as stored (0x80 = 1.0, up to 2.0);
+            # Godot multiplies in linear light, so the editor's terrain carries the colour in
+            # linear (c ** 2.2) to look as the game's does. The port's terrain keeps the game's.
+            fragments = [replace(m, colours=[tuple(c ** 2.2 for c in rgba[:3]) + tuple(rgba[3:]) for rgba in m.colours])
+                         if m.colours else m for m in fragments]
         path = self.glb("terrain.glb", fragments, 0)
         self.scene.node("Terrain", "Game", instance=self.scene.resource("PackedScene", path, "terrain"))
         self.scene.editable.append("Game/Terrain")
@@ -350,6 +407,12 @@ class LevelWriter:
         logic = moby_logic(self.level.id) if self.fmt.class_names else {}
         placed = {p["class_id"] for p in placements}
         scenes, models = {}, {}
+        # Each class's collision (moby_collision_scene.py) where the level packs back: the class
+        # blobs in the core (a gadget's is compressed and not packed, so not shown).
+        starts = ({unpack("<i", e, 4)[0]: unpack("<i", e)[0] for e in self.level.table(0x18, 32)}
+                  if self.editable_collision else {})
+        collision = {"classes": 0, "primitives": 0, "triangles": 0}
+        written, files = {}, {}
         for class_id in sorted(set(classes) | placed):
             moby, model = classes.get(class_id), None
             if moby is not None and moby.mesh is not None:
@@ -358,25 +421,58 @@ class LevelWriter:
                          moby.mesh.bounds()[1][2] * moby.scale)
             path = f"mobys/moby_{class_id}.tscn"
             write_marker(self.dir / path, class_id, f"{class_id} {names[class_id]}" if class_id in names else str(class_id),
-                         model, names.get(class_id), logic.get(class_id))
+                         model, names.get(class_id), logic.get(class_id),
+                         self.class_collision(starts.get(class_id, 0), class_id, collision, files))
+            # Every class scene, with class data or not: an untouched project is then seen as one
+            # without reading the disc (moby_collision_scene.unchanged_scenes).
+            written[class_id] = path
             if class_id in placed:
                 scenes[class_id] = self.scene.resource("PackedScene", f"{self.res}/{path}", f"moby_{class_id}")
         self.scene.node("Mobys", "Game", "Node3D")
         for p in placements:
             fields = {f"metadata__rc1_{k}": v for k, v in {"index": p["index"], **p["fields"]}.items()}
+            fields.update(self.moby_extra.get(p["index"], {}))
             self.scene.node(node_name(p["class_id"], p["index"], names), "Game/Mobys", instance=scenes[p["class_id"]],
                             rotation_order=0, transform=transform(p["matrix"]), **fields)
-        shown = [models[p["class_id"]].mesh for p in placements if p["class_id"] in models]
+        # A class's metal packets are a mesh of their own in its model, and Godot shows both.
+        def meshes(m: MobyClass) -> list[Mesh]:
+            return [m.mesh] + ([m.metal] if m.metal is not None else [])
+        shown = [mesh for p in placements if p["class_id"] in models for mesh in meshes(models[p["class_id"]])]
         animated = [m.skeleton for m in models.values() if m.skeleton is not None]
         self.stats["mobys"] = {"classes": len(set(classes) | placed),
                                "named_classes": sum(c in names for c in set(classes) | placed),
                                "instances": len(placements), "model_classes": len(models),
-                               "class_triangles": sum(m.mesh.triangles for m in models.values()),
-                               "textures": len({key for m in models.values() for key in m.mesh.faces}),
+                               "class_triangles": sum(mesh.triangles for m in models.values() for mesh in meshes(m)),
+                               "textures": len({key for m in models.values() for mesh in meshes(m) for key in mesh.faces}),
                                "mesh_instances": len(shown), "triangles": sum(m.triangles for m in shown),
                                "animated_classes": len(animated),
                                "bones": sum(len(s.joints) + sum(j.post_scale for j in s.joints) for s in animated),
                                "animations": sum(len(s.animations) for s in animated)}
+        if self.editable_collision:
+            self.stats["mobys"]["collision"] = collision
+            moby_collision_scene.write_manifest(self.dir, written, files)
+
+    def class_collision(self, start: int, class_id: int, totals: dict, files: dict):
+        """What adds a class's Collision node to its class scene (write_marker's COLLISION), or None
+        for a class without data in the core."""
+        if start <= 0:
+            return None
+        core = self.level.core
+        try:
+            _at, blob = moby_collision_scene.class_collision(core, start)
+            joints = moby_collision_scene.joint_positions(core, start)
+        except FormatError as e:
+            self.level.problems.append(f"moby class {class_id}: collision not extracted ({e})")
+            return None
+        scale, = unpack("<f", core, start + 0x24)
+
+        def add(scene) -> None:
+            stats = moby_collision_scene.scene_nodes(scene, blob, joints, scale, class_id, self.dir, self.res)
+            totals["classes"] += 1 if blob is not None else 0
+            totals["primitives"] += stats["primitives"]
+            totals["triangles"] += stats["triangles"]
+            files.update(stats["files"])
+        return add
 
     def write_environment(self, data) -> None:
         """The sky as a panorama (sky.png), flat ambient light and a sun.
@@ -444,12 +540,13 @@ def problem_summary(problems: list[str]) -> list[str]:
 
 
 def write_marker(path: Path, class_id: int, label: str, model: tuple[str, float, float] | None = None,
-                 name: str | None = None, logic: dict | None = None) -> None:
+                 name: str | None = None, logic: dict | None = None, collision=None) -> None:
     """A moby class's scene: its model, or else a box coloured by class
     number, and a label that faces the camera and fades out beyond 60 units.
 
     model is (GLB res:// path, class scale, top of the scaled mesh). The
     GLB is in model units, so the Model node carries the class scale.
+    COLLISION, when given, adds the class's hidden Collision node (moby_collision_scene.py).
     """
     scene = Scene()
     # What the class is and what runs it, where the Inspector and a hover in the scene tree show
@@ -482,6 +579,8 @@ def write_marker(path: Path, class_id: int, label: str, model: tuple[str, float,
         height = max(top, 0.0) + 0.4
     scene.node("Label", ".", "Label3D", transform=transform([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, height, 1]),
                visibility_range_end=60.0, billboard=1, pixel_size=0.006, text=label, font_size=48)
+    if collision is not None:
+        collision(scene)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(scene.text())
 
@@ -499,5 +598,25 @@ def write_project(project: Path, levels: list[int], region: str = "PAL", game: s
         fmt = games.FORMATS[game]
         name = (f"{fmt.title}: {fmt.level_name(levels[0])} ({region}, early access)" if len(levels) == 1
                 else f"{fmt.title} levels ({region}, early access)")
-    (project / "project.godot").write_text(PROJECT.format(main=main, name=name))
+    (project / "project.godot").write_text(PROJECT.format(main=main, name=name, addon=ADDON_CFG))
     shutil.copytree(SCRIPTS, project / "rc1")
+    install_addon(project)
+
+
+def install_addon(project: Path) -> None:
+    """The Collision dock's files in a project, enabled in its project.godot (an older export's
+    too: extract.py's update calls this, and a project.godot that names other plugins keeps them)."""
+    shutil.copytree(ADDON, project / "addons" / ADDON.name, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("*.uid"))
+    settings = project / "project.godot"
+    text = settings.read_text()
+    if ADDON_CFG in text:
+        return
+    if "[editor_plugins]" not in text:
+        text = text.rstrip("\n") + f'\n\n[editor_plugins]\n\nenabled=PackedStringArray("{ADDON_CFG}")\n'
+    elif "enabled=PackedStringArray(" in text:
+        text = text.replace("enabled=PackedStringArray(", f'enabled=PackedStringArray("{ADDON_CFG}", ', 1)
+        text = text.replace(f'"{ADDON_CFG}", )', f'"{ADDON_CFG}")')
+    else:
+        text = text.replace("[editor_plugins]\n", f'[editor_plugins]\n\nenabled=PackedStringArray("{ADDON_CFG}")\n', 1)
+    settings.write_text(text)

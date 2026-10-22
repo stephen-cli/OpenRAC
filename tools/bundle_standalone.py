@@ -54,7 +54,8 @@ PLAY = ("port-levels", "port-levels-check", "play")
 # models and textures, packs, and playing with them. In a checkout they work in its assets/; the
 # carried copy is read-only, so they work in the data folder instead (MOD_FOLDERS).
 MODS = ("editor-extract", "editor-preview", "editor-import", "editor-open", "editor-pack",
-        "assets-export", "assets-import", "overrides-add", "overrides-stack", "play-edited")
+        "assets-export", "assets-import", "overrides-add", "overrides-stack", "editor-show-packs",
+        "editor-hide-packs", "play-edited")
 KEEP = PLAY + MODS
 # Where a checkout's folders for version <game>/<version> go in the carried copy, longest first:
 # the levels the port draws, the level editor's projects, and the packed levels.
@@ -121,10 +122,12 @@ def player_actions() -> dict:
                     # menus, and the first level's manifest is its own.
                     action["args"] = args[:3] + [levels, "--anywhere", "--replace"]
                     action["artifact"] = moved(action["artifact"], key)
+                    action["output"] = levels
                 elif action["id"] == "port-levels":
                     # editor/extract.py port DISC OUT: OUT is the data folder's, wherever it is.
                     action["args"] = args[:3] + [levels, "--anywhere", "--replace"]
                     action["artifact"] = f"{levels}/level_99/manifest.json"
+                    action["output"] = levels
                     action["description"] = ("Reads the levels from your disc into the form the game draws: the worlds "
                                              "behind the menus and all 19 levels. About half a minute and 1 GB, once.")
                 elif action["id"] == "port-levels-check":
@@ -133,7 +136,7 @@ def player_actions() -> dict:
                     action["needs"] = [{"path": f"{levels}/level_99/manifest.json", "from": need["from"]}
                                        for need in action.get("needs", [])]
                 elif action["id"] in MODS:
-                    for field in ("args", "artifact", "needs", "makes"):
+                    for field in ("args", "artifact", "needs", "makes", "output"):
                         if field in action:
                             action[field] = moved(action[field], key)
                     if args[:2] in (["editor/extract.py", "godot"], ["editor/extract.py", "pack"]):

@@ -30,6 +30,26 @@ def glb(joint_name: str = "joint_000") -> bytes:
     return gltf.glb()
 
 
+def terrain_glb(grid: int) -> bytes:
+    """A terrain.glb as the import writes it: a GRID x GRID mesh of one fragment, lit by its colours."""
+    gltf = Gltf()
+    mesh = Mesh("Terrain_000", normals=[], colours=[])
+    for j in range(grid):
+        for i in range(grid):
+            mesh.positions.append((i, j, 0.0))
+            mesh.uvs.append((i / grid, j / grid))
+            mesh.normals.append((0.0, 0.0, 1.0))
+            mesh.colours.append((1.0, 1.0, 1.0, 1.0))
+    for j in range(grid - 1):
+        for i in range(grid - 1):
+            a = j * grid + i
+            mesh.add_face(("terrain", 0), (a, a + 1, a + grid))
+            mesh.add_face(("terrain", 0), (a + 1, a + grid + 1, a + grid))
+    gltf.node("Terrain_000", gltf.mesh(mesh, {("terrain", 0): gltf.material("terrain_0000",
+                                                                             "textures/terrain_0000.png")}))
+    return gltf.glb()
+
+
 def write_pack(root: Path, name: str, files: dict, **fields) -> Path:
     manifest = {"format": 1, "game": "rac1", "version": "pal", "name": name, "author": "someone", **fields}
     root.mkdir(parents=True)
@@ -210,6 +230,25 @@ class PackTests(unittest.TestCase):
         summary = overrides.stack(self.into, self.root / "mods-rc", None, levels(self.root / "rc-levels"))
         self.assertEqual(summary["files"], {"level_00/textures/y.png": "first"})
 
+    def test_terrain_is_checked_described_and_stacked_later_wins(self):
+        coarse, dense = terrain_glb(2), terrain_glb(5)
+        a = write_pack(self.root / "a", "Coarse", {"level_00/terrain.glb": coarse})
+        manifest, used, ignored, problems = overrides.check(a)
+        self.assertEqual((used, ignored, problems), (["level_00/terrain.glb"], [], []))
+        self.assertEqual(overrides.describe(used), {"level_00": {"models": ["terrain"]}})
+        skinned = write_pack(self.root / "skinned", "Skinned", {"level_00/terrain.glb": glb(),
+                                                                "level_00/textures/x.png": rgb_png(2, 2, (0, 0, 0))})
+        self.assertTrue(any("terrain has no bones" in p for p in overrides.check(skinned)[3]))
+        overrides.add(a, self.into)
+        overrides.add(write_pack(self.root / "b", "Dense", {"level_00/terrain.glb": dense}), self.into)
+        summary = overrides.stack(self.into, self.root / "mods", None, levels(self.root / "levels"))
+        self.assertEqual(summary["files"], {"level_00/terrain.glb": "dense"})
+        self.assertEqual((self.root / "mods/level_00/terrain.glb").read_bytes(), dense)
+        self.assertTrue(any("Dense wins over coarse" in note for note in summary["notes"]))
+        # The later games' packs may hold a terrain as they hold models.
+        gc = write_pack(self.root / "gc", "GC ground", {"level_01/terrain.glb": dense}, game="rac2", version="ntsc")
+        self.assertEqual(overrides.check(gc)[1], ["level_01/terrain.glb"])
+
     def test_stack_with_nothing_still_writes_an_empty_list(self):
         out = self.root / "mods"
         overrides.stack(None, out, None)
@@ -226,3 +265,32 @@ class PackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreviewTests(unittest.TestCase):
+    """A modder's textures shown in the editor's Godot projects, and taken back out."""
+
+    def test_preview_and_undo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            textures = root / "projects" / "level_03" / "levels" / "level_03" / "textures"
+            textures.mkdir(parents=True)
+            (textures / "terrain_0001.png").write_bytes(b"small")
+            (textures / "moby_0002.png").write_bytes(b"kept")
+            mods = root / "mods" / "level_03" / "textures"
+            mods.mkdir(parents=True)
+            (mods / "terrain_0001.png").write_bytes(b"four times larger")
+            (mods / "moby_ovr_abc.png").write_bytes(b"a model's own picture")
+            counts = overrides.preview(root / "mods", root / "projects")
+            self.assertEqual((counts["shown"], counts["left_out"]), (1, 1))
+            self.assertEqual((textures / "terrain_0001.png").read_bytes(), b"four times larger")
+            self.assertEqual((textures / ".originals" / "terrain_0001.png").read_bytes(), b"small")
+            # Shown again (another pack on top): the extractor's original stays the one kept.
+            (mods / "terrain_0001.png").write_bytes(b"newer")
+            overrides.preview(root / "mods", root / "projects")
+            self.assertEqual((textures / ".originals" / "terrain_0001.png").read_bytes(), b"small")
+            counts = overrides.preview(None, root / "projects", undo=True)
+            self.assertEqual(counts["restored"], 1)
+            self.assertEqual((textures / "terrain_0001.png").read_bytes(), b"small")
+            self.assertEqual((textures / "moby_0002.png").read_bytes(), b"kept")
+            self.assertFalse((textures / ".originals").exists())

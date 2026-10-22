@@ -262,6 +262,7 @@ section tree follows OpenGOAL's frame profiler.
 | `OPENRAC_TIME_SCALE` | `X` (1/64 to 1) | The game's speed from the start: `0.25` is quarter speed. | `port/game/common/debug_overlay.cpp` |
 | `OPENRAC_SHADER_DIR` | folder | Where a shader reload reads the files, laid out as `port/`; the build's source tree when unset. | `port/game/common/debug_overlay.cpp` |
 | `OPENRAC_SHADER_RELOAD` | `TICK` | Reloads every shader program at that window frame, with the result in the log. | `port/game/common/debug_overlay.cpp` |
+| `OPENRAC_SCRIPT_BUDGET_MS` | `MS` (a positive number) | The time a script mod may run each time the game calls into it (a hook, a callback, its first run), not counting the game's own code it calls on to; over it, the mod stops ([MODS.md](MODS.md), section 11). Default 2. | `port/game/common/mod_scripts.cpp` |
 
 ## Environment variables: the probes
 
@@ -307,7 +308,6 @@ These variables are read by `openrac-<game>` at run time. Unless said otherwise,
 | `OPENRAC_FPS` | any (set) | Every 300 frames, logs the frames per second over that span. | `port/game/common/main.cpp` |
 | `OPENRAC_HITCH` | any (set) | Logs each frame that took more than 1.25 times the frame time, with its duration in ms. | `port/game/common/main.cpp` |
 | `OPENRAC_WATCH` | `ADDRESS:COUNT[:i],...` | Each frame, logs `COUNT` values (at most 32) from each hexadecimal game `ADDRESS`: floats by default, words with the third field `i`. `COUNT` is decimal. | `port/game/common/main.cpp` |
-| `OPENRAC_STRAFE_TRACE` | any (set) | Ratchet & Clank: each pad report, logs the strafe setting and what it does, the hero's state, slot 0's item, the buttons as held and as the game sees them, Hold's latched yaw, his facing, move yaw, the camera's yaw and his position ([SETTINGS.md](SETTINGS.md#7-strafe-ratchet--clank)). | `port/game/rac1/host/strafe.c` |
 | `OPENRAC_TRACE_INPUT` | any (set) | Logs a port's buttons and stick values, at most every 25 frames per port. | `port/game/common/frontend.cpp` |
 | `OPENRAC_TRACE_CD` | any (set) | Prints each disc read (sector count, start sector, destination address) on stderr. | `port/game/common/lib/cdvd.c` |
 | `OPENRAC_TRACE_WAD` | any (set) | Prints each WAD decompression (addresses, first four bytes, output size) on stderr. | `port/game/rac1/host/hand.c` |

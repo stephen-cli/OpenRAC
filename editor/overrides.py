@@ -12,6 +12,9 @@ port loads on top of the extracted levels, without reading the disc again.
                                                  the folder the port's --mods reads, for the
                                                  levels it plays (either disc's)
   overrides.py zip ID OUT.zip --into OVERRIDES   a pack as a .zip to share
+  overrides.py preview MODS --projects PROJECTS [--undo]
+                                                 show a stacked mods folder's (or a pack's) textures
+                                                 in the editor's Godot projects, at their own size
 
 A pack is a folder, or a .zip of one, with openrac-mod.json at its root (or
 in the zip's one top folder) and files laid out as the extracted levels are:
@@ -23,7 +26,8 @@ in the zip's one top folder) and files laid out as the extracted levels are:
   level_NN/textures/<name>.png      a texture, any size of the same shape
   level_NN/mobys/moby_<class>.glb   a class's model, as the port reads it
   level_NN/ties/tie_<class>.glb, level_NN/shrubs/shrub_<class>.glb
-  level_NN/placements.json          ties and shrubs placed again (the level packer's)
+  level_NN/terrain.glb              the level's terrain, as the port reads it (any vertex count)
+  level_NN/placements.json         ties and shrubs placed again (the level packer's)
   level_NN/gameplay_<version>.wad, patches.tsv   a packed level (the level packer's)
   README*, LICENSE*, *.txt, *.md    read by people only
 
@@ -34,7 +38,7 @@ the same textures have other names: for a texture, {"sha256": the
 original picture's PNG hash} (or {"new": true} for a model's own
 picture); for a model, {"kind", "class", "vertices": a hash of the
 original's vertex positions, "textures": {name: hash of each level
-texture it draws with}}.
+texture it draws with}}; for the terrain, the same with "kind": "terrain".
 
 Going Commando's, Up Your Arsenal's and Deadlocked's packs (game rac2, rac3, rac4; early access)
 hold textures and models only: their levels are not packed back yet, so a level edit in one is
@@ -50,8 +54,9 @@ order, into MODS: the folder `--mods` names. A pack made from the levels of
 the disc LEVELS were read from goes in as it is. One made from the other
 disc's goes where it matches (cross_disc): each texture wherever LEVELS have
 the same original picture, each model where the level has its class with
-the same skeleton (or, without one, the same vertices), its textures named
-as LEVELS name them; what belongs to one disc's data (a packed gameplay
+the same skeleton (or, without one, the same vertices), the terrain where
+the level's has the same vertices (both discs' levels have the same
+terrain), their textures named as LEVELS name them; what belongs to one disc's data (a packed gameplay
 file, patches.tsv, placements.json) or has no match is left out and listed. The port draws each level's
 files from MODS/level_NN/ where they are there, and from the extracted
 levels otherwise (port/viewer/level.cpp), and reads the disc sectors
@@ -85,9 +90,12 @@ LEVELS_FORMAT = FORMAT
 # metal packets and chrome and glass maps; 3 only added classes (port.py FORMAT).
 MODELS_SINCE = 2
 FILES = re.compile(r"^(?:patches\.tsv|level_\d{2}/(?:textures/[A-Za-z0-9_.-]+\.png|(?:mobys|ties|shrubs)/"
-                   r"[A-Za-z0-9_.-]+\.glb|placements\.json|gameplay_(?:" + "|".join(VERSIONS) + r")\.wad))$")
+                   r"[A-Za-z0-9_.-]+\.glb|terrain\.glb|placements\.json|gameplay_(?:" + "|".join(VERSIONS) + r")\.wad"
+                   r"|(?:core|index)_(?:" + "|".join(VERSIONS) + r")\.bin))$")
 TEXTURE = re.compile(r"^level_(\d{2})/textures/([A-Za-z0-9_.-]+)\.png$")
 MODEL = re.compile(r"^level_(\d{2})/(moby|tie|shrub)s/\2_(\d+)\.glb$")
+TERRAIN = re.compile(r"^level_(\d{2})/terrain\.glb$")
+IMAGE = re.compile(r"((?:\.\./)?textures/)([A-Za-z0-9_.-]+)\.png")  # a port GLB's image: a level texture
 PACKED = "packed.json"  # the level packer's note of the disc it packed (pack.py)
 PEOPLE = re.compile(r"^(?:[^/]+\.(?:txt|md)|(?:README|LICENSE|CREDITS)[^/]*)$", re.IGNORECASE)
 MAX_TOTAL = 4 << 30
@@ -110,6 +118,8 @@ def describe(files) -> dict:
             level.setdefault("textures", []).append(parts[2][:-4])
         elif parts[1] in ("mobys", "ties", "shrubs"):
             level.setdefault("models", []).append(parts[2][:-4])
+        elif parts[1] == "terrain.glb":
+            level.setdefault("models", []).append("terrain")
         else:
             level.setdefault("level", []).append(parts[1])
     return out
@@ -204,7 +214,7 @@ def check(path: Path) -> tuple[dict, list[str], list[str], list[str]]:
                 if not PEOPLE.match(rel):
                     ignored.append(rel)
                 continue
-            if manifest["game"] != GAME and not (TEXTURE.match(rel) or MODEL.match(rel)):
+            if manifest["game"] != GAME and not (TEXTURE.match(rel) or MODEL.match(rel) or TERRAIN.match(rel)):
                 # Early access: the later games' levels are not packed back, so only textures and
                 # models of theirs are used.
                 ignored.append(rel)
@@ -222,6 +232,12 @@ def check(path: Path) -> tuple[dict, list[str], list[str], list[str]]:
                         file = Path(scratch) / "model.glb"
                         file.write_bytes(data)
                         document = gltf_read.read(file)
+                        if TERRAIN.match(rel):
+                            if document.list("skins"):
+                                raise ValueError("a skinned mesh; the terrain has no bones")
+                            if not any(p.get("mode", 4) == 4 for node in document.list("nodes") if "mesh" in node
+                                       for p in document.list("meshes")[node["mesh"]]["primitives"]):
+                                raise ValueError("no triangles")
                         for skin in document.list("skins"):
                             for j in skin["joints"]:
                                 name = document.list("nodes")[j].get("name", "")
@@ -408,12 +424,13 @@ def glb_join(doc: dict, binary: bytes) -> bytes:
 
 
 def model_textures(doc: dict) -> list[str]:
-    """The level textures a port GLB draws with: its images' ../textures/<name>.png."""
+    """The level textures a port GLB draws with: its images' ../textures/<name>.png (a class model's)
+    or textures/<name>.png (the terrain's)."""
     names = []
     for image in doc.get("images", []):
-        found = re.fullmatch(r"\.\./textures/([A-Za-z0-9_.-]+)\.png", image.get("uri", ""))
-        if found and found.group(1) not in names:
-            names.append(found.group(1))
+        found = IMAGE.fullmatch(image.get("uri", ""))
+        if found and found.group(2) not in names:
+            names.append(found.group(2))
     return names
 
 
@@ -453,9 +470,13 @@ def same_skeleton(pack: dict, level: dict) -> bool:
 
 
 def class_textures(levels: Path, level: int) -> dict[tuple[str, int], list[str]]:
-    """Each class model of a level -> the level textures it draws with, in its file's order."""
+    """Each class model of a level, and its terrain (("terrain", 0)) -> the level textures it draws
+    with, in its file's order."""
     manifest = read_json(levels / f"level_{level:02}" / "manifest.json")
     out = {}
+    terrain = manifest.get("terrain")
+    if isinstance(terrain, str) and (levels / f"level_{level:02}" / terrain).is_file():
+        out[("terrain", 0)] = model_textures(glb_parts((levels / f"level_{level:02}" / terrain).read_bytes())[0])
     for kind, classes in manifest.get("classes", {}).items():
         for number, entry in classes.items():
             mesh = entry.get("mesh") if isinstance(entry, dict) else None
@@ -475,8 +496,19 @@ def originals(files, levels: Path) -> dict:
     disc the same class's model names its version of each picture in the same place."""
     out, used = {}, {}
     for rel in sorted(files):
-        texture, model = TEXTURE.match(rel), MODEL.match(rel)
-        if texture:
+        texture, model, terrain = TEXTURE.match(rel), MODEL.match(rel), TERRAIN.match(rel)
+        if terrain:
+            # The terrain: matched on the other disc by its vertices (the two discs' are the same).
+            level = levels / f"level_{terrain.group(1)}"
+            original = level / (read_json(level / "manifest.json").get("terrain") or "terrain.glb")
+            if not original.is_file():
+                continue
+            doc, _ = glb_parts(files[rel])
+            names = {name: sha256((level / "textures" / f"{name}.png").read_bytes()) for name in model_textures(doc)
+                     if (level / "textures" / f"{name}.png").is_file()}
+            out[rel] = {"kind": "terrain", "class": None, "vertices": vertices(original), "textures": names,
+                        "class_textures": model_textures(glb_parts(original.read_bytes())[0])}
+        elif texture:
             level = int(texture.group(1))
             original = levels / f"level_{level:02}" / "textures" / f"{texture.group(2)}.png"
             if not original.is_file():
@@ -528,7 +560,11 @@ class Target:
     def in_level(self, level: int, picture: str) -> str | None:
         return next((n for lv, n in self.places(picture) if lv == level), None)
 
-    def model(self, level: int, kind: str, class_id: int) -> str | None:
+    def model(self, level: int, kind: str, class_id: int | None) -> str | None:
+        """A class model's file in a level (kind "terrain": the level's terrain), or None."""
+        if kind == "terrain":
+            terrain = self.index.manifests.get(level, {}).get("terrain")
+            return terrain if isinstance(terrain, str) else None
         entry = self.index.manifests.get(level, {}).get("classes", {}).get(kind, {}).get(str(class_id))
         return entry.get("mesh") if entry else None
 
@@ -600,15 +636,19 @@ def cross_disc(root: Path, manifest: dict, target: Target) -> tuple[dict, list[s
                 out[f"level_{lv:02}/textures/{name}.png"] = group[0][2]
         else:
             skipped += [f"level_{lv:02}/textures/{name}.png (not the same picture here)" for lv, name, _ in group]
-    # Models: by class, where the level has it with the same skeleton.
+    # Models: by class, where the level has it with the same skeleton; the terrain where the level's
+    # has the same vertices.
     for rel, path in files.items():
-        model = MODEL.match(rel)
-        if not model:
+        model, terrain = MODEL.match(rel), TERRAIN.match(rel)
+        if model:
+            level, kind, class_id = int(model.group(1)), model.group(2), int(model.group(3))
+        elif terrain:
+            level, kind, class_id = int(terrain.group(1)), "terrain", None
+        else:
             continue
-        level, kind, class_id = int(model.group(1)), model.group(2), int(model.group(3))
         mesh = target.model(level, kind, class_id)
         if not mesh:
-            skipped.append(f"{rel} (the level has no such class here)")
+            skipped.append(f"{rel} (the level has no " + ("terrain" if terrain else "such class") + " here)")
             continue
         entry = recorded.get(rel, {})
         theirs = skeleton(target.levels / f"level_{level:02}" / mesh)
@@ -617,7 +657,8 @@ def cross_disc(root: Path, manifest: dict, target: Target) -> tuple[dict, list[s
         else:
             fits = entry.get("vertices") == vertices(target.levels / f"level_{level:02}" / mesh)
         if not fits:
-            skipped.append(f"{rel} (the class is another model here)")
+            skipped.append(f"{rel} (" + ("the level's terrain is another" if terrain else "the class is another model")
+                           + " here)")
             continue
         doc, binary = glb_parts(path.read_bytes())
         names, missing = {}, []
@@ -653,9 +694,9 @@ def cross_disc(root: Path, manifest: dict, target: Target) -> tuple[dict, list[s
             continue
         if any(old != new for old, new in names.items()):
             for image in doc.get("images", []):
-                found = re.fullmatch(r"\.\./textures/([A-Za-z0-9_.-]+)\.png", image.get("uri", ""))
-                if found and found.group(1) in names:
-                    image["uri"] = f"../textures/{names[found.group(1)]}.png"
+                found = IMAGE.fullmatch(image.get("uri", ""))
+                if found and found.group(2) in names:
+                    image["uri"] = f"{found.group(1)}{names[found.group(2)]}.png"
             for material in doc.get("materials", []):
                 if material.get("name") in names:
                     material["name"] = names[material["name"]]
@@ -663,7 +704,7 @@ def cross_disc(root: Path, manifest: dict, target: Target) -> tuple[dict, list[s
         else:
             out[f"level_{level:02}/{mesh}"] = path
     for rel in files:
-        if not TEXTURE.match(rel) and not MODEL.match(rel):
+        if not TEXTURE.match(rel) and not MODEL.match(rel) and not TERRAIN.match(rel):
             skipped.append(f"{rel} (it belongs to the other disc's level data)")
     return out, skipped
 
@@ -765,10 +806,62 @@ def read_json(path: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+ORIGINALS = ".originals"  # beside a project's textures: the extractor's own, while a preview is on
+
+
+def project_textures(projects: Path, level: str) -> Path | None:
+    """A level's textures folder in the editor's Godot projects: one project per level
+    (projects/level_NN/levels/level_NN) or one for every level (projects/levels/level_NN)."""
+    for folder in (projects / level / "levels" / level / "textures", projects / "levels" / level / "textures"):
+        if folder.is_dir():
+            return folder
+    return None
+
+
+def preview(mods: Path, projects: Path, undo: bool = False) -> dict[str, int]:
+    """Shows the textures of MODS (a stacked mods folder, stack(), or one pack) in the editor's
+    Godot projects: each level texture a pack replaces, at the pack's size, in place of the
+    extractor's, which goes to textures/.originals/ (a folder Godot does not import) to come
+    back with UNDO. A pack's pictures that replace no level texture (a model's own) have no place
+    there and are left out. Returns {"shown", "restored", "left_out"}."""
+    counts = {"shown": 0, "restored": 0, "left_out": 0}
+    levels = sorted({p.name for p in projects.glob("level_*")} | {p.name for p in projects.glob("levels/level_*")})
+    for level in levels:
+        folder = project_textures(projects, level)
+        if folder is None:
+            continue
+        kept = folder / ORIGINALS
+        if undo:
+            for original in sorted(kept.glob("*.png")) if kept.is_dir() else []:
+                shutil.copyfile(original, folder / original.name)
+                original.unlink()
+                counts["restored"] += 1
+            if kept.is_dir() and not any(kept.iterdir()):
+                kept.rmdir()
+            continue
+        for picture in sorted((mods / level / "textures").glob("*.png")):
+            target = folder / picture.name
+            if not target.is_file():
+                counts["left_out"] += 1
+                continue
+            kept.mkdir(exist_ok=True)
+            if not (kept / picture.name).is_file():
+                shutil.copyfile(target, kept / picture.name)
+            shutil.copyfile(picture, target)
+            counts["shown"] += 1
+    return counts
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check").add_argument("source", type=Path)
+    shown = commands.add_parser("preview", help="show a stacked mods folder's (or a pack's) textures in the "
+                                                "editor's Godot projects; --undo puts the extractor's back")
+    shown.add_argument("mods", type=Path, nargs="?")
+    shown.add_argument("--projects", type=Path, required=True, help="the editor's Godot projects (a folder of "
+                                                                     "per-level projects, or one project)")
+    shown.add_argument("--undo", action="store_true")
     for name in ("add", "list", "enable", "disable", "move", "remove", "stack", "zip"):
         command = commands.add_parser(name)
         if name == "add":
@@ -790,6 +883,18 @@ def main(argv: list[str] | None = None) -> int:
                                       "disc's go where they match")
     args = parser.parse_args(argv)
     try:
+        if args.command == "preview":
+            if not args.undo and args.mods is None:
+                parser.error("preview needs the mods folder (or --undo)")
+            counts = preview(args.mods, args.projects, args.undo)
+            if args.undo:
+                print(f"Put back {counts['restored']} texture(s) the extractor wrote: {args.projects.resolve()}")
+            else:
+                print(f"Showing {counts['shown']} texture(s) of {args.mods} in {args.projects.resolve()}"
+                      + (f"; {counts['left_out']} replace no level texture (a model's own) and are left out"
+                         if counts["left_out"] else "") + ". Godot reimports them when its window has focus.")
+            print(f"openrac-output: {args.projects.resolve()}")
+            return 0
         if args.command == "check":
             manifest, used, ignored, problems = check(args.source)
             print(f"{manifest['name']}" + (f" by {manifest['author']}" if manifest.get("author") else ""))

@@ -13,6 +13,7 @@ and writes, under --out:
     game_protos.h     every function of the program, with its definition's signature
     stubs.c           the functions that have no C yet: they log that they ran
     functions.c       every function by code address, per overlay, for GFN
+    hooks.c           the hook points mods may take (libraries.tsv `hook`), and their table
     units.txt         the list of generated .c files, for the build
     report.json/.md   what was translated, what became a stub and why
 
@@ -42,10 +43,10 @@ import derived  # noqa: E402
 import ctype  # noqa: E402
 import prep  # noqa: E402
 from lower import Unit, UnitReport  # noqa: E402
-from program import Function, Program, Signature, canon, cname, index_unit, prototype, inherit_results, merge, read_places, read_split_places, read_symbols, read_catalogue  # noqa: E402
+from program import Function, Program, Signature, canon, cname, index_unit, prototype, inherit_results, merge, read_places, read_split_places, read_symbols, read_catalogue, widen_forwarded, widen_returns  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-PROGRAM_FILES = ["stubs.c", "functions.c", "libraries.c", "game_info.c", "game_protos.h"]
+PROGRAM_FILES = ["stubs.c", "functions.c", "hooks.c", "libraries.c", "game_info.c", "game_protos.h"]
 
 _STATE: dict = {}
 
@@ -134,6 +135,38 @@ def read_hand(config_dir: Path, cfg: dict) -> dict[str, str]:
     if not table or not (config_dir / table).is_file():
         return {}
     return read_table_of_c(config_dir / table)
+
+
+def read_long_long_128(source: Path, cfg: dict) -> set[str]:
+    """The units whose `long long` is a 128-bit integer (hostgen.json "long_long_128"), as paths
+    from the decompilation's top (src/game/draw.c): every unit of "sources" but "skip" and the
+    objects a table of the decompilation names as another compiler's, {"except_objects": TABLE,
+    "except_compilers": [NAME, ...]}: whitespace-separated rows, the object (its path with the
+    build directory first, build-sn/core/00125630.o for src/core/00125630.c) first, the compiler
+    third. rac1-pal: SN's GCC 2.95.3, which built the game, has a 128-bit long long; Sony's 2.9-ee
+    built the libraries config/core_text.objects marks ee29 (libmpeg's 64-bit `long long v[2]`)."""
+    spec = cfg.get("long_long_128")
+    if not spec:
+        return set()
+    others: set[str] = set()
+    table = source / spec.get("except_objects", "")
+    if spec.get("except_objects") and table.is_file():
+        compilers = set(spec.get("except_compilers", []))
+        for line in table.read_text().splitlines():
+            row = line.split()
+            if not row or row[0].startswith("#") or len(row) < 3 or row[2] not in compilers:
+                continue
+            others.add(Path(*Path(row[0]).parts[1:]).with_suffix(".c").as_posix())
+    units = set()
+    for src in cfg["sources"]:
+        for p in (source / src).rglob("*.c"):
+            rel = p.relative_to(source).as_posix()
+            if any(rel == s or rel.startswith(s.rstrip("/") + "/") for s in cfg["skip"]):
+                continue
+            if any(rel == f"{s.rstrip('/')}/{o}" for s in cfg["sources"] for o in others):
+                continue
+            units.add(rel)
+    return units
 
 
 def read_aliases(source: Path, cfg: dict) -> dict[str, str]:
@@ -225,7 +258,23 @@ def host_table(config_dir: Path, cfg: dict) -> dict[str, tuple[str, str]]:
 
 def wrapped(config_dir: Path, cfg: dict) -> set[str]:
     """Functions whose C is kept under <name>__game, for a host <name> that
-    calls it (libraries.tsv rows with port = wrap)."""
+    calls it (libraries.tsv rows with port = wrap, and the hook points, port =
+    hook, whose host <name> hostgen writes itself: hooks.c)."""
+    out = set()
+    table = cfg.get("libraries")
+    if not table:
+        return out
+    for line in (config_dir / table).read_text().splitlines():
+        cols = line.split("\t")
+        if not line.startswith("#") and len(cols) >= 4 and cols[3].strip() in ("wrap", "hook"):
+            out.add(cols[0].strip())
+    return out
+
+
+def wrapped_by_host(config_dir: Path, cfg: dict) -> set[str]:
+    """Functions with a `wrap` row: the port's host C is their <name>. One that is a hook point too
+    gets its hook under the port's function: hooks.c writes <name>__hooked (the mod's replacement
+    or the game's C), which the host C calls where it would call <name>__game."""
     out = set()
     table = cfg.get("libraries")
     if not table:
@@ -235,6 +284,106 @@ def wrapped(config_dir: Path, cfg: dict) -> set[str]:
         if not line.startswith("#") and len(cols) >= 4 and cols[3].strip() == "wrap":
             out.add(cols[0].strip())
     return out
+
+
+def hooked(config_dir: Path, cfg: dict) -> dict[str, str]:
+    """The hook points mods may take (docs/port/MODS.md): libraries.tsv rows with port = hook,
+    symbol -> the hook point's name (the third column), the same for every disc of a game."""
+    out: dict[str, str] = {}
+    table = cfg.get("libraries")
+    if not table:
+        return out
+    names: dict[str, str] = {}
+    for line in (config_dir / table).read_text().splitlines():
+        cols = line.split("\t")
+        if not line.startswith("#") and len(cols) >= 4 and cols[3].strip() == "hook":
+            sym, name = cols[0].strip(), cols[2].strip()
+            if not re.fullmatch(r"[A-Za-z_]\w*", name):
+                raise ValueError(f"{table}: hook point {sym} has no name a mod can ask for ({name!r})")
+            if name in names:
+                raise ValueError(f"{table}: hook point {name} is both {names[name]} and {sym}")
+            names[name] = sym
+            out[sym] = name
+    return out
+
+
+# A type of the shared prototypes as a hook point's signature writes it (docs/port/MODS.md, section 4).
+_HOOK_TYPES = {
+    "void": "void", "gaddr": "u32", "float": "f32",
+    "char": "i8", "signed char": "i8", "unsigned char": "u8", "_Bool": "u8",
+    "short": "i16", "short int": "i16", "signed short": "i16",
+    "unsigned short": "u16", "unsigned short int": "u16",
+    "int": "i32", "signed": "i32", "signed int": "i32", "long": "i32", "long int": "i32",
+    "unsigned": "u32", "unsigned int": "u32", "unsigned long": "u32", "unsigned long int": "u32",
+    "long long": "i64", "long long int": "i64", "signed long long": "i64",
+    "unsigned long long": "u64", "unsigned long long int": "u64",
+}
+
+
+def hook_signature(f: Function, typedefs: dict) -> tuple[str, list[str], str] | None:
+    """A hook point's signature (`void(i32,f32)`), its parameters' C types and its result's, as
+    game_protos.h writes them; None where a type has no such form (a record by value, a double,
+    varargs, a function without a prototype)."""
+    sig = f.sig
+    ret = canon(sig.ret, typedefs)
+    if ret is None or ret not in _HOOK_TYPES or not sig.prototyped or sig.variadic:
+        return None
+    params = []
+    for p in sig.params:
+        c = canon(p, typedefs)
+        if c is None or c not in _HOOK_TYPES or c == "void":
+            return None
+        params.append(c)
+    text = f"{_HOOK_TYPES[ret]}({','.join(_HOOK_TYPES[c] for c in params)})"
+    return text, params, ret
+
+
+def write_hooks(program: Program, out: Path, game: str) -> list[str]:
+    """hooks.c: for each hook point, the host function of its name, which calls the replacement a
+    mod hooked there (a slot the mod loader fills, port/game/common/mods.cpp) or else the game's C
+    (<name>__game), and the table of them, openrac_game_hook_points. With no mod the slot is null:
+    a load and a branch. Written for every game, the table empty where it has none. Returns the
+    hook points that have no signature a hook can take."""
+    lines = [f"/* Generated by port/tools/hostgen for {game}. Do not edit. */",
+             "#include \"openrac/guest.h\"", "#include \"game_protos.h\"", "",
+             "/* port/game/common/mods.h reads this table. */",
+             "typedef struct openrac_hook_point {",
+             "    const char* name;      /* the hook point's name, for mods */",
+             "    const char* symbol;    /* the function's, in this disc's build */",
+             "    const char* signature; /* docs/port/MODS.md, section 4 */",
+             "    void** slot;           /* the replacement called, null for the game's C */",
+             "    void* original;        /* the game's C */",
+             "} openrac_hook_point;", ""]
+    rows, skipped = [], []
+    for sym in sorted(program.hook, key=lambda s: program.hook[s]):
+        f = program.functions.get(sym)
+        shape = hook_signature(f, program.typedefs) if f is not None else None
+        if shape is None:
+            skipped.append(sym)
+            continue
+        text, params, ret = shape
+        c = cname(sym)
+        slot = f"hook_{c}"
+        # Under a wrap of the port's own (wrapped_by_host): the hook is <name>__hooked, which the
+        # port's <name> calls.
+        entry = f"{c}__hooked" if sym in program.wrap_host else c
+        decl = ", ".join(f"{t} a{i}" for i, t in enumerate(params)) or "void"
+        args = ", ".join(f"a{i}" for i in range(len(params)))
+        fptr = f"{ret} (*)({', '.join(params) or 'void'})"
+        give = "" if ret == "void" else "return "
+        lines += [f"static void* {slot};",
+                  f"{ret} {entry}({decl}) {{",
+                  f"    if ({slot} != 0) {{",
+                  f"        {give}(({fptr}){slot})({args});"]
+        if ret == "void":
+            lines.append("        return;")
+        lines += ["    }", f"    {give}{c}__game({args});", "}", ""]
+        rows.append(f"    {{\"{program.hook[sym]}\", \"{sym}\", \"{text}\", &{slot}, (void*){c}__game}},")
+    lines.append("const openrac_hook_point openrac_game_hook_points[] = {")
+    lines += rows or ["    {0, 0, 0, 0, 0},"]
+    lines += ["};", f"const int openrac_game_hook_point_count = {len(rows)};", ""]
+    _write(out / "hooks.c", "\n".join(lines))
+    return skipped
 
 
 def units_of(root: Path, cfg: dict) -> list[str]:
@@ -266,6 +415,8 @@ def write_program_files(program: Program, out: Path, game: str) -> dict:
         protos.append(p + ";")
         if sym in program.wrap:
             protos.append(p.replace(f" {cname(sym)}(", f" {cname(sym)}__game(", 1) + ";")
+        if sym in program.hook and sym in program.wrap_host:
+            protos.append(p.replace(f" {cname(sym)}(", f" {cname(sym)}__hooked(", 1) + ";")
     protos += ["", "#endif", ""]
     _write(out / "game_protos.h", "\n".join(protos))
 
@@ -614,6 +765,9 @@ def inputs_digest(source: Path, config: Path, cfg: dict, options: list[str]) -> 
     for key in ("places", "candidates"):
         if cfg.get(key):
             paths.append(source / cfg[key])
+    # The table that names the units of another compiler (long_long_128) decides how their C reads.
+    if (cfg.get("long_long_128") or {}).get("except_objects"):
+        paths.append(source / cfg["long_long_128"]["except_objects"])
     table = source / cfg["candidates"] if cfg.get("candidates") else None
     if table and table.is_file():
         for line in table.read_text().splitlines():
@@ -737,6 +891,7 @@ def main(argv: list[str] | None = None) -> int:
     # candidate for the same function stands aside.
     candidates = {**read_candidates(source, cfg), **read_hand(args.game.parent, cfg)}
     aliases = read_aliases(source, cfg)
+    long_long_128 = read_long_long_128(source, cfg)
     if aliases:
         # One text for several functions stays one text (use_candidates puts it in once).
         texts = {id(c): prep.unalias(c, aliases) for c in candidates.values()}
@@ -746,7 +901,7 @@ def main(argv: list[str] | None = None) -> int:
     for d in sorted(set(cfg["sources"] + cfg["includes"])):
         if (source / d).is_dir():
             prep.copy_tree(source / d, root / d, candidates=candidates, used=used, drafts=drafts, prefix=d,
-                           aliases=aliases)
+                           aliases=aliases, long_long_128=long_long_128)
     units = units_of(root, cfg)
     if args.only:
         units = [u for u in units if u in args.only]
@@ -768,10 +923,20 @@ def main(argv: list[str] | None = None) -> int:
     host_sigs = {sym: sig for sym, (_name, sig) in host_rows.items()}
     program.host = set(cfg.get("host_functions", [])) | set(host_rows)
     program.wrap = wrapped(args.game.parent, cfg)
+    program.wrap_host = wrapped_by_host(args.game.parent, cfg)
+    try:
+        program.hook = hooked(args.game.parent, cfg)
+    except ValueError as e:
+        print(f"hostgen: error: {e}", file=sys.stderr)
+        return 1
     # The executable's data that level programs carry at other addresses (guest.h, per-level
     # relocation): [low, high), or none.
     program.relocate = cfg.get("relocate")
     program.returns_64 = set(cfg.get("returns_64", []))
+    # Locals that receive a "returns_64" call's result but which the original keeps in a stack slot across calls,
+    # where its 32-bit store and load leave the low half sign-extended (hostgen.json "spilled_locals": function ->
+    # local names): lower.py keeps them 32-bit.
+    program.spilled_locals = {sym: list(names) for sym, names in cfg.get("spilled_locals", {}).items()}
     program.entries = {sym: int(str(off), 0) for sym, off in cfg.get("entries", {}).items()}
     # Stubs of the executable that every level program fills with a function of its own.
     program.level_hooks = set(cfg.get("level_hooks", []))
@@ -811,7 +976,15 @@ def main(argv: list[str] | None = None) -> int:
             sig = Signature.of(ctype.parse(text))
             f = program.functions.get(sym)
             program.functions[sym] = Function(sym, sig, None, asm=f.asm if f else False)
+    # A parameter the C only passes on to 64-bit parameters is 64-bit itself (program.py widen_forwarded): the EE's
+    # register carries all its bits through (FontPrintCenter's colour to FontPrint's u64).
+    program.widened = widen_forwarded(program)
     program.index_places()
+    # A 32-bit result that is a "returns_64" function's result, returned as it is, is 64-bit itself (program.py
+    # widen_returns): the EE's result register carries all its bits through (Pause_GetFadeColor's FastTweenColor).
+    program.results_widened = widen_returns(program)
+    problems += [f"spilled_locals: {sym} is not a function of the program"
+                 for sym in sorted(program.spilled_locals) if sym not in program.functions]
     # Functions with no C whose assembly the game's setup wrote (hostgen.json "asm"): C from their
     # instructions, so the port runs them instead of stubs (asmc.py). Before the units, so calls to
     # them are matched to the signatures they are written with.
@@ -842,8 +1015,17 @@ def main(argv: list[str] | None = None) -> int:
     extra["roots"] = cfg.get("roots", [])
     extra["candidates_used"] = sorted(used)
     extra["results_inherited"] = sorted(inherited)
+    extra["params_widened"] = sorted(getattr(program, "widened", []))
+    extra["results_widened"] = sorted(getattr(program, "results_widened", []))
     extra["bound_libraries"] = write_libraries(program, out, host_rows, library_api(args.game.parent, cfg))
     write_game_info(program, out, cfg)
+    extra["hooks"] = sorted(program.hook.values())
+    extra["hooks_skipped"] = write_hooks(program, out, cfg.get("title", cfg.get("name", args.game.parent.name)))
+    for sym in extra["hooks_skipped"]:
+        print(f"hostgen: error: hook point {sym} has no signature a hook can take "
+              "(no prototype, a record by value, a double or varargs)", file=sys.stderr)
+    if extra["hooks_skipped"]:
+        return 1
     extra["index_problems"] = problems
     asm_files = asmc.write_files(out, cfg, asm_results, cfg.get("title", cfg.get("name", "")))
     extra["asm"] = asm_stage

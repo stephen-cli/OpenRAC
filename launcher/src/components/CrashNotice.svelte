@@ -7,6 +7,7 @@
   import { api, onAndroid } from "$lib/api";
   import { app, dismissStopped, guard, toast } from "$lib/app.svelte";
   import { DISCORD_URL, ISSUES_URL } from "$lib/links";
+  import { crashModsLine } from "$lib/modsText";
   import { place, stopText, type StopNotice } from "$lib/reports";
 
   let { notice, title }: { notice: StopNotice; title: string } = $props();
@@ -26,6 +27,19 @@
    *  announced as well. */
   const fresh = $derived(Date.now() - notice.at < 10_000);
   const when = $derived(new Date(notice.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }));
+
+  /** The gameplay mods the game loaded at its last start (status.json, docs/port/MODS.md): a mod
+   *  may be what crashed, and purist mode plays without them. */
+  let modsLoaded = $state<string[]>([]);
+  $effect(() => {
+    if (!crash || onAndroid) return;
+    void api
+      .pluginsStatus(notice.game)
+      .then((status) => {
+        modsLoaded = status && !status.purist ? status.mods.filter((m) => m.state === "loaded").map((m) => m.id) : [];
+      })
+      .catch(() => (modsLoaded = []));
+  });
 
   async function copy() {
     const text = crash
@@ -93,6 +107,9 @@
         us. Its log is under Logs and crash reports, if you want to look at it.
       {/if}
     </p>
+    {#if crash && modsLoaded.length}
+      <p class="say">{crashModsLine(modsLoaded)}</p>
+    {/if}
 
     <div class="actions">
       <button onclick={() => void copy()}>

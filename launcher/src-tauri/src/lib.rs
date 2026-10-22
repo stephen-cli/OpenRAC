@@ -18,6 +18,8 @@ use openrac_launcher_core::jobs::{Event, Jobs, Started};
 use openrac_launcher_core::launcher_log;
 use openrac_launcher_core::library::{self, Library};
 use openrac_launcher_core::overrides::{self, PackView};
+use openrac_launcher_core::plugins::{self, Installed, PluginView};
+use openrac_launcher_core::remote;
 use openrac_launcher_core::reports::{self, ReportEntry};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -523,7 +525,7 @@ fn open_reports_folder(app: AppHandle, state: State<'_, AppState>, game: String,
     if !dir.is_dir() {
         return Err("nothing has been logged for this game yet".into());
     }
-    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    open_path_with_system(&app, &dir.to_string_lossy())
 }
 
 #[tauri::command]
@@ -557,9 +559,21 @@ fn cancel_job(state: State<'_, AppState>, id: u32) -> Result<(), String> {
 /// system's default app. Paths outside the checkout are refused.
 #[tauri::command]
 fn open_path(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let root = state.config.lock().unwrap().root.clone().ok_or("the OpenRAC folder is not set")?;
-    let root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
+    let (root, install) = {
+        let c = state.config.lock().unwrap();
+        (c.root.clone().ok_or("the OpenRAC folder is not set")?, c.install_dir.clone())
+    };
     let rel = path.split('#').next().unwrap_or_default();
+    // An installed launcher's own folder is read-only (an AppImage, the macOS app): the folders a
+    // checkout keeps under assets/ are the game's, in the per-user install folder.
+    let on_copy = state.bundled.as_deref().is_some_and(|copy| detect::on_the_copy(Some(&root), copy));
+    if let (true, Some(install)) = (on_copy, install.as_deref()) {
+        if let Some(folder) = install::player_folder(install, rel) {
+            std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+            return open_path_with_system(&app, &folder.to_string_lossy());
+        }
+    }
+    let root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
     let wanted = openrac_launcher_core::under(&root, rel);
     if rel.starts_with("assets/") && !rel.split('/').any(|part| part == "..") && !wanted.exists() {
         // A folder the tools write (the level editor's projects, packed levels) before they first
@@ -570,7 +584,7 @@ fn open_path(app: AppHandle, state: State<'_, AppState>, path: String) -> Result
     if !target.starts_with(&root) {
         return Err(format!("{path} is outside the OpenRAC folder"));
     }
-    app.opener().open_path(target.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    open_path_with_system(&app, &target.to_string_lossy())
 }
 
 /// Opens a web page in the browser: https only.
@@ -579,7 +593,7 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err(format!("not an https address: {url}"));
     }
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    open_url_with_system(&app, &url)
 }
 
 /// Sets `game` up from the image of the player's own disc, OpenGOAL's way:
@@ -872,6 +886,185 @@ fn overrides_remove(state: State<'_, AppState>, game: String, id: String) -> Res
     overrides::remove(&overrides_dir(&state, &game)?, &id)
 }
 
+/// A game's native mods' folder (`<data>/plugins`, docs/port/MODS.md), from the install folder in
+/// Settings.
+fn plugins_dir(state: &State<'_, AppState>, game: &str) -> Result<PathBuf, String> {
+    let install = state.config.lock().unwrap().install_dir.clone().ok_or("no install folder (Settings)")?;
+    Ok(plugins::dir(&install, game))
+}
+
+/// Runs a change to a game's native mods away from the window's thread.
+async fn on_plugins<T: Send + 'static>(
+    state: State<'_, AppState>,
+    game: &str,
+    work: impl FnOnce(&Path) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let dir = plugins_dir(&state, game)?;
+    tauri::async_runtime::spawn_blocking(move || work(&dir)).await.map_err(|e| e.to_string())?
+}
+
+/// The game's native mods in load order, as they stand for its disc `version` (`pal`).
+#[tauri::command]
+async fn plugins_list(state: State<'_, AppState>, game: String, version: String) -> Result<Vec<PluginView>, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| plugins::list(dir, &g, &version)).await
+}
+
+#[tauri::command]
+async fn plugins_set_enabled(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    id: String,
+    enabled: bool,
+) -> Result<Vec<PluginView>, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| plugins::set_enabled(dir, &g, &version, &id, enabled)).await
+}
+
+#[tauri::command]
+async fn plugins_move(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    id: String,
+    up: bool,
+) -> Result<Vec<PluginView>, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| plugins::move_mod(dir, &g, &version, &id, up)).await
+}
+
+#[tauri::command]
+async fn plugins_set_setting(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    id: String,
+    key: String,
+    value: serde_json::Value,
+) -> Result<Vec<PluginView>, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| plugins::set_setting(dir, &g, &version, &id, &key, value)).await
+}
+
+#[tauri::command]
+async fn plugins_remove(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    id: String,
+) -> Result<Vec<PluginView>, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| {
+        let left = plugins::remove(dir, &g, &version, &id)?;
+        remote::forget(dir, &id)?;
+        Ok(left)
+    })
+    .await
+}
+
+/// Adds a mod from a .zip or a folder: a native mod to the store, or the answer that it is a data
+/// pack (the page then adds it to the overrides with `overrides-add`).
+#[tauri::command]
+async fn plugins_install(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    path: PathBuf,
+) -> Result<Installed, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| plugins::install(dir, &g, &version, &path)).await
+}
+
+/// What the port did with the game's mods at its last start (`status.json`), if it wrote it.
+/// A game's mods from a repository's address (docs/port/MODS.md, section 10): what it holds,
+/// installing one, newer versions, keeping one at its version. Through curl, no git needed.
+fn remote_context<'a>(dir: &'a Path, game: &'a str, version: &'a str) -> remote::Context<'a> {
+    remote::Context {
+        dir,
+        game,
+        version,
+        platform: plugins::platform_key(),
+        fetch: &remote::Curl,
+        hosts: remote::Hosts::default(),
+    }
+}
+
+#[tauri::command]
+async fn plugins_preview(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    url: String,
+) -> Result<remote::Preview, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| remote::preview(&remote_context(dir, &g, &version), &url)).await
+}
+
+#[tauri::command]
+async fn plugins_install_remote(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    url: String,
+    id: String,
+) -> Result<remote::RemoteInstalled, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| remote::install(&remote_context(dir, &g, &version), &url, &id)).await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheck {
+    updates: Vec<remote::Update>,
+    errors: Vec<String>,
+}
+
+#[tauri::command]
+async fn plugins_check_updates(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+) -> Result<UpdateCheck, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| {
+        let (updates, errors) = remote::check_updates(&remote_context(dir, &g, &version));
+        Ok(UpdateCheck { updates, errors })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plugins_update(
+    state: State<'_, AppState>,
+    game: String,
+    version: String,
+    id: String,
+) -> Result<remote::RemoteInstalled, String> {
+    let g = game.clone();
+    on_plugins(state, &game, move |dir| remote::update(&remote_context(dir, &g, &version), &id)).await
+}
+
+#[tauri::command]
+async fn plugins_sources(state: State<'_, AppState>, game: String) -> Result<remote::Sources, String> {
+    on_plugins(state, &game, |dir| Ok(remote::read_sources(dir))).await
+}
+
+#[tauri::command]
+async fn plugins_set_pin(
+    state: State<'_, AppState>,
+    game: String,
+    id: String,
+    pin: bool,
+) -> Result<remote::Sources, String> {
+    on_plugins(state, &game, move |dir| remote::set_pin(dir, &id, pin)).await
+}
+
+#[tauri::command]
+async fn plugins_status(state: State<'_, AppState>, game: String) -> Result<Option<plugins::Status>, String> {
+    on_plugins(state, &game, |dir| Ok(plugins::read_status(dir))).await
+}
+
 /// Opens a folder inside a game's set-up folder (an export, the overrides): folders only, and
 /// only there, so the page cannot open anything else with it.
 #[tauri::command]
@@ -893,7 +1086,43 @@ fn open_game_folder(app: AppHandle, state: State<'_, AppState>, game: String, pa
     if !target.starts_with(&data) || !target.is_dir() {
         return Err(format!("{path} is not a folder of the game's set-up"));
     }
-    app.opener().open_path(target.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    open_path_with_system(&app, &target.to_string_lossy())
+}
+
+/// Opens a folder a job wrote (a `job-exit`'s `outputs`, a `Started`'s `output`) with the system's
+/// file manager; a file opens its folder. Only the folders the launcher's tools write: the
+/// checkout's assets/ and build/, and the per-user install folder with the games' set-up folders.
+#[tauri::command]
+fn open_output(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let (root, install) = {
+        let c = state.config.lock().unwrap();
+        (c.root.clone(), c.install_dir.clone())
+    };
+    let target = std::fs::canonicalize(&path).map_err(|e| format!("{path}: {e}"))?;
+    let target = if target.is_dir() { target } else { target.parent().map(Path::to_path_buf).unwrap_or(target) };
+    let mut allowed = Vec::new();
+    if let Some(root) = root.and_then(|r| std::fs::canonicalize(r).ok()) {
+        allowed.push(root.join("assets"));
+        allowed.push(root.join("build"));
+    }
+    if let Some(install) = install.and_then(|i| std::fs::canonicalize(i).ok()) {
+        allowed.push(install);
+    }
+    if !allowed.iter().any(|folder| target.starts_with(folder)) {
+        return Err(format!("{path} is not a folder the launcher's tools write"));
+    }
+    open_path_with_system(&app, &target.to_string_lossy())
+}
+
+/// Opens one level's Godot project in the Godot editor (the version's `editor-open` action, with
+/// its checks: Godot set up, the level extracted), for a job's result or a level's row.
+#[tauri::command]
+fn open_level_in_godot(state: State<'_, AppState>, version: String, level: u32) -> Result<Started, String> {
+    let config = state.config.lock().unwrap().clone();
+    let inputs = openrac_launcher_core::actions::Inputs { level: Some(level), path: None, option: None };
+    let plan = library::plan(&config, &Scope::Version(version), "editor-open", &inputs)?;
+    launcher_log::line(&format!("run: {}", openrac_launcher_core::jobs::command_line(&plan)));
+    state.jobs.start(&plan, config.root.as_deref(), |_| {})
 }
 
 #[tauri::command]
@@ -902,7 +1131,7 @@ fn open_saves_folder(app: AppHandle, serial: String) -> Result<(), String> {
     if !dir.exists() {
         let _ = std::fs::create_dir_all(&dir);
     }
-    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    open_path_with_system(&app, &dir.to_string_lossy())
 }
 
 /// Writes `bytes` to `path` unless it already holds them; true when it wrote.
@@ -942,11 +1171,18 @@ fn ensure_linux_desktop_integration() {
         icons_changed |= write_if_changed(&dir.join("openrac-launcher.png"), bytes);
     }
 
+    // An AppImage runs from a mount that is gone when it exits (/tmp/.mount_…): the entry starts
+    // the AppImage file itself, or the menu's launcher started nothing once it was closed. A
+    // package (deb, rpm) puts its own entry in the menu: this one is then only for the taskbar's
+    // icon, hidden, so the menu does not list the launcher twice.
+    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|path| path.is_file());
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("openrac-launcher"));
+    let packaged = appimage.is_none() && exe_path.starts_with("/usr");
+    let program = appimage.unwrap_or(exe_path);
     let entry = |wm_class: &str, hidden: bool| {
         format!(
-            "[Desktop Entry]\nType=Application\nName=OpenRAC Launcher\nComment=Set up, build and play the decompiled Ratchet & Clank games\nExec=\"{}\"\nIcon=dev.openrac.launcher\nTerminal=false\nCategories=Game;Development;\nStartupNotify=true\nStartupWMClass={}\n{}",
-            exe_path.to_string_lossy(),
+            "[Desktop Entry]\nType=Application\nName=OpenRAC Launcher\nComment=Set up, build and play the decompiled Ratchet & Clank games\nExec={}\nIcon=dev.openrac.launcher\nTerminal=false\nCategories=Game;Development;\nStartupNotify=true\nStartupWMClass={}\n{}",
+            detect::desktop_exec(&program),
             wm_class,
             if hidden { "NoDisplay=true\n" } else { "" }
         )
@@ -954,17 +1190,17 @@ fn ensure_linux_desktop_integration() {
     let mut entries_changed = false;
     entries_changed |= write_if_changed(
         &app_dir.join("dev.openrac.launcher.desktop"),
-        entry("dev.openrac.launcher", false).as_bytes(),
+        entry("dev.openrac.launcher", packaged).as_bytes(),
     );
     entries_changed |=
         write_if_changed(&app_dir.join("openrac-launcher.desktop"), entry("openrac-launcher", true).as_bytes());
 
     if icons_changed {
-        let _ = std::process::Command::new("gtk-update-icon-cache").arg("-f").arg("-t").arg(&icons_base).status();
+        let _ = detect::quiet(Path::new("gtk-update-icon-cache")).arg("-f").arg("-t").arg(&icons_base).status();
     }
     if entries_changed || icons_changed {
-        let _ = std::process::Command::new("update-desktop-database").arg(&app_dir).status();
-        let _ = std::process::Command::new("kbuildsycoca6").status();
+        let _ = detect::quiet(Path::new("update-desktop-database")).arg(&app_dir).status();
+        let _ = detect::quiet(Path::new("kbuildsycoca6")).status();
     }
 
     // If Flatpak Discord is running, ensure standard XDG_RUNTIME_DIR socket symlink exists
@@ -981,6 +1217,11 @@ fn ensure_linux_desktop_integration() {
 /// icon when launched from the launcher or directly.
 #[cfg(target_os = "linux")]
 fn ensure_linux_game_desktop_integration(root: &std::path::Path) {
+    // The copy inside an AppImage is mounted afresh at each start: an entry for its game would
+    // name a folder that is gone once the launcher exits.
+    if openrac_launcher_core::appimage::appdir().is_some_and(|appdir| root.starts_with(appdir)) {
+        return;
+    }
     let Ok(home) = std::env::var("HOME") else { return };
     let home_path = PathBuf::from(home);
     let icons_base = home_path.join(".local/share/icons/hicolor");
@@ -1024,8 +1265,8 @@ fn ensure_linux_game_desktop_integration(root: &std::path::Path) {
 
         let make_entry = |wm_class: &str, hidden: bool| {
             format!(
-                "[Desktop Entry]\nType=Application\nName={title}\nComment=Play {title} with OpenRAC\nExec=\"{}\"\nIcon={app_id}\nTerminal=false\nCategories=Game;\nStartupNotify=true\nStartupWMClass={wm_class}\n{}",
-                exe_path.to_string_lossy(),
+                "[Desktop Entry]\nType=Application\nName={title}\nComment=Play {title} with OpenRAC\nExec={}\nIcon={app_id}\nTerminal=false\nCategories=Game;\nStartupNotify=true\nStartupWMClass={wm_class}\n{}",
+                detect::desktop_exec(&exe_path),
                 if hidden { "NoDisplay=true\n" } else { "" }
             )
         };
@@ -1037,39 +1278,36 @@ fn ensure_linux_game_desktop_integration(root: &std::path::Path) {
     }
 
     if icons_changed {
-        let _ = std::process::Command::new("gtk-update-icon-cache").arg("-f").arg("-t").arg(&icons_base).status();
+        let _ = detect::quiet(Path::new("gtk-update-icon-cache")).arg("-f").arg("-t").arg(&icons_base).status();
     }
     if entries_changed || icons_changed {
-        let _ = std::process::Command::new("update-desktop-database").arg(&app_dir).status();
-        let _ = std::process::Command::new("kbuildsycoca6").status();
+        let _ = detect::quiet(Path::new("update-desktop-database")).arg(&app_dir).status();
+        let _ = detect::quiet(Path::new("kbuildsycoca6")).status();
     }
 }
 
-/// AppImageKit's AppRun unconditionally sets PYTHONHOME=$APPDIR/usr/ and
-/// PYTHONPATH=$APPDIR/usr/share/pyshared/:, which poisons any Python process
-/// started from the AppImage (both our carried python in resources/openrac/python
-/// and any system python). Clear them before anything runs.
+/// What an AppImage's AppRun hands over: its own PYTHONHOME, its own paths,
+/// its own libraries. They are of no use to anything the launcher starts (a
+/// Qt program told to look for its platform plugin in the AppImage's
+/// directories, which hold no Qt, stops with "Could not find the Qt platform
+/// plugin"), so they go. The launcher's own webview keeps the AppImage's
+/// libraries; everything else gets the system's (core/src/appimage.rs).
 #[cfg(target_os = "linux")]
-fn clean_appimage_python_env() {
-    if let Ok(appdir) = std::env::var("APPDIR") {
-        if std::env::var("PYTHONHOME").is_ok_and(|h| h.starts_with(&appdir)) {
-            std::env::remove_var("PYTHONHOME");
-        }
-        if std::env::var("PYTHONPATH").is_ok_and(|p| p.starts_with(&appdir)) {
-            std::env::remove_var("PYTHONPATH");
-        }
-    }
+fn clean_appimage_env() {
+    openrac_launcher_core::appimage::clean_process_env();
 }
 
-/// WebKitGTK's DMA-BUF renderer draws a blank or flickering window under Wayland with NVIDIA's
-/// own driver; the launcher turns it off there (and only there), before GTK starts. A value the
-/// player set is left as it is.
+/// What WebKitGTK needs turned off on this system, before GTK starts: its
+/// DMA-BUF renderer under Wayland with NVIDIA's own driver, and its
+/// accelerated compositing mode on a Steam Deck, where the window opens empty
+/// unless the launcher is started with WEBKIT_DISABLE_COMPOSITING_MODE=1. A
+/// value the player set is left as it is (core/src/webkit.rs).
 #[cfg(target_os = "linux")]
-fn tune_webkit_for_wayland() {
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists();
-    if wayland && nvidia && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+fn tune_webkit() {
+    for (name, value) in openrac_launcher_core::webkit::webkit_env() {
+        if std::env::var_os(name).is_none() {
+            std::env::set_var(name, value);
+        }
     }
 }
 
@@ -1090,16 +1328,94 @@ fn ensure_wayland_cursor_fallback() {
     }
 }
 
+/// Opens a path or a folder with the system's own program.
+///
+/// On Linux the program that opens it (xdg-open, and on KDE the Qt program it
+/// calls) would get the AppImage's environment, in which a Qt program cannot
+/// find its platform plugin and says so. So xdg-open is started here, with the
+/// system's environment instead of the AppImage's.
+#[cfg_attr(target_os = "linux", allow(unused_variables))]
+fn open_path_with_system(app: &AppHandle, path: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        open_with_system(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+    }
+}
+
+/// Opens a web page in the system's own browser, the way
+/// [`open_path_with_system`] opens a folder.
+#[cfg_attr(target_os = "linux", allow(unused_variables))]
+fn open_url_with_system(app: &AppHandle, url: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        open_with_system(url)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    }
+}
+
+/// Starts the system's own opener for a path or a link, in the environment the
+/// system expects: the AppImage's libraries are ours, not the system's.
+#[cfg(target_os = "linux")]
+fn open_with_system(target: &str) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(target);
+    openrac_launcher_core::appimage::sanitize(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("cannot start xdg-open: {e}"))?;
+    // Reaped when it ends (xdg-open hands over to the desktop's program and exits): a child
+    // that is not waited for stays a zombie until the launcher exits.
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// On a screen too small for the window (a 1080p screen at 150 % or 200 %), the window opens at
+/// what the screen has room for and can be made that small (core/src/window.rs).
+#[cfg(desktop)]
+fn fit_to_screen(window: &tauri::WebviewWindow) {
+    let (Ok(Some(monitor)), Ok(size)) = (window.current_monitor(), window.inner_size()) else { return };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area().size.to_logical::<f64>(scale);
+    let size = size.to_logical::<f64>(scale);
+    let floor =
+        window.config().app.windows.first().and_then(|w| w.min_width.zip(w.min_height)).unwrap_or((960.0, 560.0));
+    if let Some(((width, height), (min_width, min_height))) =
+        openrac_launcher_core::window::fit((size.width, size.height), floor, (area.width, area.height))
+    {
+        let _ = window.set_min_size(Some(tauri::LogicalSize::new(min_width, min_height)));
+        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+        let _ = window.center();
+    }
+}
+
 // On Android and iOS the launcher is a library the app's activity starts through this entry point.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
-    clean_appimage_python_env();
+    clean_appimage_env();
     #[cfg(target_os = "linux")]
-    tune_webkit_for_wayland();
+    tune_webkit();
     #[cfg(target_os = "linux")]
     ensure_wayland_cursor_fallback();
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default();
+    // A second start while the launcher is open shows the open one's window and goes. Registered
+    // first, as the plugin asks. Without it, on Linux the GTK application id (enableGTKAppId)
+    // handed the second start to the first launcher, which set its window up again and stopped:
+    // "a webview with label `main` already exists".
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+    let builder = builder.plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init());
     #[cfg(desktop)]
     let builder = builder.plugin(
         tauri_plugin_updater::Builder::new()
@@ -1123,6 +1439,7 @@ pub fn run() {
                 if let Some(icon) = app.default_window_icon() {
                     let _ = window.set_icon(icon.clone());
                 }
+                fit_to_screen(&window);
             }
 
             let config_file = app.path().app_config_dir().ok().map(|dir| dir.join("launcher.json"));
@@ -1162,10 +1479,20 @@ pub fn run() {
             // Apple silicon one): the launcher then works on a checkout, as it did.
             // On Android the copy is unpacked from the APK into the app's files (OpenracSetup.kt),
             // maybe still now: the page waits for it (tools_ready) before it reads anything there.
+            // `tauri dev` works on its checkout: a copy in its resources is a leftover of an
+            // installer built there, as old as that build (detect::leave_copy). OPENRAC_STANDALONE
+            // set makes a debug build an installed launcher, to try the copy.
+            let resources_copy = app.path().resource_dir().ok().and_then(|dir| detect::bundled_root(&dir));
+            let contributor = cfg!(debug_assertions) && std::env::var_os("OPENRAC_STANDALONE").is_none();
             let bundled = if Platform::current() == Platform::Android {
                 android::bundled_root()
+            } else if contributor {
+                if let Some(copy) = &resources_copy {
+                    detect::leave_copy(&mut config, copy, &start_folders());
+                }
+                None
             } else {
-                app.path().resource_dir().ok().and_then(|dir| detect::bundled_root(&dir)).filter(|dir| {
+                resources_copy.filter(|dir| {
                     detect::bundled_python(dir).is_some_and(|python| detect::check_tool(Tool::Python, &python).ok)
                 })
             };
@@ -1240,7 +1567,22 @@ pub fn run() {
             overrides_set_enabled,
             overrides_move,
             overrides_remove,
+            plugins_list,
+            plugins_set_enabled,
+            plugins_move,
+            plugins_set_setting,
+            plugins_remove,
+            plugins_install,
+            plugins_status,
+            plugins_preview,
+            plugins_install_remote,
+            plugins_check_updates,
+            plugins_update,
+            plugins_sources,
+            plugins_set_pin,
             open_game_folder,
+            open_output,
+            open_level_in_godot,
             reports_list,
             latest_crash,
             report_text,

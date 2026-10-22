@@ -19,10 +19,14 @@ The disc image is never written. The native port reads `patches.tsv` (its
 
 What it packs, for now: mobys that were moved, turned, scaled, given another
 class or other values (the `rc1_*` metadata), added (a copy made in Godot, or
-a class scene of the level dropped in) or deleted. Ties and shrubs are packed
+a class scene of the level dropped in) or deleted; the level's collision
+(collision_scene.py) and its moby classes' collision, edited in the class
+scenes (moby_collision_scene.py: a class's edit is every moby of that class
+in that level), both into the level data's core. Ties and shrubs are packed
 for the native port, as the files it draws them from (scenery.py:
-<out>/level_NN/placements.json). Terrain is a later step, as are classes the
-level does not have.
+<out>/level_NN/placements.json). The gameplay data (pvars, links, groups, volumes,
+paths, cameras, sounds, level settings) is gamedata.py's, called from pack_level. Terrain
+is a later step, as are classes the level does not have.
 
 A moby the scene has as the extractor wrote it keeps its bytes on the disc,
 so a scene nobody edited packs to nothing, and a level whose mobys were only
@@ -40,6 +44,7 @@ from pathlib import Path
 from disc import SECTOR
 from formats import FormatError, unpack
 from level import decoded, load_level
+import gamedata
 import gameplay as gp
 from mobys import (ALWAYS, FIELDS, POINTER, RECORD, SIZE, USUAL, matrix, moby_class_names,
                    moby_instances, node_name)
@@ -101,10 +106,16 @@ def scene_nodes(text: str, parent: str, kind: str) -> list[dict]:
         elif key.startswith("metadata/rc1_"):
             name, value = key[len("metadata/rc1_"):], value.strip()
             if value.startswith("["):
-                node["meta"][name] = [int(float(v)) for v in value.strip("[]").split(",") if v.strip()]
+                try:
+                    node["meta"][name] = [int(float(v)) for v in value.strip("[]").split(",") if v.strip()]
+                except ValueError:      # a list of names or a multi-line one (gamedata.py's)
+                    node["meta"][name] = value
             else:
-                number = float(value)
-                node["meta"][name] = int(number) if number == int(number) and "." not in value else number
+                try:
+                    number = float(value)
+                    node["meta"][name] = int(number) if number == int(number) and "." not in value else number
+                except (ValueError, OverflowError):     # text (a link's target) or not finite: gamedata.py's
+                    node["meta"][name] = value
     return nodes
 
 
@@ -168,7 +179,7 @@ def apply(node: dict, record: dict, original: dict | None, whole: bool, problems
         edits.append(f"class {record['class_id']} -> {node['class_id']}")
         record["class_id"] = node["class_id"]
     # rc1_class is the class scene's own; Godot saves it on each instance too.
-    meta = {k: v for k, v in node["meta"].items() if k not in ("index", "class")}
+    meta = {k: v for k, v in node["meta"].items() if k not in ("index", "class") and not gamedata.owns(k)}
     if original is None or not same_fields(meta, original["fields"]):
         for key in ALWAYS:
             if key in meta:
@@ -216,6 +227,7 @@ def pack_level(level_id: int, gameplay: bytes, scene: str) -> tuple[bytes, list[
 
     kept: dict[int, bytes] = {}
     added: list[tuple[dict, int | None]] = []          # the new moby's fields, the moby it takes after
+    added_names: list[str] = []                         # their nodes' names
     for node in nodes:
         index = index_of(node)
         try:
@@ -245,6 +257,7 @@ def pack_level(level_id: int, gameplay: bytes, scene: str) -> tuple[bytes, list[
             apply(node, record, None, index is not None, problems)
             record["pvar_index"] = source_pvar          # the copy gets a block of its own below
             added.append((record, model))
+            added_names.append(node["name"])
             changes.append(f"{node['name']}: added" + (f", after moby {model}" if model is not None else ""))
         except FormatError as e:
             problems.append(f"{node['name']}: {e}; not packed")
@@ -260,7 +273,8 @@ def pack_level(level_id: int, gameplay: bytes, scene: str) -> tuple[bytes, list[
         start, = unpack("<I", gameplay, POINTER)
         for index, record in kept.items():
             out[start + 0x10 + index * SIZE:start + 0x10 + (index + 1) * SIZE] = record
-        return bytes(out), changes, problems
+        # The gameplay data (pvars, links, volumes, paths, cameras...): gamedata.py.
+        return gamedata.pack_level(gameplay, bytes(out), scene, {owner[i]["name"]: i for i in kept}, changes, problems)
 
     # The table again: the mobys that stay, in their order, then the new ones.
     place = {old: new for new, old in enumerate(sorted(kept))}
@@ -314,7 +328,57 @@ def pack_level(level_id: int, gameplay: bytes, scene: str) -> tuple[bytes, list[
         start = gp.offset(gameplay, pointer)
         if start > 0 and new and gameplay[start:start + len(new)] != new:
             sections[pointer] = new
-    return gp.replace(gameplay, sections), changes, problems
+    numbering = {owner[old]["name"]: new for old, new in place.items()}
+    numbering.update({name: len(kept) + k for k, name in enumerate(added_names)})
+    return gamedata.pack_level(gameplay, gp.replace(gameplay, sections), scene, numbering, changes, problems)
+
+
+def pack_collision(disc, info: dict, scene: Path, text: str, out: Path, patches: list[str]) -> tuple[list[str], list[str]]:
+    """The level's collision and its moby classes' collision as the scene and the class scenes
+    have them: when they differ from the disc's, the level data's sectors that change (the core
+    data stream, and the core index when a block moved or the core grew) go to
+    OUT/level_NN/{core,index}_<version>.bin with their lines in PATCHES. Returns (changes, problems,
+    whether files were written)."""
+    import collision_scene
+    import moby_collision_scene
+    level_dir, project = scene.parent, scene.parents[2]
+    changes, problems = [], []
+    try:
+        found = collision_scene.scene_collision(project, level_dir, text)
+    except (FormatError, ValueError) as e:
+        found = None
+        problems.append(f"collision: {e}")
+    level = None
+    new = None
+    if found is not None:
+        level = load_level(disc, info)
+        try:
+            new, changes, more = collision_scene.pack_block(level.block(unpack("<I", level.index, 0x14)[0]), found)
+            problems += more
+        except FormatError as e:
+            problems += found["problems"] + [f"{e}; the collision is left as the disc has it"]
+    classes = {}
+    if not moby_collision_scene.unchanged_scenes(level_dir):
+        level = level or load_level(disc, info)
+        classes, class_changes, class_problems = moby_collision_scene.pack_classes(level, project, level_dir)
+        changes += class_changes
+        problems += class_problems
+    if new is None and not classes:
+        return changes, problems, False
+    core, index, notes = moby_collision_scene.core_with_classes(level.core, level.index, level, classes)
+    if new is not None:
+        at, = unpack("<I", level.index, 0x14)
+        core, index, more = collision_scene.core_with(core, index, at, len(level.block(at)), new)
+        notes += more
+    data = disc.sectors(info["ranges"]["data"]["lba"], info["ranges"]["data"]["sectors"])
+    runs = collision_scene.level_data_patches(data, core, index, level.index, compress)
+    name = f"level_{info['id']:02}"
+    for (offset, payload), kind in zip(runs, ["index", "core"] if len(runs) == 2 else ["core"]):
+        file = f"{name}/{kind}_{disc.version.key}.bin"
+        (out / name).mkdir(parents=True, exist_ok=True)
+        (out / file).write_bytes(payload)
+        patches.append(f"{info['ranges']['data']['lba'] + offset // SECTOR}\t{len(payload) // SECTOR}\t{file}")
+    return changes + notes, problems, True
 
 
 def pack(disc, survey: dict, project: Path, out: Path) -> tuple[int, int]:
@@ -338,6 +402,14 @@ def pack(disc, survey: dict, project: Path, out: Path) -> tuple[int, int]:
         placements, scenery_changes, scenery_problems = None, [], []
         if scenery.edited(gameplay, text):
             placements, scenery_changes, scenery_problems = scenery.pack_scenery(load_level(disc, info), text)
+        # Collision, the level's and its moby classes': the level data's core (collision_scene.py,
+        # moby_collision_scene.py), only when the scenes' differ.
+        collision_changes, collision_problems, wrote = pack_collision(disc, info, scene, text, out, patches)
+        scenery_changes += collision_changes
+        scenery_problems += collision_problems
+        if wrote:
+            packed += 0 if changes or placements is not None else 1
+            total += len(collision_changes)
         if changes or problems or scenery_changes or scenery_problems:
             report.append(f"level {info['id']:02}")
             report += [f"  {line}" for line in changes + scenery_changes]

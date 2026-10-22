@@ -6,7 +6,7 @@
 // (openrac_game, generated from port/game/<id>/hostgen.json).
 //
 //   openrac-<id> --data <install>/active/<game>/data [--cards DIR] [--frames N] [--stop-on-missing]
-//                [--level N] [--skip-movies] [--mods DIR] [--settings FILE]
+//                [--level N] [--skip-movies] [--mods DIR] [--settings FILE] [--plugins FILE] [--no-mods]
 //
 // The data folder is what the extractor made from the player's disc
 // (tools/extractor.py; the launcher's "Set up from your disc"). The program
@@ -47,6 +47,7 @@
 #include "common/crash.h"
 #include "common/log.h"
 #include "common/system_info.h"
+#include "mods.h"
 #ifdef OPENRAC_HAS_DISC
 #include "assets/disc/disc.h"
 #endif
@@ -63,6 +64,7 @@
 #include "settings.h"
 #include "openrac/sound_engine.h"
 #include "platform/audio.h"
+#include "platform/input.h"
 #include "platform/performance_hint.h"
 #include "platform/pump.h"
 #include "renderer/direct.h"
@@ -98,6 +100,11 @@ int (*openrac_game_camera_position)(float xyz[3]) = nullptr;
 int (*openrac_game_updating_moby)(openrac_game_moby* out) = nullptr;
 int (*openrac_game_hero)(float position[3], float rotation[3], int32_t* state) = nullptr;
 const openrac_front_end* openrac_game_front_end = nullptr;
+
+// The hook points of this disc's build, for mods (hostgen's hooks.c; mods.h's HookPoint is its
+// layout).
+extern const openrac::mods::HookPoint openrac_game_hook_points[];
+extern const int openrac_game_hook_point_count;
 }
 
 namespace {
@@ -115,6 +122,8 @@ struct Options {
     fs::path levels;  // the extracted levels the window draws (level_00, ...)
     fs::path mods;  // levels edited in Godot and packed (editor/pack.py), read in place of the disc's
     fs::path settings;  // the player's settings (settings.h); in OpenRAC's data folder unless given
+    fs::path plugins;   // the native mods' list (mods.h): <data>/plugins/plugins.json unless given
+    bool no_mods = false;  // purist mode: no native mod is loaded (docs/port/MODS.md)
     fs::path debug_dump;  // each frame's measurements, a JSON object a line (docs/port/DEBUGGING.md)
     bool debug_overlay = false;  // the debug overlay shown from the start (F3 shows and hides it)
     bool check_levels = false;  // read every extracted level as the window would, say what is wrong, and stop
@@ -139,7 +148,7 @@ std::string program_name() {
 [[noreturn]] void usage(const std::string& why) {
     log::error("{}", why);
     log::error(
-        "usage: {} --data <install>/active/{}/data [--cards DIR] [--frames N] [--stop-on-missing] [--level N] [--skip-movies] [--mods DIR] [--settings FILE] [--debug-overlay] [--debug-dump FILE]",
+        "usage: {} --data <install>/active/{}/data [--cards DIR] [--frames N] [--stop-on-missing] [--level N] [--skip-movies] [--mods DIR] [--settings FILE] [--plugins FILE] [--no-mods] [--debug-overlay] [--debug-dump FILE]",
         program_name(),
         openrac_game.game
     );
@@ -226,6 +235,10 @@ Options parse(int argc, char** argv) {
             o.mods = value();
         } else if (a == "--settings") {
             o.settings = value();
+        } else if (a == "--plugins") {
+            o.plugins = value();
+        } else if (a == "--no-mods") {
+            o.no_mods = true;
         } else if (a == "--levels") {
             o.levels = value();
         } else if (a == "--frames") {
@@ -265,6 +278,9 @@ Options parse(int argc, char** argv) {
     }
     if (o.settings.empty()) {
         o.settings = default_settings();
+    }
+    if (o.plugins.empty()) {
+        o.plugins = o.data / "plugins" / "plugins.json";
     }
     return o;
 }
@@ -321,6 +337,78 @@ void open_session(int argc, char** argv) {
     log::header(std::format("command   {}", command_line(argc, argv)));
     log::header(std::format("log       {}", level));
     log::header("=========================");
+}
+
+// The keyboard and mouse as a mod reads them (openrac_mod.h's openrac_input), from the frontend's
+// state for the tick about to run; null without a window.
+const openrac_input* mod_input() {
+#ifdef OPENRAC_FRONTEND
+    if (g_window) {
+        const frontend::KeyboardMouseView view = frontend::keyboard_mouse();
+        const auto* km = static_cast<const platform::KeyboardMouse*>(view.state);
+        if (km != nullptr) {
+            static openrac_input in{};
+            in.size = sizeof in;
+            in.tick = km->tick;
+            static_assert(sizeof in.keys == platform::kKeyCount);
+            std::memcpy(in.keys, km->keys.data(), sizeof in.keys);
+            in.mouse_held = km->mouse_held;
+            in.mouse_pressed = km->mouse_pressed;
+            in.mouse_dx = km->mouse_dx;
+            in.mouse_dy = km->mouse_dy;
+            in.wheel_x = km->wheel_x;
+            in.wheel_y = km->wheel_y;
+            in.focused = km->focused ? 1 : 0;
+            in.captured = km->captured ? 1 : 0;
+            in.overlay = view.overlay ? 1 : 0;
+            in.pointer_x = view.pointer_x;
+            in.pointer_y = view.pointer_y;
+            in.pointer_inside = view.pointer_inside ? 1 : 0;
+            return &in;
+        }
+    }
+#endif
+    return nullptr;
+}
+
+// The native mods the launcher's list has on (mods.h, docs/port/MODS.md), bound to this disc's hook
+// points (hostgen's hooks.c), once the game's functions are registered and before it runs; the
+// session header says which loaded.
+void load_mods() {
+    mods::Host host;
+    host.game = openrac_game.game;
+    host.version = game_version();
+    host.openrac_version = build_info::version();
+    host.hooks = openrac_game_hook_points;
+    host.hook_count = openrac_game_hook_point_count;
+    host.list = g_options.plugins;
+    host.purist = g_options.no_mods;
+    host.loaded_level = openrac_game_loaded_overlay;
+    host.pad_hook = &openrac_game_pad_report_hook;
+    host.scripts = openrac_game_script_binding();  // generated (sdk/tools/gen_binding.py), or none
+    host.input = mod_input;
+#ifdef OPENRAC_FRONTEND
+    host.take_input = [](std::uint32_t devices) {
+        if ((devices & OPENRAC_INPUT_KEYBOARD) != 0 && g_window) {
+            frontend::take_keyboard();
+        }
+    };
+    host.capture_mouse = [](bool capture) {
+        if (g_window) {
+            frontend::capture_mouse(capture);
+        }
+    };
+#endif
+    // "2026-10-21 14:02:11 +0200" as "2026-10-21T14:02:11+02:00".
+    char when[40];
+    crash::format_time(static_cast<long long>(std::time(nullptr)), crash::local_offset(), when, sizeof(when));
+    std::string now = when;
+    if (now.size() == 25) {
+        now = now.substr(0, 10) + "T" + now.substr(11, 8) + now.substr(20, 3) + ":" + now.substr(23, 2);
+    }
+    host.now = now;
+    log::header(std::format("mods      {}", mods::load(host)));
+    std::atexit([] { mods::unload(); });
 }
 
 // What a crash report says the game was doing (common/crash.h): sampled each frame.
@@ -599,6 +687,7 @@ int openrac_game_vsync(void) {
     audio_tick();
     sample_state();
     crash_test();
+    mods::frame();
     // The level being played, once per change: the launcher reads this line for Discord's presence.
     static int shown_level = OPENRAC_OVERLAY_EXE;
     static int shown_bolts = -1;
@@ -910,7 +999,7 @@ int openrac_game_play_movie(uint32_t lsn, uint32_t bytes, int channel, int start
         // Start skips when pressed during the movie: what is held as it starts is not a press.
         std::uint16_t buttons = 0xFFFF;
         std::uint8_t analog[4];
-        frontend::pad(0, &buttons, analog);
+        openrac_game_pad_through_mods(0, &buttons, analog);  // a mod's key bound to Start skips too
         if (blank == 0) {
             previous = buttons;
         }
@@ -997,14 +1086,6 @@ float openrac_game_picture_wider(void) {
     return 1.0f;
 }
 
-int openrac_game_strafe_mode(void) {
-#ifdef OPENRAC_FRONTEND
-    return static_cast<int>(settings::get().strafe);
-#else
-    return 0;
-#endif
-}
-
 int openrac_game_ui_quad(const openrac_game_ui_rect* quad) {
 #ifdef OPENRAC_FRONTEND
     if (g_window) {
@@ -1086,6 +1167,54 @@ static void log_pad(int port, const uint16_t* buttons, const uint8_t analog[4]) 
     std::memcpy(last_analog, analog, 4);
     log::verbose("frame {}: pad 0 buttons {:#06x} (active low), sticks {} {} {} {}", g_frame, *buttons, analog[0],
                  analog[1], analog[2], analog[3]);
+}
+
+// The pad's report as the pad library builds it (lib/pad.c's scePad2Read: buttons, the sticks,
+// twelve pressures), through the mods' callbacks, back into buttons and sticks: for the port's own
+// readers of the pad (the movie player), so a mod's keys skip a movie as the pad's Start does.
+static const unsigned kPressureBit[12] = {5, 7, 4, 6, 12, 13, 14, 15, 10, 11, 8, 9};
+
+static void report_from(uint16_t buttons, const uint8_t analog[4], uint8_t out[18]) {
+    out[0] = static_cast<uint8_t>(buttons);
+    out[1] = static_cast<uint8_t>(buttons >> 8);
+    std::memcpy(out + 2, analog, 4);
+    for (int n = 0; n < 12; ++n) {
+        out[6 + n] = (buttons >> kPressureBit[n]) & 1 ? 0 : 0xFF;
+    }
+}
+
+int openrac_game_pad_through_mods(int port, uint16_t* buttons, uint8_t analog[4]) {
+    const int connected = openrac_game_pad(port, buttons, analog);
+    if (openrac_game_pad_report_hook != nullptr) {
+        uint8_t report[18];
+        report_from(*buttons, analog, report);
+        openrac_game_pad_report_hook(port, report, 18);
+        openrac_game_pad_after_mods(port, report, 18);
+        *buttons = static_cast<uint16_t>(report[0] | (report[1] << 8));
+        std::memcpy(analog, report + 2, 4);
+    }
+    return connected;
+}
+
+void openrac_game_pad_after_mods(int port, uint8_t* report, int size) {
+#ifdef OPENRAC_FRONTEND
+    if (g_window && size >= 2) {
+        uint16_t buttons = static_cast<uint16_t>(report[0] | (report[1] << 8));
+        const uint16_t before = buttons;
+        frontend::skip_after_mods(port, buttons);
+        report[0] = static_cast<uint8_t>(buttons);
+        report[1] = static_cast<uint8_t>(buttons >> 8);
+        // What the skip pressed is pressed hard, as the pad library gives a pressed button.
+        for (int n = 0; n < 12 && 6 + n < size; ++n) {
+            if (((before & ~buttons) >> kPressureBit[n]) & 1) {
+                report[6 + n] = 0xFF;
+            }
+        }
+    }
+#endif
+    (void)port;
+    (void)report;
+    (void)size;
 }
 
 int openrac_game_pad(int port, uint16_t* buttons, uint8_t analog[4]) {
@@ -1375,6 +1504,7 @@ int main(int argc, char** argv) {
     }
 
     openrac_game_register_functions();
+    load_mods();
     openrac_guest_set_overlay_source(openrac_game_loaded_overlay);
     openrac_guest_set_level_programs(load_level_program);
     openrac_guest_stop_on_missing(g_options.keep_going ? 0 : 1);

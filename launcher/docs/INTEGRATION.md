@@ -57,23 +57,24 @@ say in the commit body what you ran, where, and what it printed at the end.
 
 One action:
 
-| Field         |                                                                       | Meaning                                                                                                                                                |
-| ------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`          | required                                                              | unique within its list; what the UI sends back                                                                                                         |
-| `label`       | required                                                              | the button's title, short ("Build")                                                                                                                    |
-| `description` |                                                                       | one or two sentences for players: what it does, how long, what it needs                                                                                |
-| `kind`        | required                                                              | `setup`, `build`, `check`, `play` or `edit`: the game page's section                                                                                   |
-| `state`       | default `planned`                                                     | see above                                                                                                                                              |
-| `program`     | for runnable states                                                   | `{python}`, `{godot}` or `{docker}` (the paths in Settings), a command on PATH (`bash`, `make`), or a path with placeholders (`{dir}/venv/bin/python`) |
-| `args`        |                                                                       | the arguments, one per string; placeholders allowed; never a shell line                                                                                |
-| `cwd`         | default: the version's folder, or the checkout for repository actions | relative to the checkout (`"."` for the checkout itself)                                                                                               |
-| `platforms`   | default: all                                                          | `linux`, `macos`, `windows`; the others' actions are tucked away                                                                                       |
-| `requires`    |                                                                       | what must be in place, each shown as a reason when missing: `disc`, `inputs`, `toolchains`, `python`, `godot`, `docker`, `artifact`                    |
-| `artifact`    |                                                                       | a file the action makes (a build) or needs (play the build), relative to the checkout; `{artifact}` in `args`                                          |
-| `detached`    | default false                                                         | start it and let it run (the game, an editor) instead of a job in Tasks                                                                                |
-| `docs`        |                                                                       | the document for this step, relative to the checkout (`#anchor` allowed); the Docs button opens it                                                     |
-| `todo`        | required while `planned`                                              | for contributors: what is left to do or check                                                                                                          |
-| `options`     | required with `{option}`                                              | the values `{option}` may take; the UI picks one, anything else is refused                                                                             |
+| Field         |                                                                       | Meaning                                                                                                                                                                                                                                      |
+| ------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | required                                                              | unique within its list; what the UI sends back                                                                                                                                                                                               |
+| `label`       | required                                                              | the button's title, short ("Build")                                                                                                                                                                                                          |
+| `description` |                                                                       | one or two sentences for players: what it does, how long, what it needs                                                                                                                                                                      |
+| `kind`        | required                                                              | `setup`, `build`, `check`, `play` or `edit`: the game page's section                                                                                                                                                                         |
+| `state`       | default `planned`                                                     | see above                                                                                                                                                                                                                                    |
+| `program`     | for runnable states                                                   | `{python}`, `{godot}` or `{docker}` (the paths in Settings), a command on PATH (`bash`, `make`), or a path with placeholders (`{dir}/venv/bin/python`)                                                                                       |
+| `args`        |                                                                       | the arguments, one per string; placeholders allowed; never a shell line                                                                                                                                                                      |
+| `cwd`         | default: the version's folder, or the checkout for repository actions | relative to the checkout (`"."` for the checkout itself)                                                                                                                                                                                     |
+| `platforms`   | default: all                                                          | `linux`, `macos`, `windows`; the others' actions are tucked away                                                                                                                                                                             |
+| `requires`    |                                                                       | what must be in place, each shown as a reason when missing: `disc`, `inputs`, `toolchains`, `python`, `godot`, `docker`, `artifact`                                                                                                          |
+| `artifact`    |                                                                       | a file the action makes (a build) or needs (play the build), relative to the checkout; `{artifact}` in `args`                                                                                                                                |
+| `output`      |                                                                       | the folder the action writes its results in, relative to the checkout or `{data}/...`: the job's start (`output`) and exit (`outputs`) name it, and `open_output` opens it. A tool names the exact folder on a line `openrac-output: <path>` |
+| `detached`    | default false                                                         | start it and let it run (the game, an editor) instead of a job in Tasks                                                                                                                                                                      |
+| `docs`        |                                                                       | the document for this step, relative to the checkout (`#anchor` allowed); the Docs button opens it                                                                                                                                           |
+| `todo`        | required while `planned`                                              | for contributors: what is left to do or check                                                                                                                                                                                                |
+| `options`     | required with `{option}`                                              | the values `{option}` may take; the UI picks one, anything else is refused                                                                                                                                                                   |
 
 Placeholders (anything else is rejected by the tests):
 
@@ -326,6 +327,33 @@ Settings refuses an older one. It never overwrites a project folder, so once
 one exists the page offers Open, not Extract. The other games carry a planned
 `editor-extract` that says what the editor lacks for them
 ([editor/README.md](../../editor/README.md)).
+
+**Gameplay mods** ([docs/port/MODS.md](../../docs/port/MODS.md)), native and
+script (`"type": "script"`, Luau files, interface 1.1, any platform), are not
+actions: the launcher manages them itself (`core/src/plugins.rs`), as it does
+the packs' order. Each is a folder in the game's set-up folder,
+`{data}/plugins/<id>/` with its `openrac-mod.json` (format 2), shared by the
+game's discs; `{data}/plugins/plugins.json` is the list the port reads at
+start (order, on or off, settings) and `{data}/plugins/status.json` what the
+port did with each. The launcher checks a mod by the same rules as the port's
+loader before Play (the disc, the mod interface, a library for this system,
+dependencies, conflicts) and shows the port's answer from the last start. Every
+`play` action names the list for the port, `--plugins {data}/plugins/plugins.json`,
+or, in Purist mode, `--no-mods` instead (`Action::plan`), so the port never
+guesses where the launcher keeps it: the same in an installed launcher, whose
+own folder is read-only, and in a checkout. A data pack added on the Mods tab still goes through
+`overrides-add`.
+
+Mods from a repository's address (`core/src/remote.rs`, MODS.md section 10):
+GitHub is read through its HTTPS API with `curl` (releases, the file list at
+the version read, the manifests); a native mod is its release's
+`<id>-<version>-<platform>.zip`, checked against `SHA256SUMS` and then
+installed as a .zip is; a script mod is its release's `<id>-<version>.zip`
+(checked) or the repository's files of its folder, at the release's tag or the
+newest commit, installed into the store; a data pack is the repository's
+files of its folder, handed to `overrides-add`. `{data}/plugins/sources.json` keeps each such mod's
+address, version, release, commit and pin, for the update check. Everything
+remote goes through the `Fetch` trait, which the tests answer from memory.
 
 ### 9. Release and CI
 

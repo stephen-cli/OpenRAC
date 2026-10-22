@@ -17,6 +17,7 @@
   } from "$lib/api";
   import { app, lookForUpdate, saveConfig } from "$lib/app.svelte";
   import { DISCORD_URL, PYTHON_URL, REPO_URL, SITE_URL } from "$lib/links";
+  import { PURIST } from "$lib/modsText";
 
   let { setup = false }: { setup?: boolean } = $props();
 
@@ -37,6 +38,7 @@
     "installDir",
     "layout",
     "discordRpc",
+    "purist",
     "checkUpdates",
     "updateChannel",
     "detailedGameLog",
@@ -344,6 +346,16 @@
         </span>
         <input type="checkbox" role="switch" class="switch" bind:checked={draft.discordRpc} />
       </label>
+      {#if !onAndroid}
+        <!-- No native mods on Android: they are libraries for the desktops (docs/port/MODS.md). -->
+        <label class="setting">
+          <span class="text">
+            <strong>{PURIST.title}</strong>
+            <small>{PURIST.settingsLine}</small>
+          </span>
+          <input type="checkbox" role="switch" class="switch" bind:checked={draft.purist} />
+        </label>
+      {/if}
     </section>
 
     <section class="panel">

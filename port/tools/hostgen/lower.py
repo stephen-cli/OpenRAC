@@ -118,6 +118,9 @@ class _Fn:
     record_params: set = field(default_factory=set)  # host names of parameters passed as records
     float_params: list = field(default_factory=list)
     wide: set = field(default_factory=set)           # locals kept 64-bit (returns_64)
+    wide_params: set = field(default_factory=set)    # parameters only passed on to 64-bit ones (widen_forwarded)
+    wide_result: bool = False                        # returns a "returns_64" call's result whole (widen_returns)
+    sibling_named: set = field(default_factory=set)  # folded functions the body also names by another place's name
 
 
 def _inner(n: dict) -> list:
@@ -579,13 +582,26 @@ class Unit:
         # A definition that returns nothing and ends in a call returns that call's result, as the
         # console's result register did (program.py, inherit_results).
         known = self.program.lookup(self.unit, sym)
+        widened = dict(getattr(known, "widened", None) or {}) if known is not None and not static else {}
+        if widened:
+            # Parameters the C only passes on to 64-bit ones (program.py widen_forwarded): 64-bit here, as the
+            # EE's register reaches the callee with all its bits.
+            sig_t = ctype.Func(sig_t.ret, tuple(ctype.Base(widened[i]) if i in widened else t
+                                               for i, t in enumerate(sig_t.params)), sig_t.variadic, sig_t.prototyped)
         inherits = known is not None and getattr(known, "inherits", False) and self.cls(sig_t.ret) == "void"
         if inherits:
+            sig_t = ctype.Func(known.sig.ret, sig_t.params, sig_t.variadic, sig_t.prototyped)
+        # A 32-bit result that is a "returns_64" call's result returned as it is: 64 bits (program.py widen_returns).
+        wide_result = known is not None and not static and getattr(known, "wide_result", False)
+        if wide_result:
             sig_t = ctype.Func(known.sig.ret, sig_t.params, sig_t.variadic, sig_t.prototyped)
         proto = self.signature(sym, sig_t, names, static)
         report = FnReport(sym, "translated")
         self.fn = _Fn(sym, sig_t, params, report=report)
+        self.fn.wide_params = {params[i].get("id") for i in widened if i < len(params)}
+        self.fn.wide_result = wide_result
         body = next(c for c in _inner(decl) if c.get("kind") == "CompoundStmt")
+        self.fn.sibling_named = self._sibling_named(body)
         if inherits:
             self.fn.tail_id = [s for s in _inner(body) if s.get("kind")][-1].get("id")
         local_types = self._local_types(body)
@@ -849,7 +865,9 @@ class Unit:
                 return [pad + "return;"]
             if self.cls(self.fn.sig.ret) == "void":
                 return [pad + f"{self.rv(kids[0])};", pad + "return;"]
-            return [pad + f"return {self.convert(kids[0], self.fn.sig.ret)};"]
+            value = (self._wide_value(kids[0], self.fn.sig.ret) if self.fn.wide_result
+                     else self.convert(kids[0], self.fn.sig.ret))
+            return [pad + f"return {value};"]
         if k == "IfStmt":
             kids = _inner(n)
             if n.get("hasInit") or n.get("hasVar"):
@@ -953,6 +971,47 @@ class Unit:
                 return self._callee_symbol(target) in getattr(self.program, "returns_64", ())
         return False
 
+    def _wide_value(self, n: dict, t: ctype.Type) -> str:
+        """N as the 64-bit value T that the EE's register holds: a "returns_64" call's result, a local kept 64-bit
+        or a widened parameter all their bits; an unsigned int or a pointer sign-extended from 32 bits, as every
+        32-bit load and operation leaves it (lui/ori, addiu, lw, addu), where C's conversion would zero-extend it: an
+        unsigned wide local's other values (RibbonTrailDraw's `color = (color & 0xFFFFFF) + (a << 24)` is
+        sign-extended in the register, where FastTweenColor's colour is zero-extended), a wide result's other return
+        values. Anything else converts as C converts it (a signed int: sign-extended already)."""
+        whole = self._wide_name(n)
+        if whole is not None:
+            return f"({self.host(ctype.strip_quals(t))})({whole})"
+        if self._sign_extends(n):
+            return f"({self.host(ctype.strip_quals(t))})(int32_t)({self.rv(n)})"
+        return self.convert(n, t)
+
+    def _sign_extends(self, n: dict) -> bool:
+        """N is an unsigned int or a pointer (not a "returns_64" call's result) that the EE keeps sign-extended in a
+        register, where C's conversion to 64 bits would zero-extend it (_wide_value). A signed or narrower value
+        converts as the register holds it already."""
+        if self._wide_call(n) or self._wide_name(n) is not None:
+            return False
+        if self.cls(self.ty(n)) == "ptr":
+            return True
+        r = self.resolve(self.ty(n))
+        return isinstance(r, ctype.Base) and r.name in ("unsigned int", "unsigned")
+
+    def _wide_name(self, n: dict) -> str | None:
+        """The host name of the local kept 64-bit (returns_64) or the widened parameter (widen_forwarded) that N reads
+        as it is: through parentheses, reads, NoOp casts and conversions between 32-bit integers, which are no
+        instruction on the EE. None for anything else."""
+        if self.fn is None or not (self.fn.wide or self.fn.wide_params):
+            return None
+        while _inner(n) and (n.get("kind") == "ParenExpr" or (n.get("kind") in ("ImplicitCastExpr", "CStyleCastExpr")
+                                                               and (n.get("castKind") in ("LValueToRValue", "NoOp")
+                                                                    or (n.get("castKind") == "IntegralCast"
+                                                                        and self._is_int32(self.ty(n)))))):
+            n = _inner(n)[0]
+        ref = n.get("referencedDecl", {}) if n.get("kind") == "DeclRefExpr" else {}
+        if ref.get("id") in self.fn.wide or ref.get("id") in self.fn.wide_params:
+            return self.fn.host.get(ref.get("id"))
+        return None
+
     def _is_int32(self, t: ctype.Type) -> bool:
         r = self.resolve(t)
         return isinstance(r, ctype.Base) and r.name in ("int", "signed int", "unsigned int", "unsigned")
@@ -962,20 +1021,24 @@ class Unit:
         returns = getattr(self.program, "returns_64", ())
         if not returns:
             return wide
+        # Locals the original keeps in a stack slot across calls (hostgen.json "spilled_locals"): GCC stores the
+        # 32-bit value it believes the result is (sw) and loads it back sign-extended (lw), so the 64 bits are gone.
+        spilled = set(getattr(self.program, "spilled_locals", {}).get(self.fn.name, ()))
         stack = [body]
         while stack:
             n = stack.pop()
             k = n.get("kind")
             if k == "VarDecl" and n.get("init") and n["id"] not in self.fn.memory and n.get("storageClass") not in ("static", "extern"):
                 init = [c for c in _inner(n) if c.get("kind") not in ("AlignedAttr", "AsmLabelAttr", "SectionAttr")]
-                if init and self._is_int32(self.ty(n)) and self._wide_call(init[0]):
+                if init and self._is_int32(self.ty(n)) and self._wide_call(init[0]) and n.get("name") not in spilled:
                     wide.add(n["id"])
             elif k == "BinaryOperator" and n.get("opcode") == "=":
                 a, b = _inner(n)
                 a = _strip_parens(a)
                 if a.get("kind") == "DeclRefExpr" and a["referencedDecl"].get("kind") == "VarDecl":
                     vid = a["referencedDecl"]["id"]
-                    if vid not in self.fn.memory and self._is_int32(self.ty(a)) and self._wide_call(b):
+                    if (vid not in self.fn.memory and self._is_int32(self.ty(a)) and self._wide_call(b)
+                            and a["referencedDecl"].get("name") not in spilled):
                         wide.add(vid)
             stack.extend(_inner(n))
         return wide
@@ -1012,6 +1075,8 @@ class Unit:
         fn.host[d["id"]] = name
         if d["id"] in fn.wide:
             t = ctype.Base("long long")
+            if init is not None and (self._sign_extends(init) or self._wide_name(init) is not None):
+                return [pad + f"{self.declare(t, name)} = {self._wide_value(init, t)};"]
         text = self.declare(t, name)
         if init is not None:
             text += f" = {self.initializer(init, t)}"
@@ -1142,7 +1207,19 @@ class Unit:
         child = _inner(n)[0]
         t = self.ty(n)
         if kind == "LValueToRValue":
+            wide = self._wide_param(child)
+            if wide is not None:
+                # A parameter made 64-bit for what it passes on (program.py widen_forwarded), read as its own C type
+                # where the C computes with it: the EE's 32-bit arithmetic and shifts read the register's low half
+                # (DrawFramedText's `(s32)color >> 24`, a sra).
+                return f"(({self.host(ctype.strip_quals(self.ty(child)))})({wide}))"
             return self.lv(child).text
+        if kind == "IntegralCast" and self._wide(t):
+            wide = self._wide_param(child)
+            if wide is not None:
+                # ... and whole where the C converts it to a 64-bit integer, which is no instruction on the EE
+                # (DrawFramedText's `(s64)color & ...`, an and of the register as the caller left it).
+                return f"(({self.host(ctype.strip_quals(t))})({wide}))"
         if kind == "ArrayToPointerDecay":
             if self._code_variable(child):
                 return self.function_value(child)
@@ -1236,7 +1313,13 @@ class Unit:
             sym = self._callee_symbol(n)
             named = self._folded_place_name(n, sym)
             address = self.code_address(named)
-            places = self._folded_places(sym) if named == sym and self.fn is not None else []
+            # A body that also names another place of the fold by that place's own name tells the
+            # places apart itself: the folded name is its own first place, which the code forms
+            # there (code_address). RegisterPartTypes stores 0x26AB10 and its copy 0x26B2B8
+            # (func_L00_0026B2B8) in entries 5 and 7, and its code forms 0x26B2B8 first: the k-th
+            # formation of any place put 0x26B2B8 in entry 5.
+            sibling = self.fn is not None and sym in self.fn.sibling_named
+            places = self._folded_places(sym) if named == sym and self.fn is not None and not sibling else []
             own_size = getattr(self.program, "sizes", {}).get(self.fn.name) or 0 if places else 0
             if places and own_size:
                 # A name the catalogue folded, whose places in one program are other functions (each
@@ -1273,16 +1356,36 @@ class Unit:
         places = places + [p for p in getattr(self.program, "splits", {}).get(sym, []) if p not in places]
         level = self._shared_level()
         copy = self._copy_places()
+        rel = getattr(self.program, "relocate", None)
+        if copy is not None and places[0][0] < 0 and rel and rel[0] <= places[0][1] < rel[1]:
+            home, canon, size = copy
+            mine = [a for o, a in places if o == home]
+            if mine:
+                # An executable function taken by name in code written for a level: the executable's
+                # address is level code while that runs (the level's program overwrites it there). The
+                # place the code forms in its level, and in another level's copy the same instructions'
+                # (guest.h); of a function the catalogue folded (one name for small routines at several
+                # places, the `return 0` leaf func_001E97C8), whichever of them this code forms. Where no
+                # copy forms one: a function with one place there is that place relocated
+                # (OPENRAC_LCODE), a folded one the executable's address (level 18 has nothing at level
+                # 0's first place of func_001E9768).
+                self.fn.uses_self = True
+                fallback = f"OPENRAC_LCODE({home}, {hexaddr(mine[0])})" if len(mine) == 1 else hexaddr(places[0][1])
+                return (f"openrac_code_formed({home}, {hexaddr(canon)}, {size}u, openrac_self_, {hexaddr(mine[0])}, "
+                        f"{fallback})")
         if copy is not None and places[0][0] >= 0:
             # One C for copies at several places: the address this copy forms (guest.h).
             home, canon, size = copy
             own = next((a for o, a in places if o == home), places[0][1])
             self.fn.uses_self = True
             return f"openrac_code_in_copy({home}, {hexaddr(canon)}, {size}u, openrac_self_, {hexaddr(own)})"
-        if level is not None and (places[0][0] >= 0 or any(o == level for o, _ in places)):
+        if level is not None and (places[0][0] >= 0 or sum(o == level for o, _ in places) == 1):
             # An executable function the levels' programs also carry (its catalogue places)
             # counts as theirs here: the copy in the level loaded, as the level's own
-            # instruction forms it, not the executable's address under the level program.
+            # instruction forms it, not the executable's address under the level program. Not
+            # one the catalogue folds at several places of a level (func_001E9768, an empty
+            # routine at 43 places of level 0): which of them is the copy's own is not known
+            # here, and level 18 has none at level 0's first; the executable's does the same.
             own = next((a for o, a in places if o == level), places[0][1])
             return f"OPENRAC_LCODE({level}, {hexaddr(own)})"
         # A function of one level only: the place of the other in that level (its program is
@@ -1323,6 +1426,25 @@ class Unit:
         overlay = named[0][0]
         folded = [p for p in self.program.code_places(sym) if p[0] == overlay]
         return raw if len(folded) > 1 and named[0] in folded else sym
+
+    def _sibling_named(self, body: dict) -> set:
+        """The folded functions whose address the body also takes by the name of another of their
+        places in one program (_folded_place_name): it tells their places apart itself."""
+        out: set = set()
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if not isinstance(n, dict):
+                continue
+            if n.get("kind") == "DeclRefExpr" and (n.get("referencedDecl") or {}).get("kind") == "FunctionDecl":
+                try:
+                    sym = self._callee_symbol(n)
+                    if self._folded_place_name(n, sym) != sym:
+                        out.add(sym)
+                except (KeyError, AttributeError):
+                    pass
+            stack.extend(c for c in n.get("inner", ()) if isinstance(c, dict))
+        return out
 
     def _callee_symbol(self, ref: dict) -> str:
         d = self.decls.get(ref["referencedDecl"]["id"])
@@ -1388,7 +1510,7 @@ class Unit:
             lv = self.lv(a)
             sa = _strip_parens(a)
             if sa.get("kind") == "DeclRefExpr" and sa["referencedDecl"].get("id") in self.fn.wide:
-                return f"({lv.text} = {self.convert(b, ctype.Base('long long'))})"
+                return f"({lv.text} = {self._wide_value(b, ctype.Base('long long'))})"
             return f"({lv.text} = {self.convert(b, self.ty(a))})"
         if op in ("+", "-"):
             ta, tb = self.ty(a), self.ty(b)
@@ -1724,10 +1846,18 @@ class Unit:
         if c.get("kind") == "ImplicitCastExpr" and c.get("castKind") == "BuiltinFnToFnPtr":
             return self.builtin_call(_strip_parens(_inner(c)[0]), args)
         named = None  # the function a call by name reaches through a code address
+        wide_ret = None
         if c.get("kind") == "ImplicitCastExpr" and c.get("castKind") == "FunctionToPointerDecay":
             target = _strip_parens(_inner(c)[0])
             if target.get("kind") == "DeclRefExpr" and target["referencedDecl"].get("kind") == "FunctionDecl":
                 sym = self._callee_symbol(target)
+                if sym in getattr(self.program, "returns_64", ()):
+                    # A function returning 64 bits that this unit declares int (hostgen.json
+                    # "returns_64"): called through a code address below, it keeps them as a direct
+                    # call does (EnvMapA_Draw's GetEffectTex TEX0 in the copy at 0x2EB460).
+                    own_f = self.program.lookup(self.unit, sym)
+                    if own_f is not None:
+                        wide_ret = self._canon_type(own_f.sig.ret)
                 named = sym
                 # Calls to a folded function and to the variants split off it (split_places.tsv)
                 # are counted together, in the order they come: retail's k-th call to any of the
@@ -1735,7 +1865,23 @@ class Unit:
                 # a function calling three variants before the function itself took its call for the
                 # first variant's: the frame draw ran draw callback list 3 in place of list 1, and
                 # no list-1 callback (the nanotech crates' sphere among them) was ever drawn.
-                parent = getattr(self.program, "split_parent", {}).get(sym, sym)
+                # An executable function whose level copies are variants (split_places.tsv's fourth
+                # column: the variant's twin) is called by its own name and counts with them, in the
+                # family of the first function its variant was split off (a variant may be split off
+                # a variant): the frame draw (func_001F3D78) calls func_00234F40 and func_00234EE0,
+                # whose level copies the catalogue folds into AA_BlurPass (func_001FB848), eight
+                # times before AA_BlurPass; counted without them, AA_BlurPass took the first of those
+                # jals, and in every level the port ran func_00234F40's copy (a packet call) in
+                # place of the blur pass.
+                split_parent = getattr(self.program, "split_parent", {})
+                twin = getattr(self.program, "split_twin", {}).get(sym)
+                if twin is None:
+                    parent = split_parent.get(sym, sym)
+                else:
+                    parent, seen = twin, {twin}
+                    while parent in split_parent and split_parent[parent] not in seen:
+                        parent = split_parent[parent]
+                        seen.add(parent)
                 family_k = None
                 if self.fn is not None and parent in getattr(self.program, "splits", {}):
                     family = getattr(self.fn, "family_calls", None)
@@ -1817,8 +1963,25 @@ class Unit:
                     if family_k is not None:
                         k = family_k
                     own_size = getattr(self.program, "sizes", {}).get(self.fn.name) or 0
+                    copies = self._copies_in_one_program()
+                    own = self._own_address()
+                    if copies is not None and self._shared_level() is not None:
+                        # This function is several levels' code and has more than one copy in some
+                        # program, each calling its own place (level 7's two func_L00_002E0490 call
+                        # AddDrawCallback's places 0x2214C8 and 0x2216D0): the k-th call of the copy
+                        # that runs, when it was called through its code address (guest.h).
+                        self.fn.uses_self = True
+                        own = f"(openrac_self_ != 0 ? openrac_self_ : {own})"
                     fp = (f"openrac_folded_call((const uint32_t[]){{{literal}}}, {len(places)}, "
-                          f"{self._own_address()}, {own_size}u, {k})")
+                          f"{own}, {own_size}u, {k})")
+                    if copies is not None and self._shared_level() is None:
+                        # This function is itself one of several copies in one level's program, and a
+                        # copy may call another function at that place than the first copy does (Drek's
+                        # Fleet's third window-glass callback calls a reflection helper of its own): the
+                        # function the running copy's own call goes to (guest.h).
+                        home, canon, size = copies
+                        self.fn.uses_self = True
+                        fp = f"openrac_call_in_copy({home}, {hexaddr(canon)}, {size}u, openrac_self_, {fp})"
             else:
                 fp = self.function_value(target)
         else:
@@ -1830,6 +1993,8 @@ class Unit:
             raise Unsupported("a call through something that is not a function pointer")
         hostft = ctype.Func(self._canon_type(ft.ret), tuple(self._canon_type(p) for p in ft.params),
                             ft.variadic, ft.prototyped)
+        if wide_ret is not None and self.cls(hostft.ret) == "int" and self.cls(wide_ret) == "int":
+            hostft = ctype.Func(wide_ret, hostft.params, hostft.variadic, hostft.prototyped)
         recast = self._recast_call(c, ft, args, result_t, fp)
         if recast is not None:
             return recast
@@ -1862,6 +2027,14 @@ class Unit:
         classes = [self._arg_class(a) for a in args]
         pcls = [("agg" if self.sig_cls(p) == "rec" else self._reg_class(self.sig_cls(p))) for p in sig.params]
         if "agg" in classes or "agg" in pcls or any(self.cls(p) == "valist" for p in sig.params):
+            return None
+        if self._folded_places(sym) and any(classes.count(k) > pcls.count(k) for k in ("i", "f")):
+            # A name the catalogue folded (a small wrapper at several places of one program, each
+            # calling another function): its definition is one of them, and a call site that passes
+            # more of a kind than that one takes calls another, whose type is the call site's.
+            # PartType74Update's colour tween goes through a place of func_L00_00237B70 with
+            # (float, int, int); as the folded definition's (void *) the tween got neither the
+            # fraction nor the second colour, and the fraction's IntToFloat never ran.
             return None
         result_cls = self.cls(result_t)
         ret_cls = self.sig_cls(sig.ret)
@@ -2172,7 +2345,59 @@ class Unit:
             raise Unsupported("a va_list passed as a game pointer, or the other way round")
         if c in ("rec", "valist"):
             return self.rv(a)
-        return self._cast_to(self.rv(a), p)
+        if self.fn is not None and self.fn.wide_params and self._wide(p):
+            # A parameter of the function's own that it only passes on (widen_forwarded): all 64 bits, unchanged,
+            # whatever casts the C puts around it.
+            n = a
+            while n.get("kind") in ("ImplicitCastExpr", "CStyleCastExpr", "ParenExpr") and _inner(n):
+                n = _inner(n)[0]
+            ref = n.get("referencedDecl", {}) if n.get("kind") == "DeclRefExpr" else {}
+            if ref.get("id") in self.fn.wide_params and ref.get("id") in self.fn.host:
+                return self._cast_to(self.fn.host[ref["id"]], p)
+        v = self.rv(a)
+        if (self._wide(p) and self.cls(self.ty(a)) in ("int", "ptr") and not self._wide(self.ty(a))
+                and not self._names_a_variable(a) and not self._wide_call(a)):
+            # A 32-bit value (an int, an unsigned, a pointer: the call site's own type) that the
+            # call computes or loads, where the definition takes 64 bits: on the EE the register
+            # holds it sign-extended, as every 32-bit load and operation leaves it (rac1:
+            # FontPrintWindow hands its colour on as a `void *` loaded from a table to FontPrint's
+            # u64, 0x80FFA888 is 0xFFFFFFFF80FFA888 there). A variable or parameter passed as it is
+            # keeps whatever its register held, as the port carries it (a TEX0 the matching C keeps
+            # in an int, a parameter passed on); so does a call of a "returns_64" function (all its
+            # bits: Effect_DrawEntryList(..., GetEffectTex(0x2C), ...)).
+            v = f"(int32_t)({v})"
+        return self._cast_to(v, p)
+
+    def _wide_param(self, n: dict) -> str | None:
+        """The host name of the widened parameter (widen_forwarded) N reads, through parentheses, NoOp casts
+        and the read itself; None for anything else."""
+        if self.fn is None or not self.fn.wide_params:
+            return None
+        while (n.get("kind") == "ParenExpr" or (n.get("kind") in ("ImplicitCastExpr", "CStyleCastExpr")
+                                                 and n.get("castKind") in ("LValueToRValue", "NoOp"))) and _inner(n):
+            n = _inner(n)[0]
+        ref = n.get("referencedDecl", {}) if n.get("kind") == "DeclRefExpr" else {}
+        if ref.get("id") in self.fn.wide_params and ref.get("id") in self.fn.host:
+            return self.fn.host[ref["id"]]
+        return None
+
+    def _names_a_variable(self, a: dict) -> bool:
+        """The argument is a variable or parameter by name (through casts and parentheses)."""
+        n = a
+        while n.get("kind") in ("ImplicitCastExpr", "CStyleCastExpr", "ParenExpr") and _inner(n):
+            n = _inner(n)[0]
+        return n.get("kind") == "DeclRefExpr" and n.get("referencedDecl", {}).get("kind") in ("VarDecl", "ParmVarDecl")
+
+    _WIDE_INTS = frozenset({"long long", "long long int", "unsigned long long", "unsigned long long int",
+                            "signed long long", "signed long long int"})
+
+    def _wide(self, t: ctype.Type) -> bool:
+        """An integer type of 64 bits (the EE's long, long long and their typedefs)."""
+        r = self.resolve(t)
+        if self.cls(r) != "int" or not isinstance(r, ctype.Base):
+            return False
+        k = r.name if r.name in ctype.INT_NAMES else canon(r, self.program.typedefs if self.program else None)
+        return k in self._WIDE_INTS
 
     def _cast_to(self, v: str, p: ctype.Type) -> str:
         canon = self.canon(p)

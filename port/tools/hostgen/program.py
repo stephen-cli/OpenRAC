@@ -73,6 +73,14 @@ class Function:
     declared: list = field(default_factory=list)  # signatures seen in declarations
     tail: str | None = None     # a definition returning nothing that ends in a call: the function called
     inherits: bool = False      # its result is that call's (inherit_results): sig.ret is the callee's
+    # parameter index -> the (callee, integer argument number) its value is only ever passed on to, unchanged
+    # (forwarded_params); widen_forwarded makes such a parameter 64-bit where every one of them takes 64 bits
+    forwards: dict = field(default_factory=dict)
+    widened: dict = field(default_factory=dict)  # parameter index -> the 64-bit type it was given
+    # the functions whose result a `return` statement hands back as it is (returned_calls); widen_returns makes a
+    # 32-bit result 64-bit where one of them is "returns_64"
+    returns: tuple = ()
+    wide_result: bool = False   # its result was made 64-bit so (widen_returns): sig.ret is the 64-bit type
 
 
 @dataclass
@@ -83,11 +91,14 @@ class Program:
     sizes: dict[str, int] = field(default_factory=dict)  # catalogued symbol -> bytes
     splits: dict[str, list] = field(default_factory=dict)  # symbol -> places split off to variants
     split_parent: dict[str, str] = field(default_factory=dict)  # a variant -> the symbol it was split from
+    split_twin: dict[str, str] = field(default_factory=dict)  # an executable function -> the variant at its level copies
     symbols: dict[str, int] = field(default_factory=dict)  # other named globals -> address
     typedefs: dict[str, set] = field(default_factory=dict)  # name -> desugared type strings
     host: set = field(default_factory=set)  # functions the port writes by hand (port/game/<game>/)
     from_assembly: set = field(default_factory=set)  # C left out for C from the instructions (hostgen.json "from_assembly")
     wrap: set = field(default_factory=set)  # translated as <name>__game, called by a host <name>
+    wrap_host: set = field(default_factory=set)  # with a `wrap` row: a hook point among them is <name>__hooked
+    hook: dict = field(default_factory=dict)  # hook points (in wrap too): symbol -> its name for mods
     aliases: dict = field(default_factory=dict)  # (unit, name) -> symbol, from labels Clang refused
     by_place: dict = field(default_factory=dict)  # (overlay, address) -> the symbol defined there
     groups: list = field(default_factory=list)  # [{"path", "suffix", "overlay"}]: separate programs
@@ -301,6 +312,290 @@ def tail_call(decl: dict, by_id: dict) -> str | None:
     return symbol_of(d) if d is not None else ref.get("name")
 
 
+_CASTS = ("ImplicitCastExpr", "CStyleCastExpr", "ParenExpr")
+
+
+def forwarded_params(decl: dict, by_id: dict) -> dict:
+    """Parameter index -> [(callee symbol, k)] for each 32-bit integer or pointer parameter that the definition only
+    ever passes on, as it is (through casts and parentheses), as the k-th integer argument of direct calls: the EE
+    passes such a register on with all its 64 bits, whatever type the C gives it (widen_forwarded).
+
+    Two other uses leave the register's meaning the same once the parameter is 64-bit (lower.py reads it so,
+    _param_use): a conversion of a signed 32-bit parameter to a 64-bit integer, which GCC makes no instruction for
+    (the register is taken as sign-extended), so it takes all 64 bits; and an operand of 32-bit arithmetic or a
+    shift (addu, subu, mult, div, sll, sra, ...), which reads the register's low half. DrawFramedText (rac1,
+    func_00201A38) does all three with its `s32 color`: `sra $16, $19, 24` for `(s32)color >> 24`, `and $6, $19,
+    $6` for `(s64)color & (s64)(s32)0xFF000000` and the colour passed on to FontPrintCenter's u64; its caller
+    hands it FastTweenColor's zero-extended colour (0x00000000802020B2), which both FontPrintCenter calls get whole.
+    A comparison, a bitwise operator on 32 bits (and/or/xor take the whole register) or any other use: the
+    parameter keeps its type."""
+    params = [c for c in decl.get("inner", ()) if c.get("kind") == "ParmVarDecl"]
+    body = next((c for c in decl.get("inner", ()) if c.get("kind") == "CompoundStmt"), None)
+    if not params or body is None:
+        return {}
+    index = {p.get("id"): i for i, p in enumerate(params)}
+    out: dict[int, list] = {}
+    bad: set[int] = set()
+
+    def arg_class(a: dict) -> str:
+        try:
+            t = parse_type(a)
+        except Exception:  # noqa: BLE001
+            return "?"
+        if isinstance(t, ctype.Base) and t.name in ("float", "double", "long double"):
+            return "f"
+        if isinstance(t, ctype.Base) and (t.name.startswith("struct ") or t.name.startswith("union ")):
+            return "?"
+        return "i"
+
+    def forwarded(n: dict) -> int | None:
+        """The parameter an argument names, through casts and parentheses."""
+        while n.get("kind") in _CASTS and n.get("inner"):
+            n = n["inner"][0]
+        ref = n.get("referencedDecl") or {}
+        return index.get(ref.get("id")) if n.get("kind") == "DeclRefExpr" else None
+
+    signed32 = set()
+    for i, p in enumerate(params):
+        try:
+            t = parse_type(p)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(t, ctype.Base) and t.name in SIGNED32:
+            signed32.add(i)
+
+    up: list[dict] = []     # the ancestors of the node walk() is at, the nearest last
+
+    def walk(n: dict) -> None:
+        if n.get("kind") == "CallExpr" and n.get("inner"):
+            callee = n["inner"][0]
+            while callee.get("kind") in ("ImplicitCastExpr", "ParenExpr") and callee.get("inner"):
+                callee = callee["inner"][0]
+            ref = callee.get("referencedDecl") or {}
+            d = by_id.get(ref.get("id")) if callee.get("kind") == "DeclRefExpr" and ref.get("kind") == "FunctionDecl" else None
+            args = n["inner"][1:]
+            classes = [arg_class(a) for a in args]
+            ordinal = 0
+            up.append(n)
+            for a, c in zip(args, classes):
+                i = forwarded(a)
+                if i is not None:
+                    if d is None or c != "i" or "?" in classes:
+                        bad.add(i)
+                    else:
+                        out.setdefault(i, []).append((symbol_of(d), ordinal))
+                    if c == "i":
+                        ordinal += 1
+                    continue
+                if c == "i":
+                    ordinal += 1
+                walk(a)
+            walk(n["inner"][0])
+            up.pop()
+            return
+        if n.get("kind") == "DeclRefExpr":
+            i = index.get((n.get("referencedDecl") or {}).get("id"))
+            if i is not None and _param_use(up, i in signed32) is None:
+                bad.add(i)          # any other use: the value's own type counts
+            return
+        up.append(n)
+        for c in n.get("inner", ()):
+            walk(c)
+        up.pop()
+
+    walk(body)
+    result = {}
+    for i, targets in out.items():
+        if i in bad:
+            continue
+        try:
+            t = parse_type(params[i])
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(t, ctype.Ptr) or (isinstance(t, ctype.Base) and t.name in WIDENABLE):
+            result[i] = targets
+    return result
+
+
+# 32-bit arithmetic and shifts: the EE's instructions for them read the low 32 bits of their registers
+NARROW_OPS = {"+", "-", "*", "/", "%", "<<", ">>"}
+SIGNED32 = {"int", "signed int", "signed"}
+
+
+def _param_use(up: list[dict], signed32: bool) -> str | None:
+    """How a use of a parameter (its DeclRefExpr under the ancestors UP, the nearest last) reads the register once
+    the parameter is 64-bit (forwarded_params): "wide" (converted to a 64-bit integer, all 64 bits: only for a
+    signed 32-bit parameter, whose conversion is no instruction), "narrow" (an operand of 32-bit arithmetic or a
+    shift, through casts to integers of 32 bits or fewer: the low half), None (any other use)."""
+    k = len(up) - 1
+    while k >= 0 and up[k].get("kind") in _CASTS:
+        n = up[k]
+        cast = n.get("castKind")
+        if n.get("kind") != "ParenExpr" and cast not in ("LValueToRValue", "NoOp"):
+            if cast != "IntegralCast":
+                return None
+            try:
+                t = parse_type(n)
+            except Exception:  # noqa: BLE001
+                return None
+            if not isinstance(t, ctype.Base):
+                return None
+            if t.name in WIDE:
+                return "wide" if signed32 else None
+            if t.name not in WIDENABLE or t.name == "gaddr":
+                return None
+        k -= 1
+    if k < 0:
+        return None
+    parent = up[k]
+    if parent.get("kind") != "BinaryOperator" or parent.get("opcode") not in NARROW_OPS:
+        return None
+    try:
+        t = parse_type(parent)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(t, ctype.Ptr) or (isinstance(t, ctype.Base) and t.name in WIDENABLE and t.name != "gaddr"):
+        return "narrow"
+    return None
+
+
+WIDENABLE = {"int", "signed int", "signed", "unsigned int", "unsigned", "short", "short int", "signed short",
+             "unsigned short", "unsigned short int", "signed char", "unsigned char", "char", "gaddr"}
+WIDE = {"long long", "long long int", "unsigned long long", "unsigned long long int", "signed long long",
+        "signed long long int"}
+
+
+def int_params(sig: Signature, typedefs: dict | None) -> list[tuple[int, str | None]]:
+    """(parameter index, canonical type) of a signature's integer and pointer parameters, in order (the EE's
+    integer argument registers)."""
+    out = []
+    for i, p in enumerate(sig.params):
+        c = canon(p, typedefs)
+        if c in ("float", "double", "long double"):
+            continue
+        out.append((i, c))
+    return out
+
+
+def widen_forwarded(program: Program) -> list[str]:
+    """A parameter that a definition only passes on unchanged (forwarded_params) to callees whose parameter there is
+    64-bit takes 64 bits itself: on the EE the register reaches the callee with all its bits, whatever type the C
+    gives it in between (rac1: FontPrintCenter's `int c`, the colour, goes to FontPrint's u64; callers hand it a
+    sign-extended int). Its type becomes the callee's (the first one's), in the program's signature (what callers
+    are matched to) and in the definition (lower.py); through chains of such functions too. Not for the port's own
+    host or wrapped functions (their signatures are the port's). Returns "symbol: parameter index" of each one."""
+    changed = []
+    again = True
+    while again:
+        again = False
+        for f in program.functions.values():
+            if not f.forwards or f.symbol in program.host or f.symbol in program.wrap or not f.sig.prototyped:
+                continue
+            for i, targets in f.forwards.items():
+                if i in f.widened or i >= len(f.sig.params):
+                    continue
+                types = []
+                for sym, k in targets:
+                    g = program.functions.get(sym)
+                    ip = int_params(g.sig, program.typedefs) if g is not None and g.sig.prototyped else []
+                    if k >= len(ip) or ip[k][1] not in WIDE:
+                        types = []
+                        break
+                    types.append(ip[k][1])
+                if not types:
+                    continue
+                params = list(f.sig.params)
+                params[i] = ctype.Base(types[0])
+                f.sig = Signature(f.sig.ret, tuple(params), f.sig.variadic, f.sig.prototyped)
+                f.widened[i] = types[0]
+                changed.append(f"{f.symbol}: parameter {i + 1} ({types[0]})")
+                again = True
+    return changed
+
+
+# A function result the EE keeps 32-bit in its register (sign-extended): what widen_returns may make 64-bit
+RESULT32 = {"int", "signed int", "signed", "unsigned int", "unsigned", "gaddr"}
+
+
+def returned_calls(decl: dict, by_id: dict) -> tuple:
+    """The functions (symbols) whose result a definition's `return` statements hand back as it is: the value is a
+    direct call's result, through parentheses and conversions that are no instruction on the EE (between 32-bit
+    integers and pointers). The callee's register reaches the caller with all its bits, whatever type the C gives it
+    (widen_returns)."""
+    body = next((c for c in decl.get("inner", ()) if c.get("kind") == "CompoundStmt"), None)
+    if body is None:
+        return ()
+    out = []
+    stack = [body]
+    while stack:
+        n = stack.pop()
+        if n.get("kind") != "ReturnStmt":
+            stack.extend(n.get("inner", ()))
+            continue
+        v = (n.get("inner") or [None])[0]
+        while v is not None and v.get("kind") in _CASTS and v.get("inner"):
+            cast = v.get("castKind")
+            if v.get("kind") != "ParenExpr" and cast not in ("NoOp", "LValueToRValue", "BitCast", "IntegralToPointer",
+                                                             "PointerToIntegral", "IntegralCast"):
+                v = None
+                break
+            if cast in ("IntegralCast", "IntegralToPointer", "PointerToIntegral"):
+                try:
+                    t = parse_type(v)
+                except Exception:  # noqa: BLE001
+                    v = None
+                    break
+                if not (isinstance(t, ctype.Ptr) or (isinstance(t, ctype.Base) and t.name in RESULT32)):
+                    v = None    # a narrower or a 64-bit conversion is an instruction (seh, dsll32 ...)
+                    break
+            v = v["inner"][0]
+        if v is None or v.get("kind") != "CallExpr" or not v.get("inner"):
+            continue
+        callee = v["inner"][0]
+        while callee.get("kind") in ("ImplicitCastExpr", "ParenExpr") and callee.get("inner"):
+            callee = callee["inner"][0]
+        ref = callee.get("referencedDecl") or {}
+        d = by_id.get(ref.get("id")) if callee.get("kind") == "DeclRefExpr" and ref.get("kind") == "FunctionDecl" else None
+        if d is not None and symbol_of(d) not in out:
+            out.append(symbol_of(d))
+    return tuple(out)
+
+
+def widen_returns(program: Program) -> list[str]:
+    """A definition with a 32-bit result that returns the result of a "returns_64" function as it is (returned_calls)
+    returns 64 bits itself: on the EE the callee's register is the caller's result, all its bits, whatever type the C
+    gives it in between (rac1: Pause_GetFadeColor `return FastTweenColor(...)`, an int, is the zero-extended packed
+    colour 0x0000000080FFA888 that Pause_DrawDescriptionBox and DrawMenuItemList pass on to FontPrintWindow's and
+    FontPrint's 64-bit colour). Such a function becomes "returns_64" too (its callers keep the 64 bits: lower.py),
+    its result type the callee's, in the program's signature and in the definition, where every other value it
+    returns is the EE's sign-extended register; through chains of such functions too. Not for the port's own host or
+    wrapped functions (their signatures are the port's). Returns the names changed."""
+    returns_64 = getattr(program, "returns_64", None)
+    if not returns_64:
+        return []
+    changed = []
+    again = True
+    while again:
+        again = False
+        for f in program.functions.values():
+            if f.unit is None or not f.returns or f.wide_result:
+                continue    # no definition, no returned call, or widened already
+            if f.symbol in program.host or f.symbol in program.wrap or canon(f.sig.ret, program.typedefs) not in RESULT32:
+                continue
+            wide = [program.canonical(s) for s in f.returns if program.canonical(s) in returns_64]
+            if not wide:
+                continue
+            g = program.functions.get(wide[0])
+            ret = canon(g.sig.ret, program.typedefs) if g is not None else None
+            f.sig = Signature(ctype.Base(ret if ret in WIDE else "long long"), f.sig.params, f.sig.variadic,
+                              f.sig.prototyped)
+            f.wide_result = True
+            returns_64.add(f.symbol)
+            changed.append(f.symbol)
+            again = True
+    return changed
+
+
 def inherit_results(program: Program) -> list[str]:
     """A definition that returns nothing and ends in a call leaves that call's result in the
     result register, and the decompilation's callers read it there (a wrapper matched as `void
@@ -393,7 +688,9 @@ def index_unit(program: Program, unit: str, ast: dict) -> list[str]:
                 problems.append(f"{sym} is defined in {f.unit} and in {unit}; keeping the first")
                 continue
             declared = f.declared if f else []
-            program.functions[sym] = Function(sym, sig, unit, asm=f.asm if f else False, declared=declared, tail=tail)
+            program.functions[sym] = Function(sym, sig, unit, asm=f.asm if f else False, declared=declared, tail=tail,
+                                              forwards=forwarded_params(decl, by_id),
+                                              returns=returned_calls(decl, by_id))
         else:
             f = program.functions.get(sym)
             if f is None:
@@ -442,7 +739,10 @@ def read_split_places(path: Path, program: Program) -> int:
     """Places the catalogue folded into a function by its fingerprint although their code differs
     in a constant or a field offset (port/game/<id>/split_places.tsv: function, the variant's name,
     its places as level:address,...): each variant gets those places as its own, and calls to the
-    function are resolved through the caller's own jal (lower.py, _folded_places)."""
+    function are resolved through the caller's own jal (lower.py, _folded_places).
+    An optional fourth column names the executable's function whose level copies the variant's
+    places are (its twin: the C calls it by its own name): the C's calls to the twin are calls to
+    the variant's family where lower.py counts them (openrac_folded_call's k)."""
     if not path.exists():
         return 0
     count = 0
@@ -466,6 +766,8 @@ def read_split_places(path: Path, program: Program) -> int:
         if name in program.sizes:
             program.sizes[variant] = program.sizes[name]
         program.splits.setdefault(name, []).extend(places)
+        if len(cols) > 3 and cols[3].strip():
+            program.split_twin[cols[3].strip()] = variant
         program.split_parent[variant] = name
         count += 1
     return count
@@ -485,7 +787,8 @@ def merge(into: Program, part: Program) -> list[str]:
                 problems.append(f"{sym} is defined in {have.unit} and in {f.unit}; keeping the first")
                 continue
             declared = have.declared + f.declared
-            into.functions[sym] = Function(sym, f.sig, f.unit, asm=have.asm, declared=declared, tail=f.tail)
+            into.functions[sym] = Function(sym, f.sig, f.unit, asm=have.asm, declared=declared, tail=f.tail,
+                                           forwards=f.forwards, returns=f.returns)
         else:
             have.declared.extend(f.declared)
             if have.unit is None and have.declared:

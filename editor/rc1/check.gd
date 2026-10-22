@@ -12,7 +12,16 @@ extends SceneTree
 ## class scenes, and the meshes the placed mobys show, must match
 ## level.json. The collision layer (Game/Collision, hidden) is not one of
 ## the textured meshes either; its triangles are compared with level.json
-## separately.
+## separately, as are the class scenes' own collision (each one's hidden
+## Collision node: its primitives and triangles).
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+## The nodes under Game that hold the gameplay data (editor/gamedata.py's GROUPS).
+const GAMEPLAY: Array[String] = ["LevelSettings", "MobyGroups", "Cameras", "Sounds", "Volumes", "Paths",
+	"GrindPaths"]
 
 # =============================================================================
 # METHODS
@@ -37,8 +46,10 @@ func _initialize() -> void:
 		walk(root, Transform3D.IDENTITY, totals)
 		var sky: Vector2i = sky_size(root)
 		var mobys: int = moby_count(root)
-		var collision: int = collision_triangles(root)
+		var collision: int = collision_triangles(root, "Game/Collision")
 		var expected_collision: int = int(info.collision.triangles) if info.has("collision") else 0
+		var heroes: int = collision_triangles(root, "Game/HeroWalls")
+		var expected_heroes: int = int(info.collision.get("hero_triangles", 0)) if info.has("collision") else 0
 		failed += 0 if check_moby_meshes(name, root, info) else 1
 		root.free()
 
@@ -55,6 +66,7 @@ func _initialize() -> void:
 			and totals.meshes.size() == int(info.meshes)
 			and totals.untextured == 0
 			and collision == expected_collision
+			and heroes == expected_heroes
 			and sky == Vector2i(int(expected_sky[0]), int(expected_sky[1]))
 			and mobys == expected_mobys
 			and box.position.distance_to(low) < 0.01 and box.end.distance_to(high) < 0.01)
@@ -72,15 +84,16 @@ func _initialize() -> void:
 ## world transform of node's parent. Mobys and the collision layer are
 ## skipped; they are counted elsewhere.
 func walk(node: Node, parent: Transform3D, totals: Dictionary) -> void:
-	# Placed mobys are not level geometry.
-	if node.name == &"Mobys":
+	# Placed mobys are not level geometry, nor are the gameplay data's markers and volumes.
+	if node.name == &"Mobys" or (node.get_parent() != null and node.get_parent().name == &"Game"
+			and String(node.name) in GAMEPLAY):
 		return
 
 	# Only 3D nodes carry a transform; others pass the parent's through.
 	var here: Transform3D = parent * node.transform if node is Node3D else parent
 
-	# A layer for the editor, counted by collision_triangles().
-	if node.name == "Collision" and node.get_parent().name == "Game":
+	# Layers for the editor, counted by collision_triangles().
+	if node.name in [&"Collision", &"HeroWalls"] and node.get_parent().name == &"Game":
 		return
 
 	if node is MeshInstance3D:
@@ -147,17 +160,17 @@ func moby_count(root: Node) -> int:
 	return count
 
 
-## The triangles of the collision layer, which must be hidden by default.
-func collision_triangles(root: Node) -> int:
-	var layer := root.get_node_or_null("Game/Collision") as Node3D
+## The triangles of a collision layer (Game/Collision, Game/HeroWalls), which must be hidden by default.
+func collision_triangles(root: Node, path: String) -> int:
+	var layer := root.get_node_or_null(path) as Node3D
 
-	# A level without collision has no such node.
+	# A level without collision, or without hero walls, has no such node.
 	if layer == null:
 		return 0
 
 	# The layer is for the editor; it must not cover the level when it opens.
 	if layer.visible:
-		printerr("Game/Collision should be hidden by default")
+		printerr("%s should be hidden by default" % path)
 		return -1
 
 	var total: int = 0
@@ -176,6 +189,7 @@ func collision_triangles(root: Node) -> int:
 func check_moby_meshes(level: String, root: Node, info: Dictionary) -> bool:
 	var classes := {"scenes": 0, "models": 0, "triangles": 0, "untextured": 0, "textures": {},
 		"skeletons": 0, "bones": 0, "animations": 0}
+	var collision := {"classes": 0, "primitives": 0, "triangles": 0, "shown": 0}
 	var dir: String = "res://levels/%s/mobys" % level
 
 	for file in DirAccess.get_files_at(dir):
@@ -191,6 +205,7 @@ func check_moby_meshes(level: String, root: Node, info: Dictionary) -> bool:
 
 		var instance: Node = scene.instantiate()
 		var totals: Dictionary = mesh_totals(instance)
+		class_collision(instance, collision)
 		instance.free()
 
 		classes.scenes += 1
@@ -213,7 +228,12 @@ func check_moby_meshes(level: String, root: Node, info: Dictionary) -> bool:
 			placed.triangles += totals.triangles
 
 	var expected: Dictionary = info.get("mobys", {})
+	var expected_collision: Dictionary = expected.get("collision", {})
 	var ok: bool = (classes.scenes == int(expected.get("classes", 0))
+		and collision.classes == int(expected_collision.get("classes", 0))
+		and collision.primitives == int(expected_collision.get("primitives", 0))
+		and collision.triangles == int(expected_collision.get("triangles", 0))
+		and collision.shown == 0
 		and classes.models == int(expected.get("model_classes", 0))
 		and classes.triangles == int(expected.get("class_triangles", 0))
 		and classes.textures.size() == int(expected.get("textures", 0))
@@ -224,10 +244,36 @@ func check_moby_meshes(level: String, root: Node, info: Dictionary) -> bool:
 		and placed.meshes == int(expected.get("mesh_instances", 0))
 		and placed.triangles == int(expected.get("triangles", 0)))
 
-	print("%s: %d moby classes, %d with models (%d triangles, %d textures), %d animated (%d bones, %d animations); %d placed meshes, %d triangles: %s" % [
+	print("%s: %d moby classes, %d with models (%d triangles, %d textures), %d animated (%d bones, %d animations); %d placed meshes, %d triangles; class collision %d classes, %d primitives, %d triangles: %s" % [
 		level, classes.scenes, classes.models, classes.triangles, classes.textures.size(), classes.skeletons,
-		classes.bones, classes.animations, placed.meshes, placed.triangles, "ok" if ok else "MISMATCH"])
+		classes.bones, classes.animations, placed.meshes, placed.triangles, collision.classes,
+		collision.primitives, collision.triangles, "ok" if ok else "MISMATCH"])
 	return ok
+
+
+## Adds a class scene's collision (its root's Collision child, which must be hidden) to totals:
+## the classes that have any, their primitives and their triangles.
+func class_collision(root: Node, totals: Dictionary) -> void:
+	var layer := root.get_node_or_null("Collision") as Node3D
+
+	# A class without data in the core (a spawn point, a gadget) has no collision node.
+	if layer == null:
+		return
+
+	totals.shown += 1 if layer.visible else 0
+	totals.classes += 1 if layer.get_child_count() > 0 else 0
+
+	for child in layer.get_children():
+		# A triangle part is an instance of its glTF file; the rest are primitives.
+		if String(child.get_meta("rc1_collision_kind", "")) != "mesh":
+			totals.primitives += 1
+			continue
+
+		for node in child.find_children("*", "MeshInstance3D", true, false):
+			var mesh: Mesh = (node as MeshInstance3D).mesh
+
+			for i in mesh.get_surface_count():
+				totals.triangles += surface_triangles(mesh, i)
 
 
 ## Meshes, triangles, untextured surfaces and albedo textures under node,
@@ -240,6 +286,11 @@ func mesh_totals(node: Node) -> Dictionary:
 
 	while not pending.is_empty():
 		var current: Node = pending.pop_back()
+
+		# The class's collision is an editor layer, counted by class_collision().
+		if current.name == &"Collision" and current.get_parent() == node:
+			continue
+
 		pending.append_array(current.get_children())
 
 		if current is Skeleton3D:

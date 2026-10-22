@@ -17,9 +17,23 @@ use crate::actions::Plan;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum Event {
-    Output { id: u32, stream: Stream, line: String },
-    Exit { id: u32, code: Option<i32>, cancelled: bool },
+    Output {
+        id: u32,
+        stream: Stream,
+        line: String,
+    },
+    /// `outputs`: the folders the job wrote, as the tool named them on its `openrac-output:` lines,
+    /// else the action's `output`; empty when it names none.
+    Exit {
+        id: u32,
+        code: Option<i32>,
+        cancelled: bool,
+        outputs: Vec<String>,
+    },
 }
+
+/// The start of a line on which a tool names a folder it wrote (editor/extract.py, assets.py).
+pub const OUTPUT_LINE: &str = "openrac-output: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +56,8 @@ pub struct Started {
     /// The command line, for the Tasks page and bug reports.
     pub command: String,
     pub detached: bool,
+    /// The folder the action writes in (its `output`), when it names one.
+    pub output: Option<String>,
 }
 
 /// The running jobs. Cheap to clone; clones share the same jobs.
@@ -64,24 +80,25 @@ struct State {
     cancelled: HashSet<u32>,
 }
 
-/// What every job gets in its environment: unbuffered, UTF-8 Python output,
-/// and the checkout, for tools that want it.
+/// What every job gets in its environment: unbuffered, UTF-8 Python output, no `__pycache__`
+/// (an installed launcher's copy is inside its own bundle: the macOS app in /Applications, the
+/// AppImage, /usr/lib for a package), and the checkout, for tools that want it.
 fn environment(cmd: &mut Command, root: Option<&std::path::Path>) {
-    cmd.env("PYTHONUNBUFFERED", "1").env("PYTHONIOENCODING", "utf-8");
+    // An AppImage's own environment (the AppRun's PYTHONHOME, its paths, its
+    // libraries) would follow the job: a Python told that its home is the
+    // AppImage's cannot start, and the game would find the AppImage's
+    // libraries instead of the system's. The job gets the system's.
+    environment_with(cmd, root, crate::appimage::appdir().as_deref());
+}
+
+/// [`environment`] for an AppImage mounted at `appdir` (`None`: not from one).
+fn environment_with(cmd: &mut Command, root: Option<&std::path::Path>, appdir: Option<&std::path::Path>) {
+    cmd.env("PYTHONUNBUFFERED", "1").env("PYTHONIOENCODING", "utf-8").env("PYTHONDONTWRITEBYTECODE", "1");
     if let Some(root) = root {
         cmd.env("OPENRAC_ROOT", root);
     }
-    // AppImageKit's AppRun unconditionally exports PYTHONHOME=$APPDIR/usr/ and
-    // PYTHONPATH=$APPDIR/usr/share/pyshared/:, which poisons any Python process
-    // started from the AppImage (both the carried python in resources/openrac/python
-    // and any system python). Clear them before running any tool.
-    if let Ok(appdir) = std::env::var("APPDIR") {
-        if std::env::var("PYTHONHOME").is_ok_and(|h| h.starts_with(&appdir)) {
-            cmd.env_remove("PYTHONHOME");
-        }
-        if std::env::var("PYTHONPATH").is_ok_and(|p| p.starts_with(&appdir)) {
-            cmd.env_remove("PYTHONPATH");
-        }
+    if let Some(appdir) = appdir {
+        crate::appimage::sanitize_with(cmd, appdir);
     }
 }
 
@@ -105,7 +122,21 @@ impl Jobs {
         let mut child = cmd.spawn().map_err(|e| format!("cannot start {}: {e}", plan.program.display()))?;
 
         let id = self.inner.next.fetch_add(1, Ordering::Relaxed) + 1;
-        let sink = Arc::new(sink);
+        let named: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = {
+            let named = named.clone();
+            Arc::new(move |event: Event| {
+                if let Event::Output { line, .. } = &event {
+                    if let Some(path) = line.strip_prefix(OUTPUT_LINE) {
+                        let mut named = named.lock().unwrap();
+                        if !named.iter().any(|p| p == path.trim()) {
+                            named.push(path.trim().to_string());
+                        }
+                    }
+                }
+                sink(event)
+            })
+        };
         let mut pumps = Vec::new();
         if let Some(out) = child.stdout.take() {
             pumps.push(pump(id, Stream::Stdout, out, sink.clone()));
@@ -113,6 +144,7 @@ impl Jobs {
         if let Some(err) = child.stderr.take() {
             pumps.push(pump(id, Stream::Stderr, err, sink.clone()));
         }
+        let declared = plan.output.as_ref().map(|p| p.display().to_string());
         let child = Arc::new(Mutex::new(child));
         self.inner.jobs.lock().unwrap().running.insert(id, child.clone());
 
@@ -148,9 +180,19 @@ impl Jobs {
                 jobs.running.remove(&id);
                 jobs.cancelled.remove(&id)
             };
-            sink(Event::Exit { id, code: status.and_then(|s| s.code()), cancelled });
+            let mut outputs = named.lock().unwrap().clone();
+            if outputs.is_empty() {
+                outputs.extend(declared);
+            }
+            sink(Event::Exit { id, code: status.and_then(|s| s.code()), cancelled, outputs });
         });
-        Ok(Started { id, title: plan.title.clone(), command: command_line(plan), detached: false })
+        Ok(Started {
+            id,
+            title: plan.title.clone(),
+            command: command_line(plan),
+            detached: false,
+            output: plan.output.as_ref().map(|p| p.display().to_string()),
+        })
     }
 
     /// Stops job `id` and everything it started (a build runs compilers in
@@ -194,7 +236,13 @@ pub fn launch(plan: &Plan, root: Option<&std::path::Path>) -> Result<Started, St
     let mut child = cmd.spawn().map_err(|e| format!("cannot start {}: {e}", plan.program.display()))?;
     // Reap it when it ends, so it never lingers as a zombie on Unix.
     std::thread::spawn(move || child.wait());
-    Ok(Started { id: 0, title: plan.title.clone(), command: command_line(plan), detached: true })
+    Ok(Started {
+        id: 0,
+        title: plan.title.clone(),
+        command: command_line(plan),
+        detached: true,
+        output: plan.output.as_ref().map(|p| p.display().to_string()),
+    })
 }
 
 /// The command line as a person would type it, for display only.
@@ -335,6 +383,7 @@ mod tests {
             cwd: ".".into(),
             detached: false,
             env: Vec::new(),
+            output: None,
         };
         assert_eq!(command_line(&plan), "python3 tools/openrac.py \"my disc.iso\" \"\"");
     }
@@ -348,6 +397,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             detached: false,
             env: Vec::new(),
+            output: None,
         }
     }
 
@@ -369,11 +419,38 @@ mod tests {
                 exit @ Event::Exit { .. } => break exit,
             }
         };
-        assert_eq!(exit, Event::Exit { id: started.id, code: Some(3), cancelled: false });
+        assert_eq!(exit, Event::Exit { id: started.id, code: Some(3), cancelled: false, outputs: vec![] });
         let stdout: Vec<_> = lines.iter().filter(|(s, _)| *s == Stream::Stdout).map(|(_, l)| l.as_str()).collect();
         assert_eq!(stdout, ["one", "a", "b"]);
         assert!(lines.contains(&(Stream::Stderr, "two".to_string())));
         assert!(jobs.running().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_exit_names_the_folders_the_job_wrote() {
+        let jobs = Jobs::default();
+        let run = |plan: Plan| {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            jobs.start(&plan, None, move |e| tx.lock().unwrap().send(e).unwrap()).unwrap();
+            loop {
+                if let Event::Exit { mut outputs, .. } = rx.recv_timeout(Duration::from_secs(30)).unwrap() {
+                    // stdout and stderr are read by two threads: the order across them is not defined.
+                    outputs.sort();
+                    break outputs;
+                }
+            }
+        };
+        // The tool names them: those, once each.
+        let mut plan = sh("echo 'openrac-output: /a/b'; echo 'openrac-output: /a/b'; echo 'openrac-output: /c' >&2");
+        plan.output = Some(PathBuf::from("/declared"));
+        assert_eq!(run(plan), ["/a/b", "/c"]);
+        // It names none: the action's output.
+        let mut plan = sh("echo done");
+        plan.output = Some(PathBuf::from("/declared"));
+        assert_eq!(run(plan), ["/declared"]);
+        assert!(run(sh("true")).is_empty());
     }
 
     #[cfg(unix)]
@@ -417,20 +494,19 @@ mod tests {
                 exit @ Event::Exit { .. } => break exit,
             }
         };
-        assert_eq!(exit, Event::Exit { id: started.id, code: Some(0), cancelled: false });
+        assert_eq!(exit, Event::Exit { id: started.id, code: Some(0), cancelled: false, outputs: vec![] });
         assert!(lines.contains(&"started".to_string()), "{lines:?}");
     }
 
+    /// The AppImage is given as an argument, not set in this process's environment: the tests
+    /// run in parallel, and a PYTHONHOME pointing at nothing would follow every Python another
+    /// test starts meanwhile.
     #[test]
     fn cleans_appimage_python_environment() {
-        std::env::set_var("APPDIR", "/tmp/.mount_test");
-        std::env::set_var("PYTHONHOME", "/tmp/.mount_test/usr/");
-        std::env::set_var("PYTHONPATH", "/tmp/.mount_test/usr/share/pyshared/:");
         let mut cmd = Command::new("true");
-        environment(&mut cmd, None);
-        std::env::remove_var("APPDIR");
-        std::env::remove_var("PYTHONHOME");
-        std::env::remove_var("PYTHONPATH");
+        cmd.env("PYTHONHOME", "/tmp/.mount_test/usr/");
+        cmd.env("PYTHONPATH", "/tmp/.mount_test/usr/share/pyshared/:");
+        environment_with(&mut cmd, None, Some(std::path::Path::new("/tmp/.mount_test")));
         let envs: HashMap<_, _> = cmd.get_envs().collect();
         assert_eq!(envs.get(std::ffi::OsStr::new("PYTHONHOME")), Some(&None));
         assert_eq!(envs.get(std::ffi::OsStr::new("PYTHONPATH")), Some(&None));

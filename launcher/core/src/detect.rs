@@ -95,6 +95,21 @@ pub fn settle(config: &mut crate::config::Config, bundled: Option<&Path>) {
     }
 }
 
+/// A contributor's launcher (`tauri dev`, a debug build) works on the checkout it runs from, never
+/// on a carried copy. Its resources can still hold one (`copy`), left behind by an installer built
+/// in that checkout: it is as old as that build, with the actions of then (a copy from before the
+/// mods came into it has no level editor, so the Mods page had none for any game). A folder and a
+/// Python saved on that copy give way to the checkout found next to the launcher (`start`,
+/// [`roots`]) and to a Python of this machine's.
+pub fn leave_copy(config: &mut crate::config::Config, copy: &Path, start: &[PathBuf]) {
+    if on_the_copy(config.root.as_deref(), copy) {
+        config.root = roots(start).into_iter().map(|c| c.path).find(|path| !on_the_copy(Some(path), copy));
+    }
+    if config.python.as_deref().is_some_and(|python| plain(python).starts_with(plain(copy))) {
+        config.python = tool_candidates(Tool::Python).into_iter().next().map(|c| c.path);
+    }
+}
+
 /// Whether `root` is the carried copy `bundled`: the same folder whether or not either is written
 /// with Windows' `\\?\` prefix. 0.7 saved the copy as `\\?\C:\...`, 0.8 names it `C:\...`: with
 /// developer tools on (which keep the saved folder) the launcher took its own copy for a checkout,
@@ -498,7 +513,9 @@ fn home() -> Option<PathBuf> {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// A command for a console program that must not flash a console window on Windows.
+/// A command for a console program that must not flash a console window on Windows, and that
+/// gets the system's environment rather than an AppImage's ([`crate::appimage::sanitize`]): the
+/// probes of Python and Godot, curl, git.
 pub fn quiet(program: &Path) -> Command {
     #[allow(unused_mut)]
     let mut cmd = Command::new(program);
@@ -507,7 +524,27 @@ pub fn quiet(program: &Path) -> Command {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    crate::appimage::sanitize(&mut cmd);
     cmd
+}
+
+/// `program` as a Linux desktop entry's `Exec` runs it: in double quotes, a backslash before `"`,
+/// `` ` ``, `$` and a backslash (each then doubled, as an entry's strings take it) and `%` as `%%`,
+/// the Desktop Entry Specification's rules, so a path with spaces or a `%` in it works.
+pub fn desktop_exec(program: &Path) -> String {
+    let mut out = String::from("\"");
+    for c in program.to_string_lossy().chars() {
+        match c {
+            '"' | '`' | '$' | '\\' => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            '%' => out.push_str("%%"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Runs a short probe; its output, or why it failed or did not finish in `timeout`.
@@ -559,6 +596,15 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::testing::checkout;
+
+    #[test]
+    fn a_desktop_entry_starts_a_path_with_spaces_and_signs() {
+        assert_eq!(
+            desktop_exec(Path::new("/home/p/My Games/OpenRAC.AppImage")),
+            r#""/home/p/My Games/OpenRAC.AppImage""#
+        );
+        assert_eq!(desktop_exec(Path::new("/a/100%/$x\"y")), r#""/a/100%%/\\$x\\"y""#);
+    }
 
     /// Godot for Windows as players have it: Extract All's folder named for the zip in
     /// Downloads, winget's package folder, Steam's, a renamed copy loose in a folder. The window

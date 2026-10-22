@@ -115,6 +115,12 @@ release, and a new file adds its line there when it is added.
   states has to be scanned (the developer pages, Tasks).
 - What only a contributor reads (serials, percentages, file names, paths) is
   shown with developer tools on.
+- A task done in a few steps in order is a numbered list (`ol.steps` in
+  `app.css`: the Mods tab's level editor, models and textures): each step a
+  row, its name and one line on the left, its controls on the right.
+- A page with several jobs gives each a tab of its own (the Mods tab: My
+  mods, Level editor, Models and textures), so every one can be seen from the
+  top; the main action stays in the page's head, above the tabs.
 - A setting is a row: its name and at most one short line on the left, its
   control on the right (`.setting` in `app.css`). On/off is a switch
   (`input.switch`), two or three choices a segmented control (`.segmented`),
@@ -123,6 +129,17 @@ release, and a new file adds its line there when it is added.
   (`details.more`), which opens by itself when something in it is on. A panel
   with nothing to choose on this system is not shown, and a choice that only
   matters with another one (Android's GPU driver, with Vulkan) shows with it.
+- A list of things that each have settings of their own (the gameplay mods)
+  is an overview of rows (a switch, a name and a line, one badge, "Settings ›"),
+  and each opens a page of its own with a back button and where you are
+  (`ModPage.svelte`), not settings unfolded in the list.
+- A setting applies as it changes, without Enter or a Save button, and says
+  that it saved. A number with both ends is a slider (the brand's orange up to
+  the value, a mark at the default) with its value in a field beside it; a
+  setting off its default has a Reset beside its control.
+- No path in plain view on a page players share screenshots of (Mods): a
+  folder is opened with a button, and its path waits in a folded About or
+  Details (`lib/paths.ts`, `Reason.svelte`).
 
 ## Rules
 
@@ -147,7 +164,10 @@ release, and a new file adds its line there when it is added.
 - Window sizes: the window opens at 1200 × 780, can be resized, and cannot be
   made smaller than 960 × 560 (`tauri.conf.json`). 560 is as tall as a
   1366 × 768 laptop at 125 % scaling leaves room for above the taskbar, so the
-  floor does not go higher. A page scrolls down, never sideways. A tiling
+  floor does not go higher. On a screen with less room than that (a 1080p
+  screen at 150 % or 200 %) the window opens at what the screen has room for,
+  and that is its floor (`core/src/window.rs`). A page scrolls down, never
+  sideways. A tiling
   window manager may ignore the floor, so lay a page out to still fit from
   760 px wide.
 

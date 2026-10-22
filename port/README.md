@@ -101,6 +101,34 @@ saved at once. The game's own row there, the television's 50 or 60 Hz, is
 gone: the game ticks at its own rate (50 a second for PAL) and the window
 shows it at the display's.
 
+## Mods
+
+Changes of play are mods, not settings of the port: shared libraries the
+program loads at start through a versioned C interface
+([sdk/include/openrac/openrac_mod.h](../sdk/include/openrac/openrac_mod.h)),
+which take the game's hook points (`hook` rows of a version's
+`libraries.tsv`, written by hostgen in `hooks.c`) and run each tick and each
+pad report. The launcher installs them in `<data>/plugins/` and writes the
+list the program reads, `<data>/plugins/plugins.json` (`--plugins FILE`
+names another); the program writes what it loaded, and why it left any out,
+to `status.json` beside it, and a `mods` line in the log's header.
+`--no-mods` (the launcher's Purist mode) loads none. Without a mod the hook
+points run the game's own C. The loader is
+[game/common/mods.cpp](game/common/mods.cpp); the design, the manifest and
+the SDK are in [docs/port/MODS.md](../docs/port/MODS.md). Ratchet & Clank's
+mods, the lock-strafe first, are in
+[OpenRAC/rac1-mods](https://github.com/OpenRAC/rac1-mods).
+
+Script mods are `.luau` files that the program runs in Luau (fetched by
+[cmake/Luau.cmake](cmake/Luau.cmake)), one sandboxed state each, with a time
+budget per call ([game/common/mod_scripts.cpp](game/common/mod_scripts.cpp)):
+no compiler for the modder, and every system, Android included. They reach
+the same hook points through a game's binding,
+[game/rac1/script_binding.c](game/rac1/script_binding.c), which
+`python3 ../sdk/tools/gen_binding.py` writes from
+[sdk/bindings/rac1.json](../sdk/bindings/rac1.json) (a new `hook` row needs
+its line there; ctest's `mod_binding` says when they disagree).
+
 ## Direct level probes (RAC1 PAL)
 
 For development, `OPENRAC_DIRECT=1` with `--level 0` starts a fresh game

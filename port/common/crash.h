@@ -63,6 +63,20 @@ void configure(const std::filesystem::path& folder, const std::string& program, 
 // reported (POSIX; nothing on Windows). Each thread that runs game code calls it once.
 void prepare_thread();
 
+// The native mods loaded (port/game/common/mods.h, docs/port/MODS.md): every report lists them,
+// and says which one holds a frame of the backtrace (its library's load address is `base`). The
+// array is the caller's and must last as long as the program; set once, after loading.
+struct ModImage {
+    const char* id;
+    const char* version;
+    const char* file;  // the library's file name
+    const void* base;  // where the system loaded it
+};
+void set_mods(const ModImage* mods, int count);
+// The script mod running when the report is written (game/common/mod_scripts.cpp): *current is its
+// id, or null when no script runs. The pointer must last as long as the program.
+void set_running_script(const char* const* current);
+
 void set_state(const GameState& state);
 const GameState& state();
 

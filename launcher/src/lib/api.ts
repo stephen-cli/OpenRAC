@@ -7,7 +7,7 @@
 // wrapper and its types here, and a case in mock.ts (docs/ARCHITECTURE.md).
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { REPO_URL } from "./links";
 import type { BackgroundStatus } from "./progress";
 
@@ -110,6 +110,8 @@ export interface Config {
   /** Windows, Linux and macOS: what the game draws with, OpenGL (the default) or the experimental
    *  Vulkan renderer (OPENRAC_GL_API=vulkan). Android keeps its own choice (Renderer, gpuRendererSelect). */
   renderer: DesktopRenderer;
+  /** Purist mode: the game loads no native mods (`--no-mods`), whatever is switched on in Mods. */
+  purist: boolean;
   /** Per game, the time (seconds since 1970) of the newest crash report the player dismissed. */
   crashesSeen: Record<string, number>;
   /** Developers only: the version each game with two discs found plays (`rac1` -> `rac1/ntsc`). */
@@ -341,6 +343,149 @@ export interface PackView {
   levelFiles: number;
 }
 
+/** core/src/plugins.rs: a setting a native mod declares in its manifest (docs/port/MODS.md). */
+export interface PluginSetting {
+  key: string;
+  name: string;
+  type: "bool" | "int" | "float" | "choice" | "string" | "keybind";
+  default: unknown;
+  description?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  choices?: { value: string; name: string }[];
+  maxLength?: number;
+  /** A keybind's most binds, 1 or 2 (2 when absent): its value is that many bind names of
+   *  sdk/include/openrac/keys.h, comma-separated ("KeyW,ArrowUp"; "" for none). */
+  binds?: number;
+  /** A keybind's group: keybinds of one group on the same input conflict. */
+  group?: string;
+  /** A keybind's: the mod's other keybinds of its group that share one of its inputs (the core's
+   *  answer when the list was read). */
+  conflicts?: string[];
+  /** The value now: the player's, or the default. */
+  value: unknown;
+}
+
+/** core/src/plugins.rs: a set of setting values a mod offers as one button (lib/presets.ts). */
+export interface PluginPreset {
+  id: string;
+  name: string;
+  values: Record<string, unknown>;
+}
+
+/** What a gameplay mod is: code the game loads (a library), Luau scripts the game runs sandboxed,
+ *  or data only (docs/port/MODS.md, section 11). */
+export type ModKind = "native" | "script" | "data";
+
+/** core/src/plugins.rs: a gameplay mod (native or script) as the Mods tab shows it, in load order. */
+export interface PluginView {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  homepage: string;
+  license: string;
+  enabled: boolean;
+  /** ready: on, nothing against it; off; refused: it cannot load (reason); failed: the port did
+   *  not load it at its last start (reason). */
+  state: "ready" | "off" | "refused" | "failed";
+  reason: string;
+  /** Off, and could not be switched on as things are: why. */
+  blocked: string;
+  settings: PluginSetting[];
+  /** Presets of its settings the mod offers. */
+  presets?: PluginPreset[];
+  hooks: string[];
+  sharedHooks: { hook: string; with: string[] }[];
+  /** It carries code (a library), not only data. */
+  native: boolean;
+  /** native, script or data. */
+  kind: ModKind;
+  /** The installed folder. */
+  path: string;
+}
+
+/** core/src/plugins.rs: what adding a .zip or a folder came to. */
+export type PluginInstalled =
+  { kind: "plugin"; id: string; name: string; version: string; replaced: boolean; enabled: boolean } | { kind: "pack" };
+
+/** core/src/remote.rs: one mod a repository holds, shown before it is installed (docs/port/MODS.md, section 10). */
+export interface RemoteMod {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  homepage: string;
+  /** Its folder in the repository, "" for the top. */
+  path: string;
+  /** "native": code the game loads; "script": Luau the game runs sandboxed; "pack": textures, models, levels. */
+  kind: "native" | "script" | "pack";
+  games: Record<string, string[]>;
+  api: string | null;
+  compatible: boolean;
+  why: string | null;
+  /** The release asset that would be installed, and its release. */
+  asset: string | null;
+  tag: string | null;
+  /** The version installed now, if it is. */
+  installed: string | null;
+}
+
+/** core/src/remote.rs: what a repository's address holds. */
+export interface RemotePreview {
+  url: string;
+  /** "owner/repo", or the address. */
+  label: string;
+  host: "github" | "git";
+  owner: string;
+  reference: string;
+  commit: string | null;
+  mods: RemoteMod[];
+  note: string | null;
+}
+
+/** core/src/remote.rs: what installing from an address came to. */
+export type RemoteInstalled =
+  | { kind: "plugin"; id: string; name: string; version: string; replaced: boolean; enabled: boolean }
+  | { kind: "pack"; id: string; version: string; path: string };
+
+/** core/src/remote.rs: where an installed mod came from (sources.json). */
+export interface ModSource {
+  url: string;
+  path: string;
+  version: string;
+  tag: string | null;
+  commit: string | null;
+  kind: string;
+  pin: boolean;
+}
+
+export interface ModSources {
+  format: number;
+  mods: Record<string, ModSource>;
+}
+
+/** core/src/remote.rs: a newer version of an installed mod. */
+export interface ModUpdate {
+  id: string;
+  installed: string;
+  available: string;
+  tag: string | null;
+  commit: string | null;
+}
+
+/** core/src/plugins.rs: what the port did with the game's mods at its last start. */
+export interface PluginStatus {
+  time: string;
+  version: string;
+  purist: boolean;
+  mods: { id: string; version: string; state: string; reason: string; hooks: string[] }[];
+  hookPoints: string[];
+}
+
 /** core/src/jobs.rs */
 export interface Started {
   /** 0 for a detached launch (the game, Godot), which has no job. */
@@ -348,11 +493,15 @@ export interface Started {
   title: string;
   command: string;
   detached: boolean;
+  /** The folder the action writes in (its `output` in actions.json), when it names one. */
+  output: string | null;
 }
 
 export type JobEvent =
   | { type: "output"; id: number; stream: "stdout" | "stderr"; line: string }
-  | { type: "exit"; id: number; code: number | null; cancelled: boolean };
+  /** `outputs`: the folders the job wrote (the tool's `openrac-output:` lines, else the action's
+   *  `output`), for "Open folder" (api.openOutput). */
+  | { type: "exit"; id: number; code: number | null; cancelled: boolean; outputs: string[] };
 
 /** core/src/install.rs: a game set up from the player's disc, OpenGOAL's way. */
 export interface BuildInfo {
@@ -589,8 +738,36 @@ export const api = {
     call<PackView[]>("overrides_set_enabled", { game, id, enabled }),
   overridesMove: (game: string, id: string, up: boolean) => call<PackView[]>("overrides_move", { game, id, up }),
   overridesRemove: (game: string, id: string) => call<PackView[]>("overrides_remove", { game, id }),
+  /** A game's native mods (core/src/plugins.rs) for its disc `version` ("pal"), in load order. */
+  pluginsList: (game: string, version: string) => call<PluginView[]>("plugins_list", { game, version }),
+  pluginsSetEnabled: (game: string, version: string, id: string, enabled: boolean) =>
+    call<PluginView[]>("plugins_set_enabled", { game, version, id, enabled }),
+  pluginsMove: (game: string, version: string, id: string, up: boolean) =>
+    call<PluginView[]>("plugins_move", { game, version, id, up }),
+  pluginsSetSetting: (game: string, version: string, id: string, key: string, value: unknown) =>
+    call<PluginView[]>("plugins_set_setting", { game, version, id, key, value }),
+  pluginsRemove: (game: string, version: string, id: string) =>
+    call<PluginView[]>("plugins_remove", { game, version, id }),
+  pluginsInstall: (game: string, version: string, path: string) =>
+    call<PluginInstalled>("plugins_install", { game, version, path }),
+  pluginsStatus: (game: string) => call<PluginStatus | null>("plugins_status", { game }),
+  /** Mods from a repository's address (core/src/remote.rs): what it holds, before anything is installed. */
+  pluginsPreview: (game: string, version: string, url: string) =>
+    call<RemotePreview>("plugins_preview", { game, version, url }),
+  pluginsInstallRemote: (game: string, version: string, url: string, id: string) =>
+    call<RemoteInstalled>("plugins_install_remote", { game, version, url, id }),
+  pluginsCheckUpdates: (game: string, version: string) =>
+    call<{ updates: ModUpdate[]; errors: string[] }>("plugins_check_updates", { game, version }),
+  pluginsUpdate: (game: string, version: string, id: string) =>
+    call<RemoteInstalled>("plugins_update", { game, version, id }),
+  pluginsSources: (game: string) => call<ModSources>("plugins_sources", { game }),
+  pluginsSetPin: (game: string, id: string, pin: boolean) => call<ModSources>("plugins_set_pin", { game, id, pin }),
   /** A folder inside the game's set-up folder (an export), opened with the system. */
   openGameFolder: (game: string, path: string) => call<null>("open_game_folder", { game, path }),
+  /** A folder a job wrote (a job exit's `outputs`), opened with the system; a file opens its folder. */
+  openOutput: (path: string) => call<null>("open_output", { path }),
+  /** One level's Godot project in the Godot editor (the version's editor-open action). */
+  openLevelInGodot: (version: string, level: number) => call<Started>("open_level_in_godot", { version, level }),
   /** Android: the player's GPU driver packages (src-tauri/src/android.rs). */
   gpuDrivers: () => call<GpuDrivers>("gpu_drivers"),
   /** Android: the player picks a package's zip; null when they cancelled. */
@@ -684,6 +861,14 @@ export interface DiscCopy {
   name: string;
   copied: number;
   total: number;
+}
+
+/** Asks before something that cannot be undone, with `yes` on the button that goes ahead. The
+ *  system's dialog: in the desktop app the page's own confirm() says yes on Linux (WebKitGTK)
+ *  without asking anything. The browser preview asks with the page's. */
+export async function ask(message: string, yes: string): Promise<boolean> {
+  if (!inTauri) return window.confirm(message);
+  return confirm(message, { title: "OpenRAC", kind: "warning", okLabel: yes, cancelLabel: "Cancel" });
 }
 
 /** A folder picker; null when cancelled (or in the browser preview). */

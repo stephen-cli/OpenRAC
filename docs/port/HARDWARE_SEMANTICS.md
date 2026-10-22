@@ -27,7 +27,7 @@ otherwise.
 |---|---|---|---|
 | 1 | FPU rounds toward zero; no denormals | b (rounding, `cec43c70`), a (denormals, `79868e57`) | `openrac_ee_float_mode`, [ee.cpp](../../port/runtime/ee.cpp), called by [main.cpp](../../port/game/common/main.cpp) `run_game_as_the_ee` |
 | 2 | No Inf/NaN; DIV by zero gives ±MAX | b, in part (`23cecd12`, `4afc86af`) | `openrac_fdiv` ([guest.h](../../port/runtime/include/openrac/guest.h)), `openrac_ee_sqrt`/`rsqrt` ([ee.h](../../port/runtime/include/openrac/ee.h)) |
-| 3 | 128-bit registers, 64-bit branches, syscalls keep v0/v1's upper halves | b, and a (conditional calls, `d356c986`) | asmc.py `control`, `_invoke` |
+| 3 | 128-bit registers, 64-bit branches, syscalls keep v0/v1's upper halves | b, and a (conditional calls, `d356c986`; the matched C's integer widths) | asmc.py `control`, `_invoke`; prep.py `widen_long_long`, `name_wide_casts`; lower.py `_as_param`; program.py `widen_forwarded` |
 | 4 | vf0 is read only | b | asmc.py `vf`, `store`, `qmtc2`, `lqc2` |
 | 5 | VFTOI and CVT.W.S saturate | a (exponent-255 values, `79868e57`) | `openrac_ee_cvtws` (ee.h), `openrac_ee_ftoi` (ee_ops.h) |
 | 6 | VCALLMSR uses CMSAR0 | c | no microprogram runs |
@@ -93,6 +93,30 @@ that takes its inputs in registers no prototype names runs in place, as a `jal` 
 Test: `test_conditional_call_tests_all_64_bits` (a register whose low word is positive and
 whose doubleword is negative calls). rac4's twelve stay stubs for now: they share one
 conditional call at `0x003F2CDC` whose delay slot is a jump, which hostgen does not write.
+
+**a: the integer widths of the matched C.** The compiler that built rac1's game code (SN's GCC
+2.95.3) has a 128-bit `long long`, and the EE hands a register on with all its 64 bits whatever
+type the C gives it in between. hostgen reads the matched C so: a unit's `long long` is the
+128-bit `openrac_ti` (hostgen.json `long_long_128`; the libraries Sony's compiler built keep a
+64-bit one), and so is a `mode(TI)` cast on any integer type; a 32-bit value a call computes is
+sign-extended where the callee takes 64 bits, as the EE's register holds it; a parameter the C
+only passes on to 64-bit parameters is 64-bit itself (program.py `widen_forwarded`, report.json
+`params_widened`); a `returns_64` result stays whole through a call by code address, and
+through a definition with a 32-bit result that returns it as it is (program.py `widen_returns`,
+report.json `results_widened`). An unsigned int or a pointer that an int local kept 64-bit for
+such a result also receives is sign-extended, as `lui`/`ori` or `lw` leave it in the register.
+A local the original keeps in a stack slot across calls holds only the sign-extended low half
+after its `lw`; nothing in the C tells it apart from one kept in a saved register, so hostgen.json
+`spilled_locals` names it (rac1-pal's freeze screen). Tests
+(`Translate`, `Preparation`, `Places`): `test_a_long_long_copy_of_the_games_compiler_moves_a_quadword`,
+`test_a_mode_ti_cast_on_any_integer_type_is_128_bit`,
+`test_a_32_bit_argument_to_a_64_bit_parameter_is_sign_extended`,
+`test_a_parameter_only_passed_on_to_64_bits_is_64_bit`,
+`test_a_widened_parameter_is_whole_in_64_bit_casts_and_its_low_half_in_arithmetic`,
+`test_a_copys_call_keeps_a_returns_64_result_whole`,
+`test_a_returns_64_result_returned_as_it_is_is_64_bit_and_constants_beside_it_are_sign_extended`,
+`test_an_unsigned_value_beside_a_returns_64_result_in_a_local_is_sign_extended`,
+`test_a_spilled_local_keeps_a_returns_64_result_sign_extended`.
 
 ## 4. vf0 is read only
 

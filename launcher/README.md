@@ -140,7 +140,40 @@ the disc image and saves are kept.
 
 ## Mods
 
-The Mods tab has, for each game that can be edited (Ratchet & Clank, PAL and
+**Gameplay mods** come first for a game the port plays: native mods, small
+programs the game loads at its start that change how it plays (Ratchet &
+Clank's lock-strafe is the first, in
+[OpenRAC/rac1-mods](https://github.com/OpenRAC/rac1-mods)), and script mods,
+Luau files the game runs in a sandbox (rac1-mods' button-swap). Each row says
+which: **Runs code on this computer**, or **Runs scripts (sandboxed)**. **Add a .zip**
+or a folder (or drop one on the page) installs one into the game's set-up
+folder, `<data>/plugins/<id>`; each has a switch, its place in the load
+order, its settings from its manifest and Remove in its menu, and says in a
+few words why it cannot load when it cannot (another disc, a newer mod
+interface, a missing or conflicting mod, or what the game said at its last
+start). The launcher writes the list the game reads, `<data>/plugins/plugins.json`;
+changes count from the game's next start.
+
+**Add from a link** takes a repository's address (`https://github.com/OpenRAC/rac1-mods`,
+or one of its releases): the launcher reads the mods in it and shows each,
+with the repository and its owner, the author, and whether this computer's
+game can take it, before anything is installed. A gameplay mod comes built,
+as its release's `.zip` for this computer, and is installed only when the
+release's `SHA256SUMS` lists it with the same hash; nothing is ever compiled
+on your computer, and git is not needed (GitHub is read over HTTPS with
+curl). A script mod needs no build: it is its release's `.zip`, checked the same
+way, or the repository's own files when there is no release. A texture and
+model pack comes from the repository's files and goes to the packs. A mod added from a link remembers where it came from
+(`<data>/plugins/sources.json`): **Check for updates** (and once a day by
+itself) offers **Update to X** on its row, and **Keep this version** in its
+menu stops that. Another git host than GitHub works for packs, with git
+installed ([docs/port/MODS.md](../docs/port/MODS.md#10-mods-in-a-git-repository)).
+Android does not load native mods (the system refuses code an app wrote);
+script mods would run there, but its launcher has no Mods tab yet. **Purist mode** (on the tab and in
+Settings) starts the game with none of them. How mods work and how to write
+one: [docs/port/MODS.md](../docs/port/MODS.md) and the [SDK](../sdk).
+
+The Mods tab also has, for each game that can be edited (Ratchet & Clank, PAL and
 NTSC-U), the three steps of modding in order: **Open the editor** (choose a
 level: each is a Godot 4 project of its own under `assets/levels/<game>`, so
 only that level loads; the first time they are read from the disc), **Pack** (turns the
@@ -235,11 +268,17 @@ launcher/
   (`~/.config/dev.openrac.launcher/` on Linux,
   `~/Library/Application Support/dev.openrac.launcher/` on macOS,
   `%APPDATA%\dev.openrac.launcher\` on Windows). Settings shows the path.
-- **Games set up from discs**: the install folder (Settings; by default the
-  launcher's per-user data folder), `active/<game>/data/`, as OpenGOAL lays
+- **Games set up from discs**: the install folder (Settings; by default
+  `OpenRAC` in your home folder: `~/OpenRAC`, `%USERPROFILE%\OpenRAC`), `active/<game>/data/`, as OpenGOAL lays
   it out (a developer's other disc of the same game waits beside it as
   `iso_data/<game>@<version>`). The game writes its logs there (`openrac-<id>.log` and the five
   before it) and its crash reports (`crashes/`).
+- **Gameplay mods**, only when you add, switch, order, update or remove one: the game's
+  `<data>/plugins/` (each mod's folder, `plugins.json`, and `sources.json` for those
+  added from a link, whose downloads it checks and then deletes; a pack's files wait in
+  `.downloads/` until the packs take them). Adding from a link and checking for
+  updates read GitHub's API (`api.github.com`), its raw files and the release's
+  downloads, nothing else.
 - **Its own log**: `launcher.log` beside `launcher.json`: when it started,
   each command it ran and how it ended; moved to `launcher.1.log` past 1 MB.
 - **A saved report**: `OpenRAC-<report>.zip` in your Downloads folder, only

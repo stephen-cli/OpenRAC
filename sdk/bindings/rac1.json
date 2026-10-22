@@ -1,0 +1,309 @@
+{
+  "format": 1,
+  "about": "Ratchet & Clank's binding for mods (docs/port/MODS.md, section 11): its hook points and the game state exposed to scripts by name. sdk/tools/gen_binding.py writes port/game/rac1/script_binding.c, sdk/include/openrac/games/rac1.hpp and sdk/types/rac1.d.luau from it, with the behaviour catalogue's update functions as hook points (experimental) and every hook point's permanent id and aliases (rac1.ids.lock); --check holds the hook points to the hook rows of port/game/rac1-<disc>/libraries.tsv. Addresses are each disc's; a field's offset is added to its base's.",
+  "game": "rac1",
+  "discs": [
+    "pal",
+    "ntsc"
+  ],
+  "catalogue": "sdk/catalogue/rac1/classes.json",
+  "catalogue_symbols": {
+    "ntsc": "sdk/bindings/rac1.ntsc.tsv"
+  },
+  "catalogue_exclude": {
+    "func_001E9768": "Profile_Mark: an empty routine 46 classes take as their update, which the engine also calls as a profiler mark; a hook on it would run for every mark and never see a moby",
+    "func_L00_002B33E8": "defined under another name (func_L00_002B33E8_r, vendor_002B33E8.c), which hostgen does not check a hook row against",
+    "func_L00_002B5C98": "defined under another name (func_L00_002B5C98_r), which hostgen does not check a hook row against",
+    "func_L00_002B9AD8": "defined under another name (func_L00_002B9AD8_r), which hostgen does not check a hook row against",
+    "func_L00_002C74B8": "defined under another name (func_L00_002C74B8_r), which hostgen does not check a hook row against",
+    "func_L07_0031A410": "defined under another name (func_L07_0031A410_r), which hostgen does not check a hook row against",
+    "func_L10_002DE018": "defined under another name (func_L10_002DE018_impl, a functional candidate), which hostgen does not check a hook row against",
+    "func_L13_00306EF0": "defined under another name (func_L13_00306EF0_r), which hostgen does not check a hook row against"
+  },
+  "hooks": [
+    {
+      "id": "rac1.pad.process_report",
+      "name": "Pad_ProcessReport",
+      "signature": "void(u32,u32,i32)",
+      "params": [
+        "pad",
+        "report",
+        "size"
+      ],
+      "symbols": {
+        "pal": "func_002181F0",
+        "ntsc": "FUN_00217328"
+      },
+      "about": "One pad report into the pad's state (PadState, at pad), each poll, before the tick reads it."
+    },
+    {
+      "id": "rac1.player.update_motion_input",
+      "name": "Hero_UpdateMotionInput",
+      "signature": "void()",
+      "params": [],
+      "symbols": {
+        "pal": "func_L00_00211D28",
+        "ntsc": "FUN_L00_00211670"
+      },
+      "about": "The stick read into the hero, early in his update each tick."
+    },
+    {
+      "id": "rac1.player.turn_to_heading",
+      "name": "Hero_TurnToHeading",
+      "signature": "void(i32,f32,f32,f32)",
+      "params": [
+        "mode",
+        "accel",
+        "damping",
+        "limit"
+      ],
+      "symbols": {
+        "pal": "func_L00_002124E8",
+        "ntsc": "FUN_L00_00211e30"
+      },
+      "about": "Eases the hero's facing toward his move yaw."
+    },
+    {
+      "id": "rac1.player.set_planar_velocity",
+      "name": "Hero_SetPlanarVelocity",
+      "signature": "void(f32)",
+      "params": [
+        "angle"
+      ],
+      "symbols": {
+        "pal": "func_L00_00212790",
+        "ntsc": "FUN_L00_002120d8"
+      },
+      "about": "The hero's velocity at his ground speed along an angle; an angle above pi means his facing."
+    },
+    {
+      "id": "rac1.camera.follow.apply_overrides",
+      "name": "FollowCamera_ApplyOverrides",
+      "signature": "void(u32)",
+      "params": [
+        "camera"
+      ],
+      "symbols": {
+        "pal": "func_L00_002E74B0",
+        "ntsc": "FUN_L00_002e6000"
+      },
+      "about": "The follow camera's per-tick requests from the hero's state; the camera moby's update calls it before it places the eye."
+    },
+    {
+      "id": "rac1.player.advance_animation",
+      "name": "Hero_AdvanceAnimation",
+      "signature": "void()",
+      "params": [],
+      "symbols": {
+        "pal": "func_L00_00232EF0",
+        "ntsc": "FUN_L00_00232670"
+      },
+      "about": "Ratchet's animation moved on by his animation speed, once a tick after his state's update."
+    },
+    {
+      "id": "rac1.item.give",
+      "name": "Item_Give",
+      "signature": "void(i32,i32)",
+      "params": [
+        "id",
+        "equip"
+      ],
+      "symbols": {
+        "pal": "func_L00_002618D8",
+        "ntsc": "FUN_L00_00260860"
+      },
+      "about": "Gives the player item id (GiveItem): sets its owned and obtained bytes, shows its banner, gives its starting ammo, marks it bought in the vendor's stock and adds it to the quick select; equip non-zero also puts it in hand. Every item the game gives goes through it but the Persuader's."
+    },
+    {
+      "id": "rac1.planet.unlock",
+      "name": "Planet_Unlock",
+      "signature": "void(i32)",
+      "params": [
+        "planet"
+      ],
+      "symbols": {
+        "pal": "func_L00_00261848",
+        "ntsc": "FUN_L00_002607d0"
+      },
+      "about": "Unlocks a planet's coordinates (UnlockPlanet): its flag (one byte per level), the galaxy list, and its banner unless it is the planet the player is on."
+    },
+    {
+      "id": "rac1.vendor.init_level_stock",
+      "name": "Vendor_InitLevelStock",
+      "signature": "void()",
+      "params": [],
+      "symbols": {
+        "pal": "func_L00_0023DB30",
+        "ntsc": "FUN_L00_0023d198"
+      },
+      "about": "The vendor's stock at each level start (VendorStockLevelInit): gives the Bomb Glove while the player has none, keeps the stock's known items and adds the level's new weapon."
+    },
+    {
+      "id": "rac1.vendor.build_item_list",
+      "name": "Vendor_BuildItemList",
+      "signature": "void(i32)",
+      "params": [
+        "skip_unflagged"
+      ],
+      "symbols": {
+        "pal": "func_L00_0029B770",
+        "ntsc": "FUN_L00_0029a400"
+      },
+      "about": "The vendor menu's list (VendorBuildItemList), from the stock and the items owned: each time the menu opens and after each purchase. skip_unflagged leaves out what is for sale (the menu opened from the pause screen)."
+    },
+    {
+      "id": "rac1.gold_bolt.count_collected",
+      "name": "GoldBolts_CountCollected",
+      "signature": "i32()",
+      "params": [],
+      "symbols": {
+        "pal": "func_002160E0",
+        "ntsc": "FUN_00215290"
+      },
+      "about": "The gold bolts collected, at most 40 (count_nonzero_entries_up_to_40): what the pause screen shows; the unspent ones are this less 4 per gold weapon."
+    },
+    {
+      "id": "rac1.player.take_damage",
+      "name": "Hero_TakeDamage",
+      "signature": "void(i32)",
+      "params": [
+        "amount"
+      ],
+      "symbols": {
+        "pal": "func_L00_002056D8",
+        "ntsc": "FUN_L00_002050c0"
+      },
+      "about": "Takes hit points off the hero's health (Hero_TakeDamage): at most one a call, none for 0, then the HUD's health bank. Every hit the hero takes goes through it but the instant kills (falls, crushers), which set his health to 0."
+    },
+    {
+      "id": "rac1.combat.get_hit",
+      "name": "Moby_GetHitMessage",
+      "signature": "u32(u32,i32,i32)",
+      "params": [
+        "moby",
+        "mask",
+        "keep"
+      ],
+      "symbols": {
+        "pal": "func_L00_0025B478",
+        "ntsc": "FUN_L00_0025a420"
+      },
+      "about": "The hit pending on moby (MobyGetHitMessage): the record of the last hit posted to it (+0x20 the attacker, +0x24 the flags, +0x2C the damage, an f32) when its flags match mask, else 0, dropping the hit unless keep. How the hero and every enemy read the hits they take, each tick, so a hit may be read more than once."
+    },
+    {
+      "id": "rac1.weapon.take_ammo",
+      "name": "Weapon_TakeAmmo",
+      "signature": "i32(i32,i32)",
+      "params": [
+        "item",
+        "amount"
+      ],
+      "symbols": {
+        "pal": "func_L00_00234638",
+        "ntsc": "FUN_L00_00233db8"
+      },
+      "about": "Takes amount of ammo from item for a shot (TakeAmmo; -1 is the item in hand): 1 when taken, 0 when there is too little. An item with no ammo limit takes none and gives 1."
+    },
+    {
+      "id": "rac1.moby.record_death",
+      "name": "Moby_RecordDeath",
+      "signature": "void(u32,i32,i32)",
+      "params": [
+        "moby",
+        "flags",
+        "index"
+      ],
+      "about": "Records a placed moby's death or a crate's break (SetDeathBits): its save id's killed bits (none for a save id below 0), its mission, then drops its bolts: about the s16 at +0xB4 (or what a tallied source has left of +0xB6), which it then clears.",
+      "symbols": {
+        "pal": "func_L00_002584A8",
+        "ntsc": "FUN_L00_00257470"
+      }
+    },
+    {
+      "id": "rac1.level.load_gameplay",
+      "name": "Level_LoadGameplay",
+      "signature": "u32(i32)",
+      "params": [
+        "full"
+      ],
+      "symbols": {
+        "pal": "func_L00_002422D8",
+        "ntsc": "FUN_L00_00241940"
+      },
+      "about": "Loads a level's gameplay file into the level heap (LoadLevelGameplay), once per level start: the settings, the placed mobys and their pvars, the spare moby pool, the paths and the rest; returns the heap cursor. After it, every placed moby exists and none has run."
+    },
+    {
+      "id": "rac1.player.approach_speed",
+      "name": "Hero_ApproachSpeed",
+      "signature": "void(f32,f32)",
+      "params": [
+        "up",
+        "down"
+      ],
+      "symbols": {
+        "pal": "func_L00_00212740",
+        "ntsc": "FUN_L00_00212088"
+      },
+      "about": "Eases the hero's ground speed (+0x194, the speed Hero_SetPlanarVelocity moves him at) toward his target speed (+0x190) by up when below it and by down when above, each tick he moves on foot, in every level."
+    }
+  ],
+  "bases": {
+    "hero": {
+      "pal": "0x0013F450",
+      "ntsc": "0x0013F350",
+      "about": "The hero's state (HERO in the port's rac1/host C)."
+    }
+  },
+  "fields": [
+    {
+      "name": "hero.position.x",
+      "type": "f32",
+      "base": "hero",
+      "offset": "0x80",
+      "about": "Where the hero is (gHeroPos)."
+    },
+    {
+      "name": "hero.position.y",
+      "type": "f32",
+      "base": "hero",
+      "offset": "0x84"
+    },
+    {
+      "name": "hero.position.z",
+      "type": "f32",
+      "base": "hero",
+      "offset": "0x88"
+    },
+    {
+      "name": "hero.facing",
+      "type": "f32",
+      "base": "hero",
+      "offset": "0x98",
+      "about": "The way he faces (rot.z), in radians."
+    },
+    {
+      "name": "hero.move_yaw",
+      "type": "f32",
+      "base": "hero",
+      "offset": "0x180",
+      "about": "Where the stick moves him: the stick's angle plus the camera's yaw."
+    },
+    {
+      "name": "hero.state",
+      "type": "i32",
+      "base": "hero",
+      "offset": "0x2084",
+      "readonly": true,
+      "about": "His state: 0 standing, 2 running, 7 jumping, ..."
+    },
+    {
+      "name": "bolts",
+      "type": "i32",
+      "address": {
+        "pal": "0x0015EE98",
+        "ntsc": "0x0015ED98"
+      },
+      "about": "The player's bolts."
+    }
+  ]
+}

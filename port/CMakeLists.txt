@@ -119,6 +119,63 @@ target_link_libraries(runtime_test PRIVATE openrac_runtime)
 openrac_warnings(runtime_test)
 add_test(NAME runtime COMMAND runtime_test)
 
+# ---- native mods (docs/port/MODS.md): manifests, the list, the loader ----
+# The JSON reader the viewer and the mod loader share.
+add_library(openrac_json STATIC viewer/json.cpp)
+target_include_directories(openrac_json PUBLIC .)
+openrac_warnings(openrac_json)
+
+include(Luau)
+add_library(openrac_mods STATIC
+  game/common/mod_library.cpp
+  game/common/mod_manifest.cpp
+  game/common/mod_scripts.cpp
+  game/common/mods.cpp
+)
+target_include_directories(openrac_mods PUBLIC game/common game/common/include "${PROJECT_SOURCE_DIR}/../sdk/include")
+target_link_libraries(openrac_mods PUBLIC openrac_runtime openrac_json ${CMAKE_DL_LIBS}
+                      PRIVATE openrac_luau)
+openrac_warnings(openrac_mods)
+
+add_executable(mod_manifest_test tests/mod_manifest_test.cpp)
+target_link_libraries(mod_manifest_test PRIVATE openrac_mods)
+openrac_warnings(mod_manifest_test)
+add_test(NAME mod_manifest COMMAND mod_manifest_test)
+
+# A mod built as a mod is (a shared library against the SDK's header alone), loaded by the real
+# loader with hook points of the test's own.
+add_executable(mod_loader_test tests/mod_loader_test.cpp)
+target_link_libraries(mod_loader_test PRIVATE openrac_mods)
+foreach(which a b)
+  add_library(mod_loader_test_${which} MODULE tests/mod_loader_test_mod.c)
+  target_include_directories(mod_loader_test_${which} PRIVATE "${PROJECT_SOURCE_DIR}/../sdk/include")
+  target_compile_definitions(mod_loader_test_${which} PRIVATE "TEST_MOD_ID=\"test-${which}\"")
+  set_target_properties(mod_loader_test_${which} PROPERTIES C_VISIBILITY_PRESET hidden PREFIX "")
+  string(TOUPPER "${which}" upper)
+  target_compile_definitions(mod_loader_test PRIVATE
+    "OPENRAC_TEST_MOD_${upper}=\"$<TARGET_FILE:mod_loader_test_${which}>\"")
+  add_dependencies(mod_loader_test mod_loader_test_${which})
+endforeach()
+openrac_warnings(mod_loader_test)
+add_test(NAME mod_loader COMMAND mod_loader_test)
+
+# Script mods (docs/port/MODS.md, section 11): the real loader and Luau with a game of the test's own,
+# its binding generated from tests/script_binding_test.json, beside the native test mod.
+add_executable(mod_scripts_test tests/mod_scripts_test.cpp tests/script_binding_test.c)
+target_link_libraries(mod_scripts_test PRIVATE openrac_mods)
+target_compile_definitions(mod_scripts_test PRIVATE "OPENRAC_TEST_MOD_A=\"$<TARGET_FILE:mod_loader_test_a>\"")
+add_dependencies(mod_scripts_test mod_loader_test_a)
+openrac_warnings(mod_scripts_test)
+add_test(NAME mod_scripts COMMAND mod_scripts_test)
+
+# The bindings the generator writes are what their tables give, and the tables' hook points the
+# hook rows of every disc's libraries.tsv.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+  add_test(NAME mod_binding COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+           -s "${PROJECT_SOURCE_DIR}/../sdk/tools" -p "test_gen_binding.py")
+endif()
+
 add_executable(rac4_io_test tests/rac4_io_test.c
   game/rac4-ntsc/host/pad.c game/rac4-ntsc/host/sound.c game/common/lib/pad.c)
 target_include_directories(rac4_io_test PRIVATE runtime/include game/common/include)
@@ -271,14 +328,6 @@ if(UNIX)
 endif()
 openrac_warnings(hero_heading_test)
 add_test(NAME hero_heading COMMAND hero_heading_test)
-
-add_executable(hero_strafe_test tests/hero_strafe_test.c)
-target_compile_options(hero_strafe_test PRIVATE -ffp-contract=off)
-if(UNIX)
-  target_link_libraries(hero_strafe_test PRIVATE m)
-endif()
-openrac_warnings(hero_strafe_test)
-add_test(NAME hero_strafe COMMAND hero_strafe_test)
 
 add_executable(hero_contact_test tests/hero_contact_test.c)
 target_compile_options(hero_contact_test PRIVATE -fno-strict-aliasing -ffp-contract=off)

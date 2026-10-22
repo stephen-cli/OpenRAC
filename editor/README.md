@@ -121,28 +121,20 @@ class is and what runs it, in its tooltip in the Scene dock and as metadata:
 | `rc1_source` | where that function is in the decompilation ([games/rac1](../games/rac1)), and the tooltip says whether it is C there yet |
 
 That function is the moby's behaviour: an enemy's attack pattern, a crate
-breaking, a vendor's menu. It is ordinary C in the decompilation, and the
-native port is built from that C, so **changing a moby's logic is editing
-that function and building the port again** (the launcher's Build the game).
-There is no scripting layer on top of it yet: no way to change behaviour
-from Godot or without a compiler. The table comes from the decompilation's
-`config/overlays/names.tsv` (its `UpdateMoby_<class>` roles), per level, so
-it is only written when `games/rac1` is in the checkout.
-
-## Moby behaviour as GDScript (prototype)
-
-```sh
-python3 editor/behaviour.py export <exported level project> --level 0 --classes 357,749,500
-```
-
-Writes a GDScript per moby class into `levels/level_NN/mobys/behaviour/` and attaches it to
-the class scene: the class, its update function and source, its pvars as typed exported
-variables with their offsets, and the update function translated from the decompiled C (what
-could not be translated is a `pass  # not translated` line saying why). The scripts run against
-the `RcEngine` stub in `rc1/` for reading and preview; the port still runs the C. See
-[BEHAVIOUR.md](BEHAVIOUR.md) for what was found and the routes to getting scripts into the game.
+breaking, a vendor's menu. It is C in the decompilation, and the native port
+is built from that C. Behaviour is not edited in Godot: the level editor edits
+levels and their data, and nothing in a project runs game logic. A class's
+behaviour is changed by a mod through the mod SDK, on the port's hook points
+([docs/port/MODS.md](../docs/port/MODS.md)); the SDK's behaviour catalogue
+([BEHAVIOUR.md](BEHAVIOUR.md), `sdk/catalogue/rac1/`) names each class's update
+function, its hook point and its pvar fields. The table comes from the
+decompilation's `config/overlays/names.tsv` (its `UpdateMoby_<class>` roles),
+per level, so it is only written when `games/rac1` is in the checkout.
 
 ## Pack your edits
+
+The modder's guide to the whole round trip (extract, edit in Godot, pack,
+play from the launcher) is [LEVEL_MODDING.md](LEVEL_MODDING.md).
 
 ```sh
 python3 editor/extract.py pack baserom/SCES_509.16.iso assets/levels/rac1/pal assets/packed/rac1/pal
@@ -159,6 +151,8 @@ and the list of disc sectors it replaces:
 assets/packed/rac1/pal/
   level_NN/gameplay_<version>.wad   one per level whose mobys were edited, the size of its place on the disc
   level_NN/placements.json    one per level whose ties or shrubs were edited, for the native port
+  level_NN/core_<version>.bin  one per level whose collision (the level's or a moby class's) was edited: the level data's sectors of its core data
+  level_NN/index_<version>.bin with it, when the core data grew (a collision moved to its end): the core index's sector
   patches.tsv                 first sector, sector count, file
   changes.txt                 what changed, in words
   packed.json                 the disc it was packed from
@@ -179,17 +173,26 @@ launcher's Mods page does all three steps (edit, pack, play).
 What is packed today: **mobys that were moved, turned, scaled, given another
 class, given other values** (the `rc1_*` metadata in the Inspector), **added
 or deleted**, and **ties and shrubs** the same way (moved, turned, scaled
-each axis its own, another class of the level, other values, added, deleted).
-A moby keeps one scale for all three axes. Not yet: terrain, and anything of
-a class the level does not load.
+each axis its own, another class of the level, other values, added, deleted),
+**the gameplay data**: pvars, links between objects, moby groups, volumes,
+paths, grind paths, cameras, sound instances and the level settings
+([Gameplay data](#gameplay-data)), **the collision**: tiles and hero walls
+deleted, moved, edited or added ([Collision](#collision)), and **moby class
+collision**: a class's spheres, cylinders, capsules and triangles, for every
+moby of the class in that level ([Object collision](#object-collision-moby-classes)). A moby keeps one scale for all three axes.
+Not yet: terrain, and anything of a class the level does not load (the
+port draws a denser or reshaped terrain from an overrides pack instead:
+[MODDING.md](MODDING.md#editing-the-terrain)).
 
 Ties and shrubs are packed for the native port only ([scenery.py](scenery.py)):
 the port draws them from the extractor's files, so the pack writes the
 level's `placements.json` with the lists that changed, each tie and shrub lit
 again where it stands, and `--mods` reads it in place of the level's own.
-The gameplay file's own tie and shrub tables and the level's collision stay
-the disc's: a tie that was moved is drawn in its new place and still walked
-on in its old one, and a new one is walked through.
+The gameplay file's own tie and shrub tables stay the disc's, and the level's
+collision is baked from the ties and shrubs: a tie that was moved is drawn in
+its new place and still walked on in its old one until its collision is moved
+too (the tiles, below), and a new one is walked through until collision is
+added for it.
 
 An added moby is a copy made in Godot (Ctrl+D) or one of the level's class
 scenes dropped under `Game/Mobys`. It takes after the moby it copies (or the
@@ -231,8 +234,9 @@ python3 editor/assets.py import build/my-export --levels assets/port/rac1/pal --
 ```
 
 Exports a level's moby, tie and shrub models as glTF (mesh, UVs, vertex
-colours, materials, skeleton, inverse bind matrices, weights, animations) and
-its textures as PNG, each with a manifest; reads the edited files back as an
+colours, materials, skeleton, inverse bind matrices, weights, animations), its
+terrain (`--what terrain`: one node per fragment, any vertex count coming
+back) and its textures as PNG, each with a manifest; reads the edited files back as an
 overrides pack ([overrides.py](overrides.py)) that the port loads with
 `--mods`. Either disc's levels (`assets/port/rac1/ntsc` the same way), and a
 pack made from one disc's applies to the other's where it matches. [MODDING.md](MODDING.md) is the guide: editing in Blender,
@@ -268,18 +272,25 @@ with a manifest of their sizes and hashes.
 ## The project
 
 ```
-project.godot
+project.godot                enables the Collision dock ([editor_plugins])
 rc1/level.gd                 fly camera when a level is run
 rc1/check.gd                 headless check against level.json
+addons/openrac_collision/    the Collision dock, an editor plugin (Collision, below)
 levels/level_NN/
   level_NN.tscn              the level
   level.json                 what was extracted: counts, bounds, code overlay
   terrain.glb                one node per terrain fragment
-  collision.glb              the collision mesh, coloured by surface type
+  collision/tile_XX_YY.glb   the collision of a 64-unit square, a material per type byte
+  collision/hero_NNN.glb     a hero wall (a hero group)
+  collision/collision.json   what was written: each file's name, SHA-1 and triangles
   ties/tie_<class>.glb       one mesh per tie class
   shrubs/shrub_<class>.glb   one mesh per shrub class
-  mobys/moby_<class>.tscn    a moby class: its mesh (or a box) and a label
+  mobys/moby_<class>.tscn    a moby class: its mesh (or a box), a label and its collision (hidden)
   mobys/moby_<class>.glb     a moby class's mesh, skeleton and animations
+  mobys/collision/moby_<class>_XX.glb   a class's collision triangles of type byte XX
+  mobys/collision.json       the class scenes and collision files as written (SHA-1)
+  gameplay/<kind>.tscn       a volume's unit shape (cuboid, sphere, cylinder, pill), or a
+                             camera's, sound's or the ship's marker
   sky.png                    the sky as a panorama, used by the WorldEnvironment
   textures/*.png             shared by the level's meshes
 ```
@@ -292,11 +303,16 @@ Level_NN
   Sun                   a directional light, so shapes read in the editor
   Game                  turns the game's Z-up axes into Godot's Y-up
     Terrain             fragments Terrain_000... (editable children)
-    Collision           the collision layer, hidden until you show it
+    Collision           the collision, by 64-unit tile, hidden until you show it (Collision, below)
+    HeroWalls           the walls only the player meets, hidden too
     Ties/Tie_NNNN       one node per placed tie
     Shrubs/Shrub_NNNN   one node per placed shrub
     Mobys/Vendor_0012   one node per placed moby (crates, enemies, NPCs...), named
                         after its class and its place in the level's table
+    LevelSettings       the gameplay data (Gameplay data, below): fog, death height,
+    MobyGroups, Cameras,  ship; groups; cameras; sounds; volumes; paths
+    Sounds, Volumes,
+    Paths, GrindPaths
 ```
 
 To edit a level:
@@ -349,18 +365,104 @@ Run a level (F6) to fly around it:
 | F | Frame the terrain |
 | C | Show or hide the collision layer |
 
-## Collision layer
+## Gameplay data
 
-`Game/Collision` is the level's baked collision mesh: the triangles the game
-tests Ratchet, bolts and shots against, with ties and shrubs already
-included. It is hidden by default (`visible` is off) so it does not hide the
-terrain. In the editor, click its eye icon in the Scene dock; in a running
-level press C. It is one translucent, unshaded mesh with a colour per
-surface, so it reads over the terrain. Triangles are double-sided here, but
-the game treats them as one-sided.
+RAC1 moby behaviour is C in the port, but each level's gameplay file says
+what every object starts with, and those values are in the scene, editable,
+and packed back like the mobys ([gamedata.py](gamedata.py); the formats are in
+[LEVEL.md](../docs/engine/formats/LEVEL.md#8-the-gameplay-file)):
+
+| Node | What | Packed |
+|---|---|---|
+| `Game/LevelSettings` | `rc1_background`, `rc1_fog_colour` (r, g, b), `rc1_fog_near`, `rc1_fog_far` and their `_intensity`, `rc1_death_height`, `rc1_ship_path`, `rc1_ship_camera_cuboids` (first, last) | values |
+| `Game/LevelSettings/Ship` | where the player's ship lands; turn it about Z only | moved |
+| `Game/MobyGroups` | `rc1_group_<n>`: each group's members, by node name | members |
+| `Game/Cameras/Camera_NNNN` | position and rotation (the game's Euler angles), `rc1_class`, pvars | edited in place |
+| `Game/Sounds/Sound_NNNN` | the record's matrix, `rc1_class`, `rc1_m_class`, `rc1_range`, pvars (hidden) | edited in place |
+| `Game/Volumes/Cuboids/Cuboid_NNNN`, `Spheres`, `Cylinders`, `Pills` | the unit shape through the record's matrix, translucent (hidden until you show `Volumes`) | moved, turned, scaled, added |
+| `Game/Paths/Path_NNNN` | a `Path3D`: the points in its curve, `rc1_w` each point's fourth float | points moved, added or removed; paths added |
+| `Game/GrindPaths/GrindPath_NNNN` | as paths, with `rc1_bounding_sphere` (x, y, z, r) and `rc1_flag` | the same |
+
+On a moby, camera or sound with a pvar block (its class's private
+variables, `rc1_pvar_index`):
+
+- `rc1_pvar`: the block as 32-bit words. A number with a decimal point or an
+  exponent packs as a float, any other as an integer; the list keeps its
+  length (blocks are not resized).
+- `rc1_pv_<field>`: the fields the decompilation names, typed (the classes'
+  `struct update<class>` in games/rac1's
+  [moby_pvars.h](../games/rac1/include/moby_pvars.h), 19 classes, and the
+  header every camera block starts with: `rc1_pv_sphere`, `_cuboid`,
+  `_cylinder`, `_path` name the volumes and path the camera's region test
+  uses, `rc1_pv_activation` when it switches on). A field and the word under
+  it are the same bytes: edit either; when both change, the field wins.
+- `rc1_link_<offset>`: a moby link in the block (the gameplay file's +0x50
+  list), as the name of the moby node it names, or `"-1"` for none. Name
+  another moby node to point it there; a link follows its moby when mobys
+  are added or deleted.
+- The words the level loader rewrites (moby links, pointers into the block,
+  addresses of shared data) are not packed from `rc1_pvar`: links through
+  `rc1_link_*`, the others not at all.
+
+A copy of a moby (Ctrl+D) gets a copy of its pvar block, and its own
+`rc1_pv*` values pack into the copy. Moby groups: removing a name from
+`rc1_group_<n>` or adding one moves that moby (its `rc1_group`), and each
+group then lists the mobys whose `rc1_group` names it, so setting a moby's
+`rc1_group` moves it between the lists too (in a project exported with
+`MobyGroups`; an older one packs its groups as before).
+
+Volumes, paths and grind paths are named by their place in their table by
+other data (camera blocks, moby pvars, the camera collision grid, the level
+settings), so they are never deleted or renumbered: a node deleted in Godot
+is packed as it was, with a note in `changes.txt`. A new one (a copy, or
+`gameplay/<kind>.tscn` dropped under its group, or a new `Path3D` under
+`Game/Paths`) goes after the table's own; when the section no longer fits
+where it was it moves to the end of the file. Cameras and sound instances
+are edited in place only. An edited volume's inverse matrix and Euler angles
+are computed again; an edited grind path keeps its bounding sphere when it
+still holds every point, and grows it just enough otherwise (the disc's own
+rule is not known). Curve handles and tilts are not the game's: paths are
+polylines, so they are ignored, and a point added in Godot gets the fourth
+float -1, which nearly every path point on the disc has (on grind paths it
+varies per point; its meaning is not established).
+
+"Triggers" in RAC1 are mostly these volumes: cameras switch by the cuboid,
+sphere or cylinder of their block's header, many moby classes keep a cuboid
+or path index in their pvars (shown as words, or as a typed field where the
+layout is known), the level settings name the ship's camera cuboids, and
+the camera collision grid (not exported) lists volumes per 16-unit cell.
+Environment transitions (fog zones) have matrices of their own and are not
+exported yet.
+
+As with mobys, what the scene has as the extractor wrote it keeps its bytes:
+an untouched project packs to nothing, and Godot's own saving is not an
+edit. Values that cannot be packed (not a number, out of the field's range,
+a link to no moby, an index past its table) are listed as `not packed:` in
+`changes.txt` and leave the bytes as they were.
+
+Checked on 2026-10-21 on the PAL disc: every section above, read and written
+again unchanged, gives its bytes back in all 19 levels; each level exported
+and packed untouched gives the disc's gameplay file; and one edit of each
+kind (a pvar word, a typed field, a link, a group, a camera, a sound's range,
+a cuboid moved and one added, a path point and its fourth float, a grind
+path, the death height, the ship) on levels 3 and 16 changed only that
+record's bytes (or, for an added cuboid, the table moved to the end of the
+file).
+
+## Collision
+
+`Game/Collision` is the level's baked collision: the triangles the game tests
+Ratchet, bolts and shots against, with ties and shrubs already included.
+`Game/HeroWalls` holds the walls only the player meets (fences, invisible
+walls: the block's hero groups). Both are hidden by default (`visible` is off)
+so they do not hide the terrain. In the editor, click the eye icon in the Scene
+dock; in a running level press C. They are translucent and unshaded, with a
+colour per surface, so they read over the terrain. Triangles are double-sided
+here, but the game treats them as one-sided: a triangle faces the side its
+corners turn counter-clockwise from, as in any glTF file.
 
 The colour is the surface id, the low five bits of each face's type byte
-(the other bits choose footstep sounds and exclude the face from some
+(bits 5-6 choose a footstep sound class and bit 7 excludes the face from some
 queries). The game has no table of surface types, so the names are
 inferences from how its code tests them, and most ids are only colours:
 
@@ -376,12 +478,173 @@ inferences from how its code tests them, and most ids are only colours:
 The other ids are coloured by hue from the id. Each level's `level.json`
 lists its surfaces and how many triangles use each.
 
-The mesh is decoded from the level's collision block with every cell's
-faces merged, so a face that straddles several cells appears once.
-Vertices are quantised (1/16 unit across, 1/64 up), which leaves tiny
-gaps and some doubled faces. Hero-only walls and fences (invisible walls
-that only block the player) are in the block too, but they are not
-extracted yet.
+### Editing it
+
+**The Collision dock** (`addons/openrac_collision`, an editor plugin every
+export enables; [LEVEL_MODDING.md](LEVEL_MODDING.md#collision) is the
+modder's guide) edits the collision face by face: Show collision draws it over
+the level with a legend of its surfaces; Pick faces selects faces in the 3D
+view (click, Shift-click, a box, connected faces of one type byte, the faces
+baked inside a selected tie or shrub); the selection is repainted (surface id,
+sound class, exclusion bit), deleted, moved by an offset, or faces are added
+(a quad, a box, the triangles of a selected mesh, simplified to fit the
+cells). Each edit is undoable and saved with the scene. The dock leaves the
+tiles alone and keeps its edits as metadata of `Game/Collision`, which
+`collision_scene.scene_collision` applies on top of the nodes' triangles:
+
+| Metadata | Ten ints per face |
+|---|---|
+| `rc1_removed` | the corners x0 y0 z0 x1 y1 z1 x2 y2 z2 in 1/64 game units (the tiles' positions times 64, glTF's winding), then the type byte |
+| `rc1_added` | the same, on the game's grid; a repaint or a move is a face removed and added again |
+| `rc1_hero_removed` | the hero wall's number (`HeroWall_NNN`), then the corners |
+
+A face is named by its corners and type byte, whichever corner comes first.
+A removed face no node holds any more (a tile edited in Blender since) is
+reported in `changes.txt`, not guessed at. The dock's logic is in plain
+scripts (`level_faces.gd`, `class_collision.gd`), which
+[test_collision_dock.gd](test_collision_dock.gd) runs headless on a real level.
+
+The collision also comes as tiles, one per 64 x 64-unit square of the level
+(`Game/Collision/Tile_XX_YY`, an instance of `collision/tile_XX_YY.glb`), and
+one node per hero wall (`Game/HeroWalls/HeroWall_NNN`, `collision/hero_NNN.glb`).
+A tile has a material per type byte named `rc1_surface_XX` (the byte in
+hexadecimal: `rc1_surface_1f`, `rc1_surface_0c`). What you can do:
+
+| In Godot or Blender | What the packer does |
+|---|---|
+| Delete a tile or a hero wall | its triangles leave the level |
+| Move, turn or scale a tile | its triangles move |
+| Edit a tile's `.glb` in Blender and export it to the same file (keep the materials; give a face another `rc1_surface_XX` material to change its type) | the triangles that differ are taken out and put in |
+| Set `rc1_surface` (an integer, the type byte) on a tile | every face of it takes that byte |
+| Add a node under `Game/Collision`: a `MeshInstance3D` with a `BoxMesh`, `PlaneMesh` or `QuadMesh`, or an instance of any `.glb`/`.gltf`, with `rc1_surface` metadata (0x1f, 31, without it; a material named `rc1_surface_XX` in a glTF wins) | its triangles are added, in the node's place |
+| The same under `Game/HeroWalls` | a new hero wall (255 triangles each; more become several) |
+
+How it is packed ([collision_scene.py](collision_scene.py), [collision.py](collision.py)):
+
+- The packer compares the scene's triangles with the disc's. A scene with
+  the collision as the export wrote it (re-saved by Godot or not) packs
+  nothing, and read back from the tiles it is exactly the disc's triangles
+  (checked on all 19 levels of both discs).
+- The game keeps its collision in a grid of 4-unit cells, each with its own
+  copy of every face that touches it ([COLLISION.md](../docs/engine/formats/COLLISION.md)).
+  A removed triangle leaves every cell that has it (a quad that loses one
+  half keeps the other); an added one goes into every cell it touches; every
+  other cell keeps its bytes, and the block keeps the disc's layout, so an
+  untouched block is written back byte for byte.
+- Positions snap to the game's grid: 1/16 unit across, 1/64 up. A triangle
+  that becomes a line on it is left out (`changes.txt` counts them). A large
+  triangle is halved until each cell it touches can hold its corners (a
+  vertex is at most 32 units from its cell's centre).
+- Checked before anything is written, or the level's collision is left as
+  the disc has it and `changes.txt` says why: at most 255 vertices and 255
+  quads in a cell (simplify the mesh there), a cell's size, everything inside
+  0-1024 units on each axis (the game answers no query outside), hero walls
+  of at most 255 triangles.
+- The block goes back into the level's core data, in its own place when it
+  fits; a larger one moves to the end of the core data (the core index says
+  where), and the level's memory after the core moves up by the block's size.
+  **That has not been tried in the running game yet**: keep growth small, and
+  tell us how it goes.
+- The core data is compressed again (about ten seconds a level) into the room
+  it has on the disc, and its sectors go in the packed folder.
+
+What the decoded collision misses: the cells' quads are split into triangles
+here, and a face shared by cells appears once, so the tiles show the level's
+surfaces, not the cells.
+
+### Object collision (moby classes)
+
+Crates, doors, enemies and the other mobys collide through their **class**:
+a class in the level's core can carry a collision blob
+([MOBY.md, section 8](../docs/engine/formats/MOBY.md#8-collision-bangles-gif-usage)) of
+**primitives** (spheres, spheres on a joint, upright cylinders, capsules
+between two joints) and **triangles** with type bytes, which the game's
+queries test against each moby of the class where it stands, turned and
+scaled with it. A bolt crate, for one, is a sphere and a 12-triangle box.
+Each class scene (`mobys/moby_<class>.tscn`) has it as a hidden `Collision`
+child of its root, in the class's model units (the node carries the class
+scale), coloured like the level's surfaces:
+
+```
+Moby_<class>
+  Collision             hidden; rc1_collision_format = 1
+    Sphere_NN           a SphereMesh: a sphere
+    JointSphere_NN      a SphereMesh on joint rc1_joint, drawn in the bind pose
+    Cylinder_NN         a CylinderMesh, upright (on a tilted moby the game keeps it upright too)
+    Capsule_NN          a CapsuleMesh between joints rc1_joints, drawn in the bind pose
+    Mesh_XX             collision/moby_<class>_XX.glb: the triangles of type byte XX
+```
+
+Every child has `rc1_collision_kind` (`sphere`, `joint_sphere`, `cylinder`,
+`capsule`, `mesh`) and `rc1_surface` (a mesh's type byte; 31 on the
+primitives, which have no surface: a hit on one reports none). A primitive
+also has `rc1_index`, its place in the blob, and `rc1_queries`: bit 0 for the
+queries that pass flag 0x4 (the player's movement among them), bit 1 for the others
+(shots, bolts, explosions; the ground probe tests no primitives). Triangles are tested by every
+query. Joint primitives follow their joints in the running game; the editor
+shows them in the bind pose. Open the class scene and click the `Collision`
+eye to see it (the Collision dock shows it on a selected moby, and edits its
+parts' sizes, positions, queries and type bytes, or makes it from the class's
+model: the same rules as below).
+
+| In Godot or Blender | What the packer does |
+|---|---|
+| Move or scale a sphere or cylinder (the cylinder's height and radius), or a joint sphere (its offset from the joint) | the primitive moves or resizes |
+| Scale a capsule | its radius; it runs between `rc1_joints`, which you change instead of moving it |
+| Change `rc1_queries`, `rc1_joint` or `rc1_joints` | the primitive takes them (joints must be the class's) |
+| Delete a child | the primitive or those triangles go; with every child gone the class has no collision |
+| Add a `MeshInstance3D` with a `SphereMesh` (with `rc1_joint` on a joint), `CylinderMesh` or `CapsuleMesh` (with `rc1_joints`) | a new primitive |
+| Add a `BoxMesh`, `PlaneMesh`, `QuadMesh` or a `.glb`/`.gltf` instance, or edit a `Mesh_XX` glTF in Blender (a material `rc1_surface_YY` gives faces that type byte) | the triangles change |
+
+**What a class edit affects.** The collision belongs to the class, so an edit
+is **every moby of that class in that level**. Each level has its own core,
+so the same class in another level keeps its own collision: edit it there too.
+One moby alone cannot get other collision from the level data: nothing in a
+moby's record turns it on or off. What works is giving that moby another class
+the level has (which changes its model too), or behaviour code
+([docs/port/MODS.md](../docs/port/MODS.md)): the game sets a moby's own
+`collision` pointer (moby +0x94, copied from the class) to 0 to make it
+intangible and sets bits of `collision_disable` (+0x98: bit *i* turns off
+primitive *i*, the first 32) on objects being carried, and a mod can do the same.
+
+How it is packed ([moby_collision_scene.py](moby_collision_scene.py),
+[moby_collision.py](moby_collision.py)):
+
+- What is as the export wrote it keeps the disc's bytes: an untouched project
+  packs nothing (checked on every class of both discs: 2,972 PAL and 2,968
+  NTSC-U class scenes read back as the disc's), and an edited class keeps the
+  records of the primitives you left alone.
+- Checked first, or that class is left as the disc has it and `changes.txt`
+  says why: kinds, radii and heights above 0, joints within the class's
+  skeleton, vertices within 32 model units of the class's origin (16 bits in
+  1/1024), faces reaching only the first 256 vertices (byte indices).
+- The blob goes back where the class has it when it fits (its place is padded
+  to 16 bytes), else to the end of the core data: the class header's
+  collision offset is relative to the class and the loader adds the class's
+  address, so it can point anywhere in the core. Like a moved level collision
+  block, **that has not been tried in the running game yet**.
+- The port reads it as the game does: the core data, served from the packed
+  sectors by `--mods`, is in the game's memory, and the collision kernels read
+  the class blob there.
+
+**Custom models.** A model you replace with an overrides pack
+([MODDING.md](MODDING.md)) keeps the class's collision, so a bigger crate is
+still hit as the old one. Make collision for it from its mesh:
+
+```sh
+python3 editor/moby_collision.py generate my_crate.glb --scene assets/levels/rac1/pal/level_03/levels/level_03/mobys/moby_500.tscn
+python3 editor/moby_collision.py generate my_crate.glb --mode box --surface 0x7f --scene ...
+```
+
+`--mode mesh` (the default) takes the triangles themselves, merged until at
+most 256 vertices are left; `box` the box around them; `sphere` and
+`cylinder` one primitive around them. The model is read as `assets.py`
+exports models (glTF's Y up, at the drawn size: the class scale is taken
+from the class scene); `--axes game` reads one in the game's axes, `--scale`
+gives the size. The class scene's `Collision` children are replaced, and
+`extract.py pack` packs it. `--out FILE` writes the blob instead, for tools.
+A class the level does not have cannot be added yet, so neither can its
+collision.
 
 ## Checks
 
@@ -389,7 +652,16 @@ extracted yet.
 python3 -m unittest discover -s editor                         # synthetic data only
 godot --headless --path assets/godot --import
 godot --headless --path assets/godot --script res://rc1/check.gd
+godot --headless --editor --quit --path assets/godot           # loads the Collision dock: no errors
+OPENRAC_GODOT=godot OPENRAC_DOCK_DISC=baserom/SCES_509.16.iso OPENRAC_DOCK_PROJECT=assets/levels/rac1/pal/level_00 \
+  python3 -m unittest discover -s editor -p test_collision_dock.py   # the dock's edits, packed
 ```
+
+The last runs the dock's logic headless on a copy of an exported, imported
+level (picking by ray, selecting, repainting, deleting, moving, adding, a
+mesh made into collision, a class's collision made from its model) and checks
+the packed block is the disc's with exactly those edits, every other cell byte
+for byte.
 
 The Godot check loads every level scene and compares its meshes, triangles,
 textures, bounds, sky panorama and moby count with what the extractor wrote.
@@ -397,7 +669,8 @@ The collision layer is not counted with the textured meshes; its triangles
 are compared with `level.json` on their own, and it must be hidden.
 It also loads every moby class scene and compares their models, triangles,
 textures, skeletons, bones and animations, and the meshes the placed mobys
-show.
+show, and each class scene's collision (classes, primitives, triangles; it
+must be hidden).
 
 ## Coverage
 
@@ -408,7 +681,9 @@ Extracted:
 - moby placements, and each moby class's high-detail mesh, skeleton and
   animations;
 - the sky;
-- the collision mesh, as a hidden layer;
+- the collision and the hero walls, as hidden layers, editable;
+- the gameplay data: pvars, moby links and groups, volumes, paths, grind
+  paths, cameras, sound instances and level settings;
 - the textures they use.
 
 Approximations:
@@ -434,7 +709,7 @@ Approximations:
   inferred rather than traced in the game's code. Sprites the game adds
   to the sky at run time are not included.
 
-Not yet extracted: low-detail moby meshes, hero collision, audio, video
+Not yet extracted: low-detail moby meshes, audio, video
 and each level's code overlay. [ASSETS.md](../games/rac1/docs/ASSETS.md) describes
 the formats and the evidence for them.
 
@@ -519,12 +794,19 @@ The GDScript files follow [`GDSCRIPT_CONVENTIONS.md`](GDSCRIPT_CONVENTIONS.md).
 | `games.py` | What the four games' level formats share and what each changes, for the shared readers |
 | `level.py` | A level's sections, core blocks and textures (each game's) |
 | `formats.py` | Bounded reads, WAD decompression, code overlays, textures |
-| `terrain.py`, `ties.py`, `shrubs.py`, `sky.py`, `collision.py` | Geometry and placements |
+| `terrain.py`, `ties.py`, `shrubs.py`, `sky.py` | Geometry and placements |
+| `collision.py` | The collision block: decoded for display, and read, edited and written back byte-exact |
 | `mobys.py`, `moby_class.py`, `moby_anim.py` | Moby placements, class meshes, skeletons and animations |
 | `mesh.py`, `gltf.py` | The mesh type and the GLB writer |
 | `gltf_read.py`, `pngio.py` | Reading glTF and PNG files back (a modder's edits) |
 | `assets.py`, `overrides.py` | Export for modding and re-import; overrides packs ([MODDING.md](MODDING.md)) |
 | `godot.py` | Project, scenes and level.json |
+| `collision_scene.py` | The collision as tiles and hero walls in the scene, read back and packed into the level's core data |
+| `moby_collision.py` | Moby class collision: read, checked and written back byte-exact; generated from a mesh (also a command) |
+| `moby_collision_scene.py` | A class's collision in its class scene, read back and packed into the level's core data |
+| `gamedata.py` | The gameplay data (pvars, links, groups, volumes, paths, cameras, sounds, level settings) in the scene and packed back |
+| `pack.py`, `gameplay.py`, `scenery.py`, `wadpack.py` | Packing edited scenes back into the game's level data |
+| `addons/openrac_collision/` | The Collision dock (GDScript, editor only): `plugin.gd` the plugin, `dock.gd` and `help.gd` its panel, `level_faces.gd` the level's faces and their edits, `class_collision.gd` a class scene's collision, `surfaces.gd` the type bytes |
 
 The decoders accept only the layouts found on these discs and raise
 `FormatError` on anything else. Nothing is skipped silently.

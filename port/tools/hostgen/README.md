@@ -180,7 +180,23 @@ For an assembly function whose verified result occupies all 64 bits of `$v0`,
 list its name in `returns_64`. Its translated signature and its callers then
 preserve the full register value; this is needed for packed texture descriptors
 whose upper bits hold palette and format fields. Unmarked integer results keep
-their declared width. The same setting also preserves wide values in lowered C.
+their declared width. The same setting also preserves wide values in lowered C:
+an int local that receives such a result keeps all 64 bits, and a definition
+with a 32-bit result that returns such a call's result as it is returns 64 bits
+too and counts as listed ([program.py](program.py) `widen_returns`: rac1/pal's
+Pause_GetFadeColor, `return FastTweenColor(...)`). An unsigned int or a pointer
+such a local also receives, and such a definition's other return values, are
+sign-extended from 32 bits, as the EE's register holds them (rac1/pal's
+RibbonTrailDraw: its `unsigned int color` takes FastTweenColor's colour and
+`(color & 0xFFFFFF) + (a << 24)`).
+
+A local the original keeps in a stack slot across calls loses those bits: GCC
+believes the value is an int, stores it with `sw` after the call and loads it
+back sign-extended with `lw`. Nothing in the C says which locals the register
+allocation spilled; `spilled_locals` names them per function
+(`{"func_001FBE80": ["c1"]}`: rac1/pal's freeze screen keeps two FastTweenColor
+colours in saved registers and one in its frame), and they stay 32-bit. A
+function the program does not have is an index problem.
 
 For verified argument types that register-use inference cannot establish,
 `asm.signatures` maps a function name to a C function type, for example
@@ -232,7 +248,8 @@ cd ../rac1-decomp && python3 tools/fcheck.py func_001F98C0 build-sn/fcheck/asmc/
 
 [prep.py](prep.py) copies the files it reads and changes the copies without
 moving a line: `long` becomes `long long` (the EE's long is 64-bit; `long
-double` stays), file-scope `__asm__` (padding for the matching build) is
+double` stays), a unit's own `long long` becomes the 128-bit `openrac_ti` where
+the game's compiler had it so (`long_long_128`), file-scope `__asm__` (padding for the matching build) is
 blanked, and strings that run across lines are split.
 [clangast.py](clangast.py) has Clang read each file for a 32-bit MIPS
 target, so every type has the console's size and layout. Where Clang
@@ -260,6 +277,7 @@ describes every key). What hostgen itself reads:
 | Key | |
 |---|---|
 | `sources`, `skip` | the C to translate (`src`, without `src/libgcc`: the host compiler has its own) |
+| `long_long_128` | `{"except_objects": TABLE, "except_compilers": [...]}`: the units whose `long long` is the 128-bit integer of the game's own compiler (SN's GCC 2.95.3: `*(long long *)p = 0` is `por` + `sq`), every unit of `sources` but `skip` and the objects TABLE (in the decompilation: object, address, compiler) gives one of `except_compilers`. Their `long long` is written `openrac_ti` / `openrac_uti` in hostgen's copy ([prep.py](prep.py)); candidates and the port's own C keep a 64-bit one. rac1/pal's leaves out `config/core_text.objects`' `ee29` objects, the libraries Sony's compiler built |
 | `includes`, `defines` | how to read it, relative to the decompilation |
 | `names` | how the decompilation names code and data by address: regular expressions with an `addr` group (and `overlay` for a level's code). The defaults (`func_`, `func_Lnn_`, `D_`, `D_Lnn_`) also cover Going Commando's current `master` |
 | `aliases` | headers in the decompilation of `#define NAME func_ADDR` lines, its readable names for address-named symbols. Each name is written as its address name in hostgen's copy of the sources, outside comments, strings and `#define` lines ([prep.py](prep.py)), so the passes that know game symbols by address see every definition and call. rac1/pal's is `include/names.h`. An entry ending in `.json` is a table of the values the decompilation's own build derived from the retail bytes (`{"values": {name: "0x..."}}`, Going Commando's `build/boot/placed.json`): of it, the names carried from rac1-decomp that state rac1's address, not this game's (`r1_func_0011DB98`, `r1_D_00130420`), are written as the address names of their values, inside macro bodies too |
@@ -283,8 +301,24 @@ describes every key). What hostgen itself reads:
 decompilation's C runs as it is (`game`), the port answers it with the
 shared replacement of that name (`host`: hostgen binds the address to it in
 `libraries.c`, and callers are matched to its signature), the C runs under a
-host function of the same name (`wrap`: the C is kept as `<name>__game`), or a
-host version is still to be written (`todo`).
+host function of the same name (`wrap`: the C is kept as `<name>__game`), the
+C runs unless a mod takes the function (`hook`: the C is kept as `<name>__game`
+and hostgen writes `<name>` itself in `hooks.c`), or a host version is still
+to be written (`todo`).
+
+A `hook` row is a hook point for mods ([docs/port/MODS.md](../../../docs/port/MODS.md),
+section 4): its third column is the name mods ask for, the same on every disc
+of a game, and two rows may not share one. `hooks.c` holds, for each, a slot
+and the function of the row's symbol, which calls the slot when a mod filled
+it and the game's C otherwise, and the table the mod loader reads,
+`openrac_game_hook_points` (name, symbol, signature such as
+`void(i32,f32,f32,f32)`, slot, the game's C). A hook point whose signature has
+no such form (a record by value, a double, varargs) stops hostgen with an
+error. The name is an alias of the hook point's permanent id
+(`sdk/bindings/<game>.json`, which the loader resolves). A symbol with both a
+`wrap` row and a `hook` row keeps the port's `<name>`, and the hook is written
+as `<name>__hooked` (the mod's replacement or the game's C), which the port's
+function calls in place of `<name>__game`.
 
 Two spellings of one address (`FUN_0020c828` and `func_0020C828`) are one
 function: a call to a name without C goes to the function with C at the same
@@ -300,9 +334,12 @@ with C). A level function is one named `func_Lnn_...` or `FUN_Lnn_...`.
 | `stubs.c` | the functions with no C yet |
 | `asm_<n>.c` | the functions with no C, translated from their assembly (when `asm` is on) |
 | `functions.c` | every function by code address, per level program (`openrac_game_register_functions`), and, where `OPENRAC_REGS_THUNKS` is on, each one's thunk for a call with the EE's registers |
+| `hooks.c` | the hook points mods may take (`hook` rows of `libraries.tsv`) and their table, `openrac_game_hook_points`; empty for a game with none |
 | `libraries.c` | the game's library addresses bound to the shared replacements |
 | `game_info.c` | the game's description (`openrac_game`), its entry (`openrac_game_run`) and, unless the game has its own, its overlay hook |
 | `report.json` `literal_addresses` | each function's literal addresses in the relocated range and what each became (`OPENRAC_DATA(...)`, `OPENRAC_LDATA(...)`, or `kept` in a function of one level, whose addresses are that level's) |
+| `report.json` `params_widened` | the parameters made 64-bit because the C only passes them on to 64-bit parameters, which the EE's register carries whole ([program.py](program.py) `widen_forwarded`) |
+| `report.json` `results_widened` | the functions whose result was made 64-bit because they return a `returns_64` function's result as it is ([program.py](program.py) `widen_returns`) |
 | `report.json` `without_c_places` | each function with no C or with C from its assembly: where it sits, and the spelling with C its calls go to instead ([no_c.py](no_c.py) reads it) |
 | `report.md`, `report.json` | what was translated, what became a stub and why, and **the frontier**: the functions without C that the program reaches from its roots, nearest first. That list is where decompiling moves the port on. |
 | `report.json` `call_graph`, `call_site_mismatches` | what each translated function calls or takes the address of, and the direct calls whose site disagrees with the callee's definition (arity, kinds, result): [priority.py](priority.py) ranks the weak functions gameplay reaches from them ([BACKFILL.md](../../../docs/workflow/BACKFILL.md#picking-what-to-backfill-first)) |

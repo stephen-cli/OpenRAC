@@ -125,6 +125,7 @@
           "assets/levels/rac1/pal/level_{level}",
           "res://levels/level_{level}/level_{level}.tscn"
         ],
+        "output": "assets/levels/rac1/pal/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -153,7 +154,7 @@
       {
         "id": "editor-extract",
         "label": "Extract the levels",
-        "description": "Turns the 19 levels on your disc into Godot 4 projects, one per level, in assets/levels/rac1/pal. About 20 seconds and 800 MB. Stops if they already exist: it never overwrites your edits.",
+        "description": "Turns the 19 levels on your disc into Godot 4 projects, one per level, in assets/levels/rac1/pal. About 20 seconds and 800 MB. Run it again to add levels or bring them up to date: levels you edited are kept, and one made by an older editor is backed up with your edits before it is written again.",
         "kind": "edit",
         "area": "editor",
         "state": "unverified",
@@ -165,6 +166,7 @@
           "assets/levels/rac1/pal",
           "--split"
         ],
+        "output": "assets/levels/rac1/pal",
         "cwd": ".",
         "requires": [
           "disc",
@@ -187,6 +189,7 @@
           "--headless",
           "--import"
         ],
+        "output": "assets/levels/rac1/pal/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -209,6 +212,7 @@
           "assets/levels/rac1/pal/level_{level}",
           "-e"
         ],
+        "output": "assets/levels/rac1/pal/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -234,6 +238,7 @@
           "assets/levels/rac1/pal",
           "assets/packed/rac1/pal"
         ],
+        "output": "assets/packed/rac1/pal",
         "cwd": ".",
         "requires": [
           "disc",
@@ -323,6 +328,7 @@
           "assets/port/rac1/pal",
           "--replace"
         ],
+        "output": "assets/port/rac1/pal",
         "cwd": ".",
         "requires": [
           "disc",
@@ -409,10 +415,12 @@
           "{option}",
           "--unique"
         ],
+        "output": "{data}/exports",
         "options": [
           "mobys",
           "textures",
           "scenery",
+          "terrain",
           "all"
         ],
         "cwd": ".",
@@ -445,6 +453,7 @@
           "--into",
           "{data}/overrides"
         ],
+        "output": "{data}/overrides",
         "cwd": ".",
         "requires": [
           "python"
@@ -506,6 +515,52 @@
         ],
         "docs": "editor/MODDING.md",
         "todo": "Run it from the desktop app. From a shell on macOS it stacked a pack of 99 files with hard links, and the port read them with --mods."
+      },
+      {
+        "id": "editor-show-packs",
+        "label": "Show your textures in the editor",
+        "description": "Puts the textures of the mods you put together (Put the mods together) into the level editor's projects, at their own size, so that the levels you edit in Godot look as they will in the game. The editor's own come back with Hide them again.",
+        "kind": "edit",
+        "area": "editor",
+        "state": "unverified",
+        "program": "{python}",
+        "args": [
+          "editor/overrides.py",
+          "preview",
+          "{data}/mods/pal",
+          "--projects",
+          "assets/levels/rac1/pal"
+        ],
+        "output": "assets/levels/rac1/pal",
+        "cwd": ".",
+        "requires": [
+          "python"
+        ],
+        "docs": "editor/MODDING.md",
+        "todo": "Run it from the desktop app. From a shell on macOS a 4x terrain texture showed at its size in Godot 4.7.2 after the import."
+      },
+      {
+        "id": "editor-hide-packs",
+        "label": "Hide your textures in the editor",
+        "description": "Puts the level editor's own textures back in its projects, in place of the mods' (Show your textures in the editor).",
+        "kind": "edit",
+        "area": "editor",
+        "state": "unverified",
+        "program": "{python}",
+        "args": [
+          "editor/overrides.py",
+          "preview",
+          "--projects",
+          "assets/levels/rac1/pal",
+          "--undo"
+        ],
+        "output": "assets/levels/rac1/pal",
+        "cwd": ".",
+        "requires": [
+          "python"
+        ],
+        "docs": "editor/MODDING.md",
+        "todo": "Run it from the desktop app. From a shell on macOS a 4x terrain texture showed at its size in Godot 4.7.2 after the import."
       },
       {
         "id": "play-edited",
@@ -644,7 +699,7 @@
       {
         "id": "editor-extract",
         "label": "Extract the levels",
-        "description": "Turns the 19 levels on your NTSC-U disc into Godot 4 projects, one per level, in assets/levels/rac1/ntsc. About 20 seconds and 800 MB. Stops if they already exist: it never overwrites your edits.",
+        "description": "Turns the 19 levels on your NTSC-U disc into Godot 4 projects, one per level, in assets/levels/rac1/ntsc. About 20 seconds and 800 MB. Run it again to add levels or bring them up to date: levels you edited are kept, and one made by an older editor is backed up with your edits before it is written again.",
         "kind": "edit",
         "area": "editor",
         "state": "unverified",
@@ -656,6 +711,7 @@
           "assets/levels/rac1/ntsc",
           "--split"
         ],
+        "output": "assets/levels/rac1/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -677,6 +733,7 @@
           "assets/levels/rac1/ntsc/level_{level}",
           "res://levels/level_{level}/level_{level}.tscn"
         ],
+        "output": "assets/levels/rac1/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -701,6 +758,7 @@
           "--headless",
           "--import"
         ],
+        "output": "assets/levels/rac1/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -723,6 +781,7 @@
           "assets/levels/rac1/ntsc/level_{level}",
           "-e"
         ],
+        "output": "assets/levels/rac1/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -748,6 +807,7 @@
           "assets/levels/rac1/ntsc",
           "assets/packed/rac1/ntsc"
         ],
+        "output": "assets/packed/rac1/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -815,6 +875,7 @@
           "assets/port/rac1/ntsc",
           "--replace"
         ],
+        "output": "assets/port/rac1/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -901,10 +962,12 @@
           "{option}",
           "--unique"
         ],
+        "output": "{data}/exports",
         "options": [
           "mobys",
           "textures",
           "scenery",
+          "terrain",
           "all"
         ],
         "cwd": ".",
@@ -937,6 +1000,7 @@
           "--into",
           "{data}/overrides"
         ],
+        "output": "{data}/overrides",
         "cwd": ".",
         "requires": [
           "python"
@@ -998,6 +1062,52 @@
         ],
         "docs": "editor/MODDING.md",
         "todo": "Run it from the desktop app. From a shell on macOS (2026-10-16): a pack made from PAL's levels (Ratchet and the vendor edited, two textures upscaled, then two classes of level 5) stacked onto the NTSC-U levels with every file placed and the models' textures renamed to the NTSC-U ones."
+      },
+      {
+        "id": "editor-show-packs",
+        "label": "Show your textures in the editor",
+        "description": "Puts the textures of the mods you put together (Put the mods together) into the level editor's projects, at their own size, so that the levels you edit in Godot look as they will in the game. The editor's own come back with Hide them again.",
+        "kind": "edit",
+        "area": "editor",
+        "state": "unverified",
+        "program": "{python}",
+        "args": [
+          "editor/overrides.py",
+          "preview",
+          "{data}/mods/ntsc",
+          "--projects",
+          "assets/levels/rac1/ntsc"
+        ],
+        "output": "assets/levels/rac1/ntsc",
+        "cwd": ".",
+        "requires": [
+          "python"
+        ],
+        "docs": "editor/MODDING.md",
+        "todo": "Run it from the desktop app. From a shell on macOS a 4x terrain texture showed at its size in Godot 4.7.2 after the import."
+      },
+      {
+        "id": "editor-hide-packs",
+        "label": "Hide your textures in the editor",
+        "description": "Puts the level editor's own textures back in its projects, in place of the mods' (Show your textures in the editor).",
+        "kind": "edit",
+        "area": "editor",
+        "state": "unverified",
+        "program": "{python}",
+        "args": [
+          "editor/overrides.py",
+          "preview",
+          "--projects",
+          "assets/levels/rac1/ntsc",
+          "--undo"
+        ],
+        "output": "assets/levels/rac1/ntsc",
+        "cwd": ".",
+        "requires": [
+          "python"
+        ],
+        "docs": "editor/MODDING.md",
+        "todo": "Run it from the desktop app. From a shell on macOS a 4x terrain texture showed at its size in Godot 4.7.2 after the import."
       },
       {
         "id": "play-edited",
@@ -1090,7 +1200,7 @@
       {
         "id": "editor-extract",
         "label": "Extract the levels",
-        "description": "Turns the 27 levels on your disc into Godot 4 projects, one per level, in assets/levels/rac2/ntsc. Stops if they already exist: it never overwrites your edits. Early access: the levels are read and shown, for looking and for texture and model packs; edits are not packed back into the game yet, and the game is not playable yet.",
+        "description": "Turns the 27 levels on your disc into Godot 4 projects, one per level, in assets/levels/rac2/ntsc. Run it again to add levels or bring them up to date: levels you edited are kept, and one made by an older editor is backed up with your edits before it is written again. Early access: the levels are read and shown, for looking and for texture and model packs; edits are not packed back into the game yet, and the game is not playable yet.",
         "kind": "edit",
         "area": "editor",
         "state": "unverified",
@@ -1102,6 +1212,7 @@
           "assets/levels/rac2/ntsc",
           "--split"
         ],
+        "output": "assets/levels/rac2/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -1123,6 +1234,7 @@
           "assets/levels/rac2/ntsc/level_{level}",
           "res://levels/level_{level}/level_{level}.tscn"
         ],
+        "output": "assets/levels/rac2/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1147,6 +1259,7 @@
           "--headless",
           "--import"
         ],
+        "output": "assets/levels/rac2/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1169,6 +1282,7 @@
           "assets/levels/rac2/ntsc/level_{level}",
           "-e"
         ],
+        "output": "assets/levels/rac2/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1194,6 +1308,7 @@
           "assets/port/rac2/ntsc",
           "--replace"
         ],
+        "output": "assets/port/rac2/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -1222,10 +1337,12 @@
           "{option}",
           "--unique"
         ],
+        "output": "{data}/exports",
         "options": [
           "mobys",
           "textures",
           "scenery",
+          "terrain",
           "all"
         ],
         "cwd": ".",
@@ -1258,6 +1375,7 @@
           "--into",
           "{data}/overrides"
         ],
+        "output": "{data}/overrides",
         "cwd": ".",
         "requires": [
           "python"
@@ -1366,7 +1484,7 @@
       {
         "id": "editor-extract",
         "label": "Extract the levels",
-        "description": "Turns its 51 levels (the single-player ones and the multiplayer maps) on your disc into Godot 4 projects, one per level, in assets/levels/rac3/ntsc. Stops if they already exist: it never overwrites your edits. Early access: the levels are read and shown, for looking and for texture and model packs; edits are not packed back into the game yet, and the game is not playable yet.",
+        "description": "Turns its 51 levels (the single-player ones and the multiplayer maps) on your disc into Godot 4 projects, one per level, in assets/levels/rac3/ntsc. Run it again to add levels or bring them up to date: levels you edited are kept, and one made by an older editor is backed up with your edits before it is written again. Early access: the levels are read and shown, for looking and for texture and model packs; edits are not packed back into the game yet, and the game is not playable yet.",
         "kind": "edit",
         "area": "editor",
         "state": "unverified",
@@ -1378,6 +1496,7 @@
           "assets/levels/rac3/ntsc",
           "--split"
         ],
+        "output": "assets/levels/rac3/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -1399,6 +1518,7 @@
           "assets/levels/rac3/ntsc/level_{level}",
           "res://levels/level_{level}/level_{level}.tscn"
         ],
+        "output": "assets/levels/rac3/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1423,6 +1543,7 @@
           "--headless",
           "--import"
         ],
+        "output": "assets/levels/rac3/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1445,6 +1566,7 @@
           "assets/levels/rac3/ntsc/level_{level}",
           "-e"
         ],
+        "output": "assets/levels/rac3/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1470,6 +1592,7 @@
           "assets/port/rac3/ntsc",
           "--replace"
         ],
+        "output": "assets/port/rac3/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -1498,10 +1621,12 @@
           "{option}",
           "--unique"
         ],
+        "output": "{data}/exports",
         "options": [
           "mobys",
           "textures",
           "scenery",
+          "terrain",
           "all"
         ],
         "cwd": ".",
@@ -1534,6 +1659,7 @@
           "--into",
           "{data}/overrides"
         ],
+        "output": "{data}/overrides",
         "cwd": ".",
         "requires": [
           "python"
@@ -1692,7 +1818,7 @@
       {
         "id": "editor-extract",
         "label": "Extract the levels",
-        "description": "Turns its 47 levels (the campaign, the multiplayer maps and their split-screen copies) on your disc into Godot 4 projects, one per level, in assets/levels/rac4/ntsc. Stops if they already exist: it never overwrites your edits. Early access: the levels are read and shown, for looking and for texture and model packs; edits are not packed back into the game yet, and the game is not playable yet.",
+        "description": "Turns its 47 levels (the campaign, the multiplayer maps and their split-screen copies) on your disc into Godot 4 projects, one per level, in assets/levels/rac4/ntsc. Run it again to add levels or bring them up to date: levels you edited are kept, and one made by an older editor is backed up with your edits before it is written again. Early access: the levels are read and shown, for looking and for texture and model packs; edits are not packed back into the game yet, and the game is not playable yet.",
         "kind": "edit",
         "area": "editor",
         "state": "unverified",
@@ -1704,6 +1830,7 @@
           "assets/levels/rac4/ntsc",
           "--split"
         ],
+        "output": "assets/levels/rac4/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -1725,6 +1852,7 @@
           "assets/levels/rac4/ntsc/level_{level}",
           "res://levels/level_{level}/level_{level}.tscn"
         ],
+        "output": "assets/levels/rac4/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1749,6 +1877,7 @@
           "--headless",
           "--import"
         ],
+        "output": "assets/levels/rac4/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1771,6 +1900,7 @@
           "assets/levels/rac4/ntsc/level_{level}",
           "-e"
         ],
+        "output": "assets/levels/rac4/ntsc/level_{level}",
         "cwd": ".",
         "requires": [
           "godot",
@@ -1796,6 +1926,7 @@
           "assets/port/rac4/ntsc",
           "--replace"
         ],
+        "output": "assets/port/rac4/ntsc",
         "cwd": ".",
         "requires": [
           "disc",
@@ -1824,10 +1955,12 @@
           "{option}",
           "--unique"
         ],
+        "output": "{data}/exports",
         "options": [
           "mobys",
           "textures",
           "scenery",
+          "terrain",
           "all"
         ],
         "cwd": ".",
@@ -1860,6 +1993,7 @@
           "--into",
           "{data}/overrides"
         ],
+        "output": "{data}/overrides",
         "cwd": ".",
         "requires": [
           "python"
