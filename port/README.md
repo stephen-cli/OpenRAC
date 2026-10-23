@@ -29,6 +29,24 @@ Studio's x64 environment itself (the MSVC libraries and the Windows SDK) and
 finds Clang and Ninja. `--source` builds from your own copy of the
 decompilation and is remembered by the build folder.
 
+Enhanced lighting (probe GI, modern shadows, GTAO) is experimental. Every
+build compiles it in (`OPENRAC_ENHANCED_RENDERING`, ON by default; OFF leaves it
+out), and it stays off until the `enhanced_rendering` setting or
+`OPENRAC_ENHANCED=1` turns it on at start; off, the game draws exactly as a
+build without it. Players turn it on in the launcher: Mods, **Enhanced
+graphics**, which plays with Vulkan and bakes the probes on their computer from
+their own extracted levels, one level per thread, into
+`<data>/probes/<version>` (`--probes`). It needs Vulkan and a bake that matches
+the level; OpenGL, and a level without one, keep the original lighting. Core
+Vulkan draw/culling optimizations work either way. Only the offline baker needs
+Embree: `python3 tools/build_port.py --probe-baker` builds a pinned Embree
+statically into `openrac-probe-bake` (or `-DOPENRAC_PROBE_BAKER=ON` with an
+installed Embree 4); the game never links it.
+
+Dedicated enhanced-rendering sources, shaders, tools and tests live in
+[`enhanced/`](enhanced/README.md). Shared renderer integration stays with its
+systems, and core Vulkan performance improvements remain in the core renderer.
+
 ## What is here
 
 | Directory | |
@@ -38,9 +56,13 @@ decompilation and is remembered by the build folder.
 | [game/](game/README.md) | the games, one directory per version (`rac1-pal`, `rac1-ntsc`, `rac2-ntsc`, `rac3-ntsc`, `rac4-ntsc`): each its hostgen configuration and the table of the libraries it calls. [game/common/](game/common) is what they share: the library replacements (disc, memory card, graphics hand-off, kernel, pads, sound) and the program, `openrac-<id>` |
 | [platform/](platform) | the window, input as the console's pad, audio output, timing (SDL3) |
 | [renderer/](renderer) | the renderer: per-subsystem renderers in OpenGOAL's manner, the direct renderer for the 2D path, texture conversion (OpenGL 4.1) |
+| [renderer/vulkan/](renderer/vulkan/README.md) | the renderer's OpenGL calls carried out with Vulkan 1.3, chosen with `OPENRAC_GL_API=vulkan` |
 | [viewer/](viewer) | `openrac-viewer`: a level, extracted from the player's disc by the editor, drawn natively with a free camera |
-| [common/](common) | the log |
+| [common/](common) | what every module may use: the log, the crash report, the statistics, the system's description, and small helpers (`joining_thread.h`, a thread its owner joins) |
 | [tests/](tests) | the runtime's tests |
+| [docs/](docs) | the port's [coding conventions](docs/CODING_CONVENTIONS.md) |
+| [tools/conventions/](tools/conventions/README.md) | the conventions' countable rules, checked in CI |
+| [tools/layering/](tools/layering/README.md) | the modules' layering: no include of a higher layer, today's exceptions listed |
 
 ## How a game is built
 
@@ -67,7 +89,9 @@ and the version's video standard from `games/<game>/game.json`, which the
 window's title shows too; see
 [cmake/MacApp.cmake](cmake/MacApp.cmake)). `build/release/openrac-rac1-pal`
 is a link to its program, for a shell; macOS names a program started through
-the link after the link. The launcher starts the one in the bundle.
+the link after the link. The launcher starts the one in the bundle. A game's
+bundle declares itself a game to macOS, so Game Mode turns on while it is in
+full screen (F11, or Borderless or Fullscreen in the game's video options).
 
 The program stops at the first function that has no C yet and names it.
 For OpenRAC's decompilation that is the boot stage, still assembly; a copy
@@ -175,7 +199,14 @@ committed (no data, code bytes, microcode or media), and the library
 replacements are written from what the game's own code shows and what is
 publicly known of each API, never from Sony's code or documentation.
 Generated C and build output stay in build trees (`port/build/` is ignored).
-The C and C++ layout is [.clang-format](.clang-format); comments say why.
+
+The port's code follows [docs/CODING_CONVENTIONS.md](docs/CODING_CONVENTIONS.md)
+(decided): layout ([.clang-format](.clang-format)), comments and documentation,
+naming, ownership, errors, the C boundary and the module layering.
+[tools/conventions](tools/conventions/README.md) checks what a program can
+count, in CI and before you commit, [tools/layering](tools/layering/README.md)
+that no module includes a higher one, and [.clang-tidy](.clang-tidy) the
+naming and ownership of the C++ you touch.
 
 The port is built on Linux, macOS and Windows (there with Clang against
 MSVC's libraries); CI builds all of it on Linux and rac1/pal's program on

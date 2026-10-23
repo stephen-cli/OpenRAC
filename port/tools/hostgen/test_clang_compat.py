@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import clangast
 import hostgen
@@ -29,6 +30,19 @@ class ClangAliases(unittest.TestCase):
         fn = ast["inner"][0]
         self.assertEqual(fn["type"]["qualType"], "void *(void *, const void *, unsigned int)")
         self.assertEqual([p["type"]["qualType"] for p in fn["inner"]], ["unsigned int", "int *", "my__size_t"])
+
+
+class ClangRunsWithoutACompilerCache(unittest.TestCase):
+    def test_ccache_cannot_answer_for_a_rewritten_prepared_copy(self):
+        # clang on PATH may be ccache's wrapper. Its direct cache keys a file by inode and
+        # second-granular mtime, and hostgen rewrites its prepared copies between checks, so a
+        # hit can report the previous content's verdict (it hid pause.c's conflicting types
+        # from the syntax check, where the AST dump then refused the same file).
+        with mock.patch.object(clangast.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            clangast.run("clang", Path("src/game/pause.c"), Path("/tmp"), ["-fsyntax-only"], False)
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env.get("CCACHE_DISABLE"), "1")
 
 
 @unittest.skipUnless(shutil.which("clang"), "needs Clang")
@@ -154,6 +168,69 @@ class ClangCompatibility(unittest.TestCase):
             compiled = subprocess.run([
                 shutil.which("clang"), "-std=gnu11", "-fsyntax-only", "-I", str(runtime),
                 "-I", str(output), str(generated),
+            ], capture_output=True, text=True)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+
+
+    def test_an_override_replaces_matched_c_in_the_port_only(self):
+        # The port's own C for a function the decompilation matches (hostgen.json "overrides"):
+        # the matched definition is left out of the prepared copy, its lines kept, and the
+        # override is translated in its place; it may differ in its signature (a result the
+        # matching C declares void). A name it lists that nothing defines is an index problem.
+        with tempfile.TemporaryDirectory(prefix="hostgen overrides ") as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            (source / "src").mkdir(parents=True)
+            matched = (
+                "typedef struct { float v[4]; } V;\n"
+                "extern float func_00100080(V *, V *);\n"
+                "void func_00100000(V *a, V *b, float r) {\n"
+                "    if (r > 0.0f) {\n"
+                "        func_00100080(a, b);\n"
+                "    }\n"
+                "}\n"
+                "extern float func_00100000_f(V *, V *, float) __asm__(\"func_00100000\");\n"
+                "float func_00100040(V *a, V *b) {\n"
+                "    return func_00100000_f(a, b, 1.0f) * 2.0f;\n"
+                "}\n"
+            )
+            (source / "src/example.c").write_text(matched)
+            config = root / "game.json"
+            config.write_text(json.dumps({"name": "overrides", "sources": ["src"], "includes": [], "defines": [],
+                                          "overrides": "overrides.tsv"}))
+            (root / "overrides.tsv").write_text("# name\tfile\nfunc_00100000\tmine.c\nfunc_00100100\tmine.c\n")
+            (root / "mine.c").write_text(
+                "/* the distance, which retail leaves in $f0 */\n"
+                "extern float func_00100080(V *, V *);\n"
+                "float func_00100000(V *a, V *b, float r) {\n"
+                "    if (r > 0.0f) {\n"
+                "        return func_00100080(a, b);\n"
+                "    }\n"
+                "    return 0.0f;\n"
+                "}\n"
+            )
+            output = root / "generated"
+            self.assertEqual(hostgen.main([
+                "--game", str(config), "--source", str(source), "--out", str(output),
+                "--jobs", "2", "--quiet",
+            ]), 0)
+            report = json.loads((output / "report.json").read_text())
+            self.assertEqual(report["units_unreadable"], [])
+            self.assertEqual(report["overrides_used"], ["func_00100000"])
+            self.assertIn("overrides: func_00100100 has no matched definition to replace", report["index_problems"])
+            prepared = (output / "prep/src/example.c").read_text()
+            lines = prepared.split("\n")
+            self.assertEqual(lines[2:7], ["", "", "", "", ""])          # the matched definition, its lines kept
+            self.assertEqual(lines[8], "float func_00100040(V *a, V *b) {")
+            self.assertEqual((source / "src/example.c").read_text(), matched)   # the decompilation untouched
+            text = (output / "example.c").read_text()
+            self.assertIn("float func_00100000(", text)
+            # the caller reads a real result: no call site that reads a void function's
+            self.assertNotIn("func_00100000:", json.dumps(report["call_site_mismatches"]))
+            runtime = Path(__file__).resolve().parents[2] / "runtime/include"
+            compiled = subprocess.run([
+                shutil.which("clang"), "-std=gnu11", "-fsyntax-only", "-I", str(runtime),
+                "-I", str(output), str(output / "example.c"),
             ], capture_output=True, text=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
 

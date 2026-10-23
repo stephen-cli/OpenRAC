@@ -148,6 +148,40 @@ class Commands(unittest.TestCase):
         self.assertNotIn("-DOPENRAC_RAC1_PAL_SOURCE=C:/work/rac1-decomp", steps[0])
 
 
+    def test_the_probe_baker_is_kept_and_configured_with_its_embree(self):
+        cache = build_port.parse_cache(CACHE)
+        cache["OPENRAC_PROBE_BAKER"] = "ON"
+        self.assertEqual(build_port.kept_choices(cache)["OPENRAC_PROBE_BAKER"], "ON")
+        defines = {"OPENRAC_PROBE_BAKER": "ON", "embree_DIR": "/b/embree/install/lib/cmake/embree-4.4.1"}
+        steps = build_port.commands("cmake", "release", self.build, ["rac1-pal"], None, {}, defines=defines,
+                                    more=[build_port.BAKER])
+        self.assertIn("-DOPENRAC_PROBE_BAKER=ON", steps[0])
+        self.assertIn("-Dembree_DIR=/b/embree/install/lib/cmake/embree-4.4.1", steps[0])
+        self.assertEqual(steps[-1][-1], "openrac-probe-bake")
+
+    def test_embree_is_pinned_and_built_static_without_tbb(self):
+        self.assertEqual(len(build_port.EMBREE_SHA256), 64)
+        self.assertIn(build_port.EMBREE_VERSION, build_port.EMBREE_URL)
+        self.assertEqual(build_port.EMBREE_OPTIONS["EMBREE_STATIC_LIB"], "ON")
+        self.assertEqual(build_port.EMBREE_OPTIONS["EMBREE_TASKING_SYSTEM"], "INTERNAL")
+
+    def test_embree_is_given_the_x86_isas_on_x86_only(self):
+        # On ARM a value for an x86-64 ISA still counts as one more ISA, and AppleClang's static
+        # Embree takes only one: the macOS launcher's baker was left out that way.
+        for machine in ("x86_64", "AMD64"):
+            self.assertEqual(build_port.embree_options(machine)["EMBREE_ISA_AVX"], "ON")
+        for machine in ("arm64", "aarch64", "ARM64"):
+            options = build_port.embree_options(machine)
+            self.assertFalse([key for key in options if key.startswith("EMBREE_ISA_")], machine)
+            self.assertEqual(options["EMBREE_STATIC_LIB"], "ON")
+
+    def test_embree_is_compiled_with_the_builds_cxxflags(self):
+        # The launcher's Linux builds put -stdlib=libc++ in CXXFLAGS; Embree must not drop it, and
+        # an Embree built with other flags is built again.
+        self.assertEqual(build_port.EMBREE_OPTIONS["EMBREE_IGNORE_CMAKE_CXX_FLAGS"], "OFF")
+        self.assertNotEqual(build_port.embree_stamp({"CXXFLAGS": "-stdlib=libc++"}), build_port.embree_stamp({}))
+
+
 class Stamp(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -25,6 +25,22 @@ as do the grain type names in `port/assets/sound/sound_bank.h`.
 OpenRAC. The launcher lists its own notices in
 [launcher/THIRD_PARTY_NOTICES.md](launcher/THIRD_PARTY_NOTICES.md).
 
+## Embree
+
+The offline probe baker (`openrac-probe-bake`: `port/enhanced/lighting/bake.cpp`,
+built with `OPENRAC_PROBE_BAKER`) uses [Embree](https://github.com/RenderKit/embree)
+4.4.1, Apache License 2.0, Copyright Intel Corporation. It is never linked into a
+game. `tools/build_port.py --probe-baker` downloads that release's source
+(checked against its SHA-256) and builds it as a static library with Embree's own
+task scheduler, so the baker carries no oneTBB; on ARM it includes SSE2NEON (MIT
+License), which Embree's `third-party-programs.txt` lists. The launcher's
+installers carry this baker, with Embree's `LICENSE.txt` and
+`third-party-programs.txt` beside it in `port/build/release/licenses/embree/`
+([tools/bundle_standalone.py](tools/bundle_standalone.py)). A baker built against
+a system Embree package (CI's `port-enhanced` job) follows that package's
+license and notices, including those of its oneTBB. The upstream license is
+[LICENSE.txt](https://github.com/RenderKit/embree/blob/v4.4.1/LICENSE.txt).
+
 ## ReRAC
 
 [ReRAC](https://github.com/re-rac/rerac), a native PC port of the US build,
@@ -64,6 +80,11 @@ and notes:
 - `port/assets/sound/`, `port/media/`, `port/audio/`: sound banks, VAG, PSS and
   ADPCM from `crates/rc-formats`; the MPEG-2 decoder from `crates/rc-video`;
   the voices, envelope and reverb from `crates/rc-game/src/audio`.
+- `port/renderer/world/`, `port/renderer/shaders/world/`: the world renderers
+  (terrain and tie drawing and their levels of detail, the GS blend and fog
+  state, the draw data the renderers take, the VU float arithmetic they
+  replay), converted to C++ from `crates/rc-engine` and `crates/rc-formats`;
+  the shaders converted to GLSL from `crates/rc-engine/assets/shaders`.
 - `port/extract/`: `openrac-extractor`'s JSON-lines output, crash-safe writes,
   free-space check and decompile step, after `crates/rc-extract`.
 

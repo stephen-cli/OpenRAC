@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <string>
 
+#include "enhanced/renderer/gtao_settings.h"
+
 namespace openrac::settings {
 
 // The window. Borderless covers the desktop at the desktop's mode; Fullscreen takes the display
@@ -74,6 +76,18 @@ struct Settings {
     Hud hud = Hud::Centre;
     int render_scale = 100;  // the frame's resolution, as a percentage of the window's picture
     int msaa = 1;            // samples a pixel: 1 (off), 2, 4, 8, 16
+    renderer::GtaoSettings gtao_settings;
+    // Enhanced rendering at all (port/enhanced; the launcher's Mods entry): read at start, Vulkan
+    // only. Off, nothing of it is made and the game draws as a build without it.
+    bool enhanced_rendering = false;
+    bool enhanced_graphics = true;  // F4 within it; retains individual feature preferences
+    bool enhanced_shadows = true;   // cascades and Ratchet map; off restores original shadows
+    bool probe_lighting = true;     // uses a verified bake when one is loaded
+    bool probe_spheres = false;     // diagnostic placement/fade overlay
+    float probe_gi_multiplier = 1.0f;
+    float probe_normal_bias = 0.5f;  // receiver offsets in world units
+    float probe_view_bias = 0.5f;
+    bool gtao = false;       // optional ground-truth ambient occlusion
     int anisotropy = 1;      // the textures' anisotropic filter: 1 (off), 2, 4, 8, 16
     VSync vsync = VSync::On;
     FrameRate frame_rate = FrameRate::Display;

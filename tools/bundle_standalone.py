@@ -11,6 +11,8 @@ OUT (launcher/src-tauri/resources/openrac for an installer) gets:
 
   STANDALONE                 what this is and what it was made from
   tools/, editor/            the set-up and the level tools, as they are here
+                             (tools/openrac_common with them: they import it)
+  port/enhanced/tools/probes the probe baker's Python half (bake_all.py)
   games/*/game.json          the catalogue the launcher lists
   progress/summary.json      how far each decompilation is
   launcher/actions.json      the player's actions only, writing to the
@@ -41,15 +43,16 @@ side against it (OPENRAC_ROOT=OUT); an installer needs both.
 import argparse
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from openrac_common import files, paths, proc
+
+ROOT = paths.repo_root()
 
 # What a player's launcher offers for a version, from launcher/actions.json. The rest (the
 # decompilation's builds and checks, building the port, the tools' tests) needs a checkout.
-PLAY = ("port-levels", "port-levels-check", "play")
+PLAY = ("port-levels", "port-levels-check", "probe-bake", "play")
 # Mods: the level editor (Godot projects of the disc's levels, packed back into the game's data),
 # models and textures, packs, and playing with them. In a checkout they work in its assets/; the
 # carried copy is read-only, so they work in the data folder instead (MOD_FOLDERS).
@@ -67,6 +70,11 @@ MOD_FOLDERS = (("{root}/assets/port/", "port"), ("assets/port/", "port"), ("asse
 LEVELS_ROOT = "{data}/port"
 # The programs carried when the build has them; the first is required.
 GAMES = ("openrac-rac1-pal", "openrac-rac1-ntsc")
+# The tools carried beside them when the build has them: the enhanced lighting's probe baker
+# (tools/build_port.py --probe-baker), Embree built into it.
+TOOLS = ("openrac-probe-bake",)
+# Its Python half (bake_all.py and what it imports), without the tests.
+PROBE_TOOLS = "port/enhanced/tools/probes"
 
 
 def levels_folder(key: str) -> str:
@@ -130,6 +138,12 @@ def player_actions() -> dict:
                     action["output"] = levels
                     action["description"] = ("Reads the levels from your disc into the form the game draws: the worlds "
                                              "behind the menus and all 19 levels. About half a minute and 1 GB, once.")
+                elif action["id"] == "probe-bake":
+                    # From the data folder's levels into the data folder's bakes ({data}/probes/<v>).
+                    at = args.index("--levels-dir")
+                    action["args"] = args[:at + 1] + [levels] + args[at + 2:]
+                    action["needs"] = [{"path": f"{levels}/verified-3.json", "from": need["from"]}
+                                       for need in action.get("needs", [])]
                 elif action["id"] == "port-levels-check":
                     action["args"] = point_at(args, levels)
                     action["makes"] = f"{levels}/verified-3.json"
@@ -158,14 +172,6 @@ def player_actions() -> dict:
     return out
 
 
-def copy_tree(source: Path, dest: Path, keep) -> None:
-    for path in sorted(source.rglob("*")):
-        rel = path.relative_to(source)
-        if path.is_file() and "__pycache__" not in rel.parts and keep(rel):
-            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, dest / rel)
-
-
 def strip_debug(path: Path) -> bool:
     """Drops the debug info of an ELF program (Linux), keeping its symbols; whether it did. A
     program of another system, or no strip tool on the PATH, leaves the file as it is."""
@@ -176,7 +182,7 @@ def strip_debug(path: Path) -> bool:
     if tool is None:
         print(f"no strip tool: {path.name} keeps its debug info", file=sys.stderr)
         return False
-    subprocess.run([tool, "--strip-debug", str(path)], check=True)
+    proc.run([tool, "--strip-debug", path])
     return True
 
 
@@ -185,7 +191,7 @@ def copy_games(build: Path, dest: Path) -> list[str]:
     bundle named by its title in apps/openrac-<id>/ (port/cmake/MacApp.cmake), carried whole; the
     build folder's link to its program is not."""
     carried = []
-    for game in GAMES:
+    for game in GAMES + TOOLS:
         apps = build / "apps" / game
         if any(apps.glob("*.app")):
             shutil.copytree(apps, dest / "apps" / game, symlinks=True, dirs_exist_ok=True)
@@ -222,8 +228,15 @@ def main() -> int:
     for name in ("openrac.py", "extractor.py"):
         (out / "tools").mkdir(exist_ok=True)
         shutil.copy2(ROOT / "tools" / name, out / "tools" / name)
-    copy_tree(ROOT / "editor", out / "editor",
+    # The helpers they import, found from the copy's own tools/ (they find the copy's root by
+    # the STANDALONE note written below).
+    files.copy_tree(ROOT / "tools/openrac_common", out / "tools/openrac_common", lambda rel: rel.suffix == ".py")
+    files.copy_tree(ROOT / "editor", out / "editor",
               lambda rel: not rel.name.startswith("test_") and rel.suffix in (".py", ".tsv", ".gd", ""))
+    if not args.android:
+        # Android has no Mods tab yet, and so no Enhanced graphics to bake for.
+        files.copy_tree(ROOT / PROBE_TOOLS, out / PROBE_TOOLS,
+                  lambda rel: not rel.name.startswith("test_") and rel.suffix in (".py", ".json"))
     for manifest in sorted((ROOT / "games").glob("*/game.json")):
         dest = out / manifest.relative_to(ROOT)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +260,10 @@ def main() -> int:
             for path in sorted(args.game_build.glob(pattern)):
                 shutil.copy2(path, dest / path.name, follow_symlinks=True)
                 carried.append(path.name)
+        # The licenses of what the carried tools have built in (Embree in the probe baker).
+        if (args.game_build / "licenses").is_dir() and any(name.startswith(TOOLS) for name in carried):
+            shutil.copytree(args.game_build / "licenses", dest / "licenses", dirs_exist_ok=True)
+            carried.append("licenses")
         if not any(name.split("/")[-1].startswith(GAMES[0]) for name in carried):
             sys.exit(f"{args.game_build} has no {GAMES[0]}: build it first (tools/build_port.py rac1-pal)")
     if args.python and args.android:
@@ -263,7 +280,7 @@ def main() -> int:
                                                       "*.a", "include", "share"))
         carried.append("python")
 
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    commit = proc.git(ROOT, "rev-parse", "HEAD", check=False)
     (out / "STANDALONE").write_text(
         "The copy of OpenRAC an installed launcher carries (tools/bundle_standalone.py).\n"
         f"commit: {commit or 'unknown'}\ncarries: {', '.join(carried) or 'no game, no Python'}\n"

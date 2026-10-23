@@ -78,6 +78,16 @@ class PlayerActions(unittest.TestCase):
         self.assertEqual([need["path"] for need in play["needs"]], [check["makes"]])
         self.assertNotIn("python", play.get("requires", []))
 
+    def test_the_probe_bake_reads_and_writes_the_data_folder(self):
+        for version, actions in (("pal", self.pal), ("ntsc", self.ntsc)):
+            bake = actions["probe-bake"]
+            args = bake["args"]
+            self.assertEqual(args[args.index("--levels-dir") + 1], f"{{data}}/port/{version}")
+            self.assertEqual(args[args.index("--output-dir") + 1], f"{{data}}/probes/{version}")
+            self.assertIn("--update", args)
+            self.assertEqual([need["path"] for need in bake["needs"]], [actions["port-levels-check"]["makes"]])
+            self.assertTrue(bake["artifact"].endswith("openrac-probe-bake.exe"))
+
     def test_ntsc_levels_have_a_folder_of_their_own(self):
         # <data> is the game's, shared by PAL and NTSC-U: each version's levels are <data>/port/<version>.
         levels, check = self.ntsc["port-levels"], self.ntsc["port-levels-check"]
@@ -121,10 +131,20 @@ class Bundle(unittest.TestCase):
                 sys.argv = argv
             for rel in ("STANDALONE", "tools/openrac.py", "tools/extractor.py", "editor/extract.py",
                         "editor/moby_classes.tsv", "games/rac1/game.json", "progress/summary.json",
-                        "launcher/actions.json"):
+                        "launcher/actions.json", "port/enhanced/tools/probes/bake_all.py",
+                        "port/enhanced/tools/probes/moby_seed_whitelist.json"):
                 self.assertTrue((out / rel).is_file(), rel)
             self.assertFalse(list(out.rglob("test_*.py")))
             json.loads((out / "launcher/actions.json").read_text())
+            # The copy's tools run from it: their helpers are carried, and find the copy's root.
+            self.assertTrue((out / "tools/openrac_common/__init__.py").is_file())
+            for tool in ("openrac.py", "extractor.py"):
+                done = subprocess.run([sys.executable, str(out / "tools" / tool), "--help"], cwd=tmp,
+                                      capture_output=True, text=True)
+                self.assertNotIn("Traceback", done.stderr, tool)
+            root = subprocess.run([sys.executable, "-c", "from openrac_common import paths; print(paths.repo_root())"],
+                                  cwd=out / "tools", capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(Path(root), out.resolve())
 
     def test_games_as_built(self):
         # On macOS a game is its bundle, carried whole; the build folder's link to it is not.

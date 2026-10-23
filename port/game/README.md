@@ -23,7 +23,7 @@ layer and the renderer.
 |---|---|
 | `hostgen.json` | what the game is and how to read its decompilation (below) |
 | `libraries.tsv` | every library entry point the game calls that the port answers itself: symbol, library, name, port (`host`, `game`, `wrap`, `todo`), notes, optional signature. A `host` row binds the address to the shared replacement of that name ([common/libraries.tsv](common/libraries.tsv)) |
-| `host/*.c` | only if the game needs C of its own: `wrap` functions, its overlay hook. A game's versions share theirs (`"host_shared"`: rac1's in [rac1/host](rac1/README.md)), each with a table of its names and addresses |
+| `host/*.c` | only if the game needs C of its own: `wrap` functions, its overlay hook. A game's versions share theirs (`"host_shared"`: rac1's in [rac1/host](rac1/README.md)), each with a table of its names and addresses. A routine several games have alike keeps one body in `common/lib/` and, in each game's `host/`, a two-line function at the game's address with the game's own facts: the WAD decompressor ([wad_routine.h](common/lib/wad_routine.h)) and the VU0 sine and cosine ([vu0_sine.h](common/lib/vu0_sine.h)) of rac2 and rac4 |
 | `no_c.tsv` | every function hostgen has no C for, or wrote C for from its assembly, and whether the port needs C for it (below) |
 
 `hostgen.json`:
@@ -42,6 +42,7 @@ layer and the renderer.
 | `groups` | parts of the tree that are separate programs over the same addresses (rac3's menu, `src/frontbin`, overlay 100) |
 | `overlay_hook` | true if `host/` provides `openrac_game_loaded_overlay` (which level's program is loaded) |
 | `hand`, `drafts` | C for functions the decompilation has as assembly: the port's own (`hand/hand.tsv`), and the decompilation's own drafts (`drafts.tsv`) ([hostgen](../tools/hostgen/README.md#a-games-configuration)) |
+| `overrides` | the port's own C for functions the decompilation has as matching C, where the port has to do otherwise (`hand/overrides.tsv`): it replaces the matched definition in the port only, and the decompilation keeps its match ([hostgen](../tools/hostgen/README.md#a-games-configuration)) |
 | `asm` | C from the assembly the game's setup wrote, for the functions with no C: its directories in the decompilation, `$gp`, whether it is on, and the retail program to read the same instructions from where the files are not (`"retail"`; a player's build reads its disc image) ([hostgen](../tools/hostgen/README.md#functions-with-no-c-c-from-their-assembly)) |
 | `roots` | where hostgen's frontier report starts |
 

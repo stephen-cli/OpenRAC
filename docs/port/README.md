@@ -35,11 +35,18 @@ The code is in [port/](../../port/README.md).
 | [DESIGN.md](DESIGN.md) | What is decided, the shape of the port, the open decisions |
 | [ROADMAP.md](ROADMAP.md) | The order of work, and whether the decompilation must be finished first |
 | [SETTINGS.md](SETTINGS.md) | The PC settings and their file, frame pacing against the game's tick, the game's 50/60 Hz option, the graphics card checks, where a frame's time goes, the settings beside OpenGOAL's and ReRAC's, and the game fixes (what the port does otherwise than the original, and what a player switches back) |
+| [SPEEDRUN.md](SPEEDRUN.md) | Speedrunning the port: how it is timed, how to split a run with LiveSplit, the practice tooling, what a save state would take, the game's own speedrun meta, and what a category on the port would have to say |
+| [CONTROLLERS.md](CONTROLLERS.md) | Controllers: what the port does with a PlayStation 5 DualSense today, what Ratchet & Clank actually asks a controller for (analog button pressure, once, for swimming; no rumble at all, even on the console), what SDL3 exposes for adaptive triggers and the light bar, and what to build |
 | [MODS.md](MODS.md) | Mods: native plugins behind a versioned C interface, their manifest, hook points, the launcher's list and the port's answer, purist mode, crash reports that name them, the SDK ([sdk/](../../sdk/README.md)) |
+| [WEAPONS.md](WEAPONS.md) | Every weapon and how to test it in the port: the item ids, the one call that gives a weapon (`GiveItem`), the vendors, a verified `OPENRAC_WRITE` recipe for putting any weapon in Ratchet's hands, what to watch when one fires, the cheat codes and why not to arm a test with them, the I-5 debug menu, and what to watch (the fire flag, `button_mask`, the Walloper's state) |
 | [DECOMP_STATUS.md](DECOMP_STATUS.md) | How much of Ratchet & Clank (PAL) is C a PC could build, and what is not |
 | [HARDWARE_SEMANTICS.md](HARDWARE_SEMANTICS.md) | What the original code relies on in the PS2's processors (rounding, no NaN, 128-bit registers, VU0 flags, MMI, the GIF stream, ...) and how the port keeps each |
 | [DEBUGGING.md](DEBUGGING.md) | The debug overlay, the frame dump, pause and slow motion, every `OPENRAC_*` environment variable |
 | [RENDERER.md](RENDERER.md) | How the game builds a frame, everything it draws, the VU programs, the graphics chip's conventions |
+| [RAC1_GPU_DRIVEN.md](RAC1_GPU_DRIVEN.md) | Vulkan visibility, compaction, indirect batching and resource lifetime |
+| [RAC1_PROBE_GI.md](../../port/enhanced/docs/RAC1_PROBE_GI.md) | Baked probe GI, sparse and dense volumes, sampling and validation |
+| [RAC1_HERO_SHADOW.md](../../port/enhanced/docs/RAC1_HERO_SHADOW.md) | Ratchet's shadow map: directional on the ground, downward in the air |
+| [RAC1_SUN_SHADOW.md](../../port/enhanced/docs/RAC1_SUN_SHADOW.md) | Four sun cascades, a 10% directional-light floor and stencil suppression |
 | [ANDROID.md](ANDROID.md) | The port and the launcher on Android: one APK, the game's activity, OpenGL ES 3.2, the tools on the device, GPU driver packages (Mali, Adreno); building and device tests in [port/android](../../port/android/README.md) |
 | [PORTABILITY.md](PORTABILITY.md) | What the matching C assumes about the console, and the choices for a PC build |
 | [RAC1_PAL_SURVEY.md](RAC1_PAL_SURVEY.md) | The first survey of the game for a native build (2026-10-08): frame loop, display list, menu path, disc, memory card, library surface |
