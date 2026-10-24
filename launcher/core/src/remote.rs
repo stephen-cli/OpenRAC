@@ -35,8 +35,8 @@ pub trait Fetch {
     fn get(&self, url: &str, api: bool) -> Result<Vec<u8>, String>;
 }
 
-/// The real one: `curl`, as the launcher's progress fetch runs it (on Linux, macOS and Windows 10+),
-/// following redirects (a release's asset, a repository's archive), with a time limit and a size cap.
+/// The real one for mods: `curl` (on Linux, macOS and Windows 10+), https only, following
+/// redirects (a release's asset, a repository's archive), with a time limit and a size cap.
 pub struct Curl;
 
 impl Fetch for Curl {
@@ -51,23 +51,42 @@ impl Fetch for Curl {
         if api {
             cmd.args(["-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28"]);
         }
-        let out = cmd
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("curl cannot be started ({e}): the launcher fetches mods with it"))?;
-        if out.status.success() {
-            return Ok(out.stdout);
-        }
-        let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if why.contains("404") {
-            format!("{url}: not found")
-        } else if why.is_empty() {
-            format!("{url} could not be fetched")
-        } else {
-            format!("{url} could not be fetched ({why})")
-        })
+        run_curl(cmd, url, "the launcher fetches mods with it")
     }
+}
+
+/// A short fetch that must not hold the launcher's start up: bytematch.dev's progress figures
+/// (progress_sync.rs). `curl` with 4 seconds to connect and 10 in all, no redirects and no
+/// headers of its own; `api` is ignored.
+pub struct QuickCurl;
+
+impl Fetch for QuickCurl {
+    fn get(&self, url: &str, _api: bool) -> Result<Vec<u8>, String> {
+        let mut cmd = crate::detect::quiet(Path::new("curl"));
+        cmd.args(["-s", "-f", "--connect-timeout", "4", "--max-time", "10"]);
+        run_curl(cmd, url, "the launcher fetches its progress figures with it")
+    }
+}
+
+/// Runs `cmd` (a `curl` with its options) on `url`, its input closed: the body, or why not.
+/// `purpose` says, when curl cannot be started, what the launcher needed it for.
+fn run_curl(mut cmd: std::process::Command, url: &str, purpose: &str) -> Result<Vec<u8>, String> {
+    let out = cmd
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("curl cannot be started ({e}): {purpose}"))?;
+    if out.status.success() {
+        return Ok(out.stdout);
+    }
+    let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if why.contains("404") {
+        format!("{url}: not found")
+    } else if why.is_empty() {
+        format!("{url} could not be fetched")
+    } else {
+        format!("{url} could not be fetched ({why})")
+    })
 }
 
 /// Where GitHub answers: its API and its raw files (the tests point both elsewhere).
@@ -198,7 +217,7 @@ impl Release {
 }
 
 /// One mod the repository holds, as the Mods tab shows it before it is installed.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteMod {
     pub id: String,
@@ -211,6 +230,7 @@ pub struct RemoteMod {
     pub path: String,
     /// "native" (a library the game loads: code), "script" (Luau the game runs sandboxed) or "pack"
     /// (textures, models, levels).
+    #[ts(type = "\"native\" | \"script\" | \"pack\"")]
     pub kind: String,
     pub games: BTreeMap<String, Vec<String>>,
     pub api: Option<String>,
@@ -225,7 +245,8 @@ pub struct RemoteMod {
 }
 
 /// What an address holds.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
+#[ts(rename = "RemotePreview")]
 #[serde(rename_all = "camelCase")]
 pub struct Preview {
     /// The repository's address, without a version.
@@ -233,6 +254,7 @@ pub struct Preview {
     /// "owner/repo", or the address.
     pub label: String,
     /// "github" or "git".
+    #[ts(type = "\"github\" | \"git\"")]
     pub host: String,
     /// The owner, who publishes it (GitHub).
     pub owner: String,
@@ -700,7 +722,7 @@ fn read_git(url: &str, ctx: (&str, &str, Option<&str>, &Path)) -> Result<(Previe
 // ---- sources.json ---------------------------------------------------------------------------
 
 /// Where one installed mod came from.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModSource {
     pub url: String,
@@ -720,7 +742,8 @@ pub struct ModSource {
     pub pin: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ts_rs::TS)]
+#[ts(rename = "ModSources")]
 pub struct Sources {
     pub format: u32,
     #[serde(default)]
@@ -799,7 +822,7 @@ pub fn preview(ctx: &Context, url: &str) -> Result<Preview, String> {
 }
 
 /// What installing from an address came to.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum RemoteInstalled {
     /// A native or script mod, now in the store.
@@ -946,7 +969,8 @@ pub fn install(ctx: &Context, url: &str, id: &str) -> Result<RemoteInstalled, St
 }
 
 /// A newer version of an installed mod.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
+#[ts(rename = "ModUpdate")]
 #[serde(rename_all = "camelCase")]
 pub struct Update {
     pub id: String,
@@ -959,16 +983,21 @@ pub struct Update {
 
 /// What each source not pinned offers that is newer: a release with a newer version built for
 /// this computer, or, for a script mod or a data pack with no release, a newer commit. A source that cannot be read
-/// now is left out (`errors` says which).
+/// now is left out (`errors` says which, once per address with the mods it holds).
+///
+/// Each address is read once, however many of its mods are installed: a repository of several
+/// mods would otherwise cost GitHub's anonymous allowance (60 requests an hour) a read per mod.
 pub fn check_updates(ctx: &Context) -> (Vec<Update>, Vec<String>) {
     let mut updates = Vec::new();
-    let mut errors = Vec::new();
+    let mut read: BTreeMap<String, Result<Preview, String>> = BTreeMap::new();
+    let mut failed: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, s) in read_sources(ctx.dir).mods {
         if s.pin {
             continue;
         }
-        match preview(ctx, &s.url) {
-            Err(e) => errors.push(format!("{id}: {e}")),
+        let got = read.entry(s.url.clone()).or_insert_with(|| preview(ctx, &s.url));
+        match got {
+            Err(_) => failed.entry(s.url.clone()).or_default().push(id),
             Ok(p) => {
                 let Some(m) = p.mods.iter().find(|m| m.id == id && m.compatible) else { continue };
                 let newer = match (plugins::parse_version(&m.version), plugins::parse_version(&s.version)) {
@@ -988,6 +1017,13 @@ pub fn check_updates(ctx: &Context) -> (Vec<Update>, Vec<String>) {
             }
         }
     }
+    let errors = failed
+        .into_iter()
+        .map(|(url, ids)| match &read[&url] {
+            Err(e) => format!("{}: {e}", ids.join(", ")),
+            Ok(_) => unreachable!("only unread addresses fail"),
+        })
+        .collect();
     (updates, errors)
 }
 
@@ -1541,10 +1577,20 @@ mod tests {
         let r1 = release(&mut fx, "v1.0.0", "m", "1.0.0", Some(String::new()), false);
         repo(&mut fx, &[("openrac-mod.json", manifest("m", "1.0.0"))], serde_json::json!([r1]), "c1");
         assert!(check_updates(&ctx(dir.path(), &fx)).0.is_empty());
+        // Two mods from one repository: it is read once, and its failure said once for both.
+        let mut sources = read_sources(dir.path());
+        let same = sources.mods["m"].clone();
+        sources.mods.insert("n".into(), same);
+        write_sources(dir.path(), &sources).unwrap();
+        fx.asked.borrow_mut().clear();
+        assert!(check_updates(&ctx(dir.path(), &fx)).0.is_empty());
+        assert_eq!(fx.asked.borrow().iter().filter(|u| u.contains("/releases?")).count(), 1, "one read per address");
         // A source that cannot be read is said, not fatal.
         let empty = Fixture::default();
         let (u, errors) = check_updates(&ctx(dir.path(), &empty));
-        assert!(u.is_empty() && errors.len() == 1);
+        assert!(u.is_empty());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("m, n: "), "{errors:?}");
     }
 
     #[test]

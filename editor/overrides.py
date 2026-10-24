@@ -75,9 +75,14 @@ import sys
 import tempfile
 import zipfile
 
-import disc
-import games
-from port import FORMAT
+sys.path.insert(1, str(next(p for p in Path(__file__).resolve().parents if (p / "tools/openrac_common").is_dir()) / "tools"))
+from openrac_common import digest  # noqa: E402
+
+import disc  # noqa: E402
+import games  # noqa: E402
+from port import FORMAT  # noqa: E402
+import util  # noqa: E402
+from util import sha256  # noqa: E402
 
 MANIFEST = "openrac-mod.json"
 STATE = "overrides.json"
@@ -393,10 +398,6 @@ def layer_files(root: Path) -> dict[str, Path]:
 # ---- the other disc --------------------------------------------------------------------------
 
 
-def sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def glb_parts(data: bytes) -> tuple[dict, bytes]:
     """A GLB's JSON and binary chunk."""
     import gltf_read
@@ -438,13 +439,13 @@ def vertices(path: Path) -> str:
     """A hash of a model's vertex positions, in the order the file has them."""
     import gltf_read
     document = gltf_read.read(path)
-    digest = hashlib.sha256()
+    hasher = hashlib.sha256()
     for node in document.list("nodes"):
         if "mesh" in node:
             for primitive in document.list("meshes")[node["mesh"]]["primitives"]:
                 for position in document.accessor(primitive["attributes"]["POSITION"]):
-                    digest.update(struct.pack("<3f", *position))
-    return digest.hexdigest()
+                    hasher.update(struct.pack("<3f", *position))
+    return hasher.hexdigest()
 
 
 def skeleton(path: Path) -> dict[int, tuple]:
@@ -504,7 +505,7 @@ def originals(files, levels: Path) -> dict:
             if not original.is_file():
                 continue
             doc, _ = glb_parts(files[rel])
-            names = {name: sha256((level / "textures" / f"{name}.png").read_bytes()) for name in model_textures(doc)
+            names = {name: digest.sha256(level / "textures" / f"{name}.png") for name in model_textures(doc)
                      if (level / "textures" / f"{name}.png").is_file()}
             out[rel] = {"kind": "terrain", "class": None, "vertices": vertices(original), "textures": names,
                         "class_textures": model_textures(glb_parts(original.read_bytes())[0])}
@@ -532,7 +533,7 @@ def originals(files, levels: Path) -> dict:
             for name in model_textures(doc):
                 picture = level / "textures" / f"{name}.png"
                 if picture.is_file():         # a level texture (the model's own pictures are not)
-                    names[name] = sha256(picture.read_bytes())
+                    names[name] = digest.sha256(picture)
             out[rel] = {"kind": model.group(2), "class": int(model.group(3)), "vertices": vertices(original),
                         "textures": names, "class_textures": model_textures(glb_parts(original.read_bytes())[0])}
     return out
@@ -613,7 +614,7 @@ def cross_disc(root: Path, manifest: dict, target: Target) -> tuple[dict, list[s
         if isinstance(entry.get("sha256"), str):
             edited.setdefault(entry["sha256"], {})[int(texture.group(1))] = path
         else:
-            unknown.setdefault(sha256(path.read_bytes()), []).append((int(texture.group(1)), texture.group(2), path))
+            unknown.setdefault(digest.sha256(path), []).append((int(texture.group(1)), texture.group(2), path))
     for picture, by_level in edited.items():
         places = target.places(picture)
         for lv, name in places:
@@ -799,10 +800,7 @@ def stack(folder: Path | None, out: Path, packed: Path | None = None, levels: Pa
 
 
 def read_json(path: Path) -> dict:
-    try:
-        value = json.loads(Path(path).read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PackError(f"{path} cannot be read ({exc})") from None
+    value = util.read_json(path, lambda p, exc: PackError(f"{p} cannot be read ({exc})"))
     return value if isinstance(value, dict) else {}
 
 

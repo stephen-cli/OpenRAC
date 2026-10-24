@@ -166,8 +166,8 @@ extern float rnd_23e008(float, float) __asm__("func_L00_00258C80");
 extern int fr_23e008(int) __asm__("func_001F9850");
 extern unsigned char *emit_23e008(float *, int, float, float, float, int, int, int, void *) __asm__("func_L00_00272F00");
 extern int rf_23e008(float) __asm__("func_001FA898");
-/* Spawns a burst of directed particles with randomised speeds from the frame time. Adapted from Lombyte (MIT) for PAL: overlays/shared/unclassified_0023db30.c, FUN_L00_0023e008. */
-void GlowParticlesSpawn(void *p)
+/* Spawns a burst of directed particles with randomised speeds from the frame time. Adapted from Lombyte (GPL-3.0) for PAL: overlays/shared/unclassified_0023db30.c, FUN_L00_0023e008. */
+void emit_moby_particle_pairs(void *p)
 {
     ti_23e008 dir[1];
     ti_23e008 old[1];
@@ -241,7 +241,7 @@ extern T_0023e738 D_L00_001805C0_0023e738[] __asm__("D_L00_001805C0");
 extern P_0023e738 D_L00_001803C0_0023e738[] __asm__("D_L00_001803C0");
 extern char D_L00_00180740_0023e738[] __asm__("D_L00_00180740");
 void func_001F99D8_0023e738(void *, int) __asm__("func_001F99D8");
-/* Update (reads the frame-time float D_L00_0015F6B8). Adapted from Lombyte (MIT) for PAL: overlays/shared/unclassified_0023db30.c, FUN_L00_0023e738. */
+/* Update (reads the frame-time float D_L00_0015F6B8). Adapted from Lombyte (GPL-3.0) for PAL: overlays/shared/unclassified_0023db30.c, FUN_L00_0023e738. */
 int UpdatePointLight(u128_pt *v, float a, float b_0023e738, float c, float d, float e) {
     int i;
     T_0023e738 *t;
@@ -268,8 +268,8 @@ extern void func_002027C0(int);
 extern unsigned char D_L00_001803C0[];
 extern unsigned char D_L00_001805C0[];
 
-/* FreePointLight: detaches point light index and clears its slots. */
-void FreePointLight(int index)
+/* light_off_67e8: detaches point light index and clears its slots. */
+void light_off_67e8(int index)
 {
     DetachPointLight(index);
     FastMemZero16(D_L00_001803C0 + index * 0x20, 0x20);

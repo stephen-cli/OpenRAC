@@ -63,7 +63,7 @@ extern unsigned char D_0013D490[];
 /* Mission condition: D_0013D9B4 set, along with gSpecialItems[0x20] (Zoomerator/raritanium) and [0x21]. Joined with func_0020CC88. */
 int func_L00_0024F048(void) {
     if (D_0013D9B4 != 0) {
-        if (D_0013D490[0x20] != 0 && D_0013D490[0x21] != 0) {
+        if (gSpecialItems[0x20] != 0 && gSpecialItems[0x21] != 0) {
             return 1;
         }
     }
@@ -111,7 +111,7 @@ extern u8 * D_L00_001600A0 MACRO_ADDR;
 extern u32 D_L00_0015F6B0 MACRO_ADDR;
 extern s32 D_L00_0016007C MACRO_ADDR;
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/overlays/shared/ui_map_0024e7a8.c, FUN_L00_0024e7a8. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/overlays/shared/ui_map_0024e7a8.c, FUN_L00_0024e7a8. */
 void CountExpiredMobys(void) {
     u8 *p;
     s32 flag = 0;

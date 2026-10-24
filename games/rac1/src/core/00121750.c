@@ -280,7 +280,7 @@ extern int func_00118AA0();                /* RemoveIntcHandler */
 extern int func_00119328();
 extern void func_00118A50(int, int, int);  /* SetGsCrt */
 
-/* sceGsResetGraph. Adapted from Lombyte (MIT) for PAL. */
+/* sceGsResetGraph. Adapted from Lombyte (GPL-3.0) for PAL. */
 void func_00121B78(short mode, short inter, short out, short ff) {
     sceGsGParam *gp;
 
@@ -318,7 +318,7 @@ void func_00121B78(short mode, short inter, short out, short ff) {
 extern char D_00132E40[];
 
 void *func_00121D08(void) {
-    return D_00132E40;
+    return CoreDataTable;
 }
 
 INCLUDE_ASM("asm/nonmatchings/core_text", func_00121D14);

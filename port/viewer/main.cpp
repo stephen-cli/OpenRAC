@@ -22,8 +22,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <optional>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -31,16 +31,17 @@
 #include <SDL3/SDL.h>
 
 #include "common/log.h"
+#include "enhanced/renderer/texture_upscale.h"
+#include "game/rac1/game_state.h"
 #include "platform/clock.h"
 #include "platform/window.h"
 #include "renderer/framebuffer.h"
 #include "renderer/gl.h"
 #include "renderer/renderer.h"
+#include "scene/level.h"
+#include "scene/level_renderer.h"
+#include "scene/screenshot.h"
 #include "viewer/camera.h"
-#include "viewer/game_state.h"
-#include "viewer/level.h"
-#include "viewer/level_renderer.h"
-#include "viewer/screenshot.h"
 
 namespace {
 
@@ -55,6 +56,7 @@ struct Options {
     platform::DisplayMode mode = platform::DisplayMode::Windowed;
     bool vsync = true;
     bool lighting = true;
+    renderer::TextureFilter texture_filter = renderer::TextureFilter::EdgeAware;
     bool camera_given = false;
     float camera[5] = {};  // x, y, z, yaw and pitch in degrees
     std::filesystem::path state;  // a 32 MB memory picture of the running game
@@ -66,10 +68,12 @@ constexpr const char* kUsage =
     "  --screenshot FILE    draw --frames frames without showing a window, write the last as PNG\n"
     "  --frames N           frames to draw before the screenshot (default 1)\n"
     "  --size WxH           window or screenshot size (default 1280x720)\n"
+    "  --texture-filter MODE  normal or edge-aware (default; Vulkan only)\n"
     "  --camera X,Y,Z,YAW,PITCH   start here (game units; degrees) instead of framing the level\n"
     "  --fullscreen | --borderless\n"
     "  --no-vsync  --no-lighting\n"
-    "  --state FILE         the game's main memory at one frame (32 MB): its camera and live mobys\n";
+    "  --state FILE         the game's main memory at one frame (32 MB): its camera and live "
+    "mobys\n";
 
 bool parse_floats(std::string_view text, float* out, int count) {
     for (int i = 0; i < count; ++i) {
@@ -116,6 +120,15 @@ bool parse(int argc, char** argv, Options& o) {
                 || o.width < 16 || o.height < 16) {
                 return false;
             }
+        } else if (arg == "--texture-filter") {
+            const auto value = next();
+            if (value == "normal") {
+                o.texture_filter = renderer::TextureFilter::Normal;
+            } else if (value == "edge-aware") {
+                o.texture_filter = renderer::TextureFilter::EdgeAware;
+            } else {
+                return false;
+            }
         } else if (arg == "--camera") {
             if (!parse_floats(next(), o.camera, 5)) {
                 return false;
@@ -146,17 +159,17 @@ int run(const Options& options) {
         platform::Platform::use_offscreen_video();
     }
 
-    viewer::LevelData level;
+    scene::LevelData level;
     std::string error;
-    if (!viewer::load_level(options.level, level, error)) {
+    if (!scene::load_level(options.level, level, error)) {
         log::error("{}", error);
         return 1;
     }
     std::size_t placed = 0;
-    for (std::size_t layer = 0; layer < viewer::kLayerCount; ++layer) {
+    for (std::size_t layer = 0; layer < scene::kLayerCount; ++layer) {
         log::info(
             "{}: {} placed",
-            viewer::layer_name(static_cast<viewer::Layer>(layer)),
+            scene::layer_name(static_cast<scene::Layer>(layer)),
             level.instances[layer].size()
         );
         placed += level.instances[layer].size();
@@ -196,15 +209,16 @@ int run(const Options& options) {
     }
 
     renderer::Renderer renderer;
-    viewer::LevelScene scene;
+    scene::LevelScene scene;
     scene.lighting = options.lighting;
+    enhanced::install_texture_upscaler(renderer.textures());
     if (!scene.upload(level, renderer.textures(), error)) {
         log::error("{}", error);
         return 1;
     }
-    for (std::size_t layer = 0; layer < viewer::kLayerCount; ++layer) {
+    for (std::size_t layer = 0; layer < scene::kLayerCount; ++layer) {
         renderer.add(
-            std::make_unique<viewer::LayerRenderer>(scene, static_cast<viewer::Layer>(layer)), error
+            std::make_unique<scene::LayerRenderer>(scene, static_cast<scene::Layer>(layer)), error
         );
     }
     if (!renderer.init(error)) {
@@ -213,28 +227,28 @@ int run(const Options& options) {
     }
 
     // The running game's camera and mobys, from its memory.
-    std::optional<viewer::GameState> game;
+    std::optional<host::GameState> game;
     if (!options.state.empty()) {
         std::vector<std::uint8_t> ram;
-        if (!viewer::load_memory(options.state, ram, error)) {
+        if (!game::rac1::load_memory(options.state, ram, error)) {
             log::error("{}", error);
             return 1;
         }
-        game = viewer::read_game_state(ram, viewer::rac1_pal_addresses(ram));
-        std::vector<viewer::Instance> live;
+        game = game::rac1::read_game_state(ram, game::rac1::rac1_pal_addresses(ram));
+        std::vector<scene::Instance> live;
         int unknown = 0;
-        for (const viewer::LiveMoby& m : game->mobys) {
+        for (const host::LiveMoby& m : game->mobys) {
             auto cls = level.moby_classes.find(m.class_id);
             if (cls == level.moby_classes.end()) {
                 ++unknown;
                 continue;
             }
-            viewer::Instance instance;
+            scene::Instance instance;
             instance.model = cls->second.first;
             instance.matrix = m.matrix;
             live.push_back(instance);
         }
-        scene.set_instances(viewer::Layer::Mobys, live);
+        scene.set_instances(scene::Layer::Mobys, live);
         log::info(
             "game state: camera at {:.1f} {:.1f} {:.1f}, {} live mobys ({} of classes the level does not have)",
             game->camera_position[0],
@@ -255,6 +269,8 @@ int run(const Options& options) {
 
     renderer::FrameBuffer frame;
     renderer::FrameInput input;
+    input.texture_filter = gl::enhanced_rendering_available() ? options.texture_filter
+                                                              : renderer::TextureFilter::Normal;
     input.clear_colour = {level.background[0], level.background[1], level.background[2], 1.0f};
     viewer::FlyControls controls;
     bool looking = false;
@@ -368,7 +384,7 @@ int run(const Options& options) {
 
         if (headless && index + 1 >= static_cast<std::uint64_t>(options.frames)) {
             const auto& stats = renderer.last_stats();
-            if (!viewer::write_png(options.screenshot, width, height, frame.read_rgba())) {
+            if (!scene::write_png(options.screenshot, width, height, frame.read_rgba())) {
                 log::error("could not write {}", options.screenshot);
                 status = 1;
             } else {

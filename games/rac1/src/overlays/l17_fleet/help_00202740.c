@@ -9,7 +9,7 @@ extern char D_0013E633[];
 extern int func_L00_0020DB30(int);
 
 /* Returns the current help record's value, 0x54 or 0x6E in two special states, or 0 when no record applies. */
-int Help_GetCurrentRecord(int a) {
+int select_hero_help_value(int a) {
     char *g = (char *)D_0013E633 + 0xE1D;
     switch (*(unsigned char *)(g + 0x20A4)) {
     case 1:
@@ -39,7 +39,7 @@ int Help_GetCurrentRecord(int a) {
         }
     }
     {
-        int i = Hero_GetSlotModuleId(0);
+        int i = hero_slot_item_id(0);
         return D_L17_0017A440[i].v;
     }
 }
@@ -97,7 +97,7 @@ void func_L17_0021ED38(s32, s32);
 void func_L00_00217570(s32, s32);
 void func_L00_00211338(void *, s32, f32, f32);
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/overlays/l17/ui_help_002020a8.c, FUN_L17_0020dbe8. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/overlays/l17/ui_help_002020a8.c, FUN_L17_0020dbe8. */
 s32 HeroL17_TryTakeHit(s32 arg) {
     u8 *m;
     T_8 *tbl;
@@ -212,18 +212,18 @@ s32 HeroL17_TryTakeHit(s32 arg) {
             a = 0.0f;
             b = e * 1.7f;
         }
-        Vec_ScaleXYSetZ(&v, flag, a, b);
+        hero_knockback(&v, flag, a, b);
         if (flag != 0 && tbl->b28 == 4) {
             v.f[2] += v.f[2];
         }
         break;
     case 1:
         HeroL17_SetMoveState(0x46, 1);
-        Vec_ScaleXYSetZ(&v, flag, D_0015EE6C * 5.0f, D_0015EE6C * 3.0f);
+        hero_knockback(&v, flag, D_0015EE6C * 5.0f, D_0015EE6C * 3.0f);
         break;
     case 3:
         HeroL17_SetMoveState(0x56, 1);
-        Vec_ScaleXYSetZ(&v, flag, D_0015EE6C * 5.0f, D_0015EE6C * 2.4f);
+        hero_knockback(&v, flag, D_0015EE6C * 5.0f, D_0015EE6C * 2.4f);
         break;
     }
     FastVecAdd(D_0013F530, D_0013F530, &v);
@@ -238,7 +238,7 @@ extern float D_0015EE64 MACRO_ADDR;
 extern float D_0015EE6C MACRO_ADDR;
 
 /* Per-frame easing of the camera blend parameters at the shared global block, by mode. */
-void Camera_EaseBlendParams(void) {
+void update_hero_smoothing(void) {
     char *a = (char *)D_0013E633 + 0xE1D;
     char *b;
     char *c;

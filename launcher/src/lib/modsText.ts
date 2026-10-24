@@ -21,7 +21,6 @@ export const STATE_LABEL = {
   failed: { text: "Not loaded", tone: "err" },
   refused: { text: "Cannot load", tone: "err" },
 } as const satisfies Record<string, Label>;
-export type StateKey = keyof typeof STATE_LABEL;
 
 /** What a mod runs (lib/plugins.ts, modKind): code, scripts in the sandbox, or data only. */
 export const KIND_LABEL = {
@@ -38,7 +37,7 @@ export const KIND_HINT = {
   pack: "Data only: it replaces textures, models or levels, and runs nothing.",
   builtIn: "Part of the game, off unless you turn it on. Still being worked on.",
 } as const satisfies Record<KindKey, string>;
-export type KindKey = keyof typeof KIND_LABEL;
+type KindKey = keyof typeof KIND_LABEL;
 
 /** Whether a mod from a link can be installed here, in its preview row. */
 export const COMPATIBLE_LABEL = {
@@ -100,6 +99,8 @@ export const ADD = {
 export const PANEL = {
   title: "Gameplay mods",
   checkUpdates: "Check for updates",
+  updateAll: (count: number) => `Update all (${count})`,
+  updateRow: "Update",
   empty: "No gameplay mods yet. Paste a mod's link above, or choose its file.",
   settings: "Settings",
   details: "Details",
@@ -122,7 +123,7 @@ export const PANEL = {
 /** The badge on a mod's row besides its state and kind (lib/plugins.ts, modBadge). */
 export const BADGE = {
   update: (version: string) => `Update ${version}`,
-  updateHint: "A newer version is out: open the mod to update it.",
+  updateHint: "A newer version is out: update it with its Update button.",
 } as const;
 
 /** The sections of a mod's page (lib/plugins.ts, settingGroups). */
@@ -146,6 +147,7 @@ export const ENHANCED = {
   fallback: "A level without it keeps its original lighting.",
   noLevels: "Get the levels ready on the game's page first.",
   noBaker: "This copy of the game has no lighting baker.",
+  noBakerHere: "Intel Macs ship without the lighting baker: the enhanced graphics keep the original lighting.",
   prepare: "Prepare lighting",
   again: "Prepare again",
   advanced: "Advanced",
@@ -161,7 +163,7 @@ export const MOD_PAGE = {
   about: "About this mod",
   aboutKind: "What it runs",
   presets: "Presets",
-  resetAll: "Reset all",
+  resetAll: "Reset to defaults",
   resetAllConfirm: (name: string) => `Put every setting of ${name} back to its default?`,
   resetAllDone: "Every setting is back to its default.",
   noSettings: "This mod has nothing to set: switch it on and play.",
@@ -298,6 +300,10 @@ export function updatesFound(count: number, errors: string[]): string {
   return found + (errors.length ? ` Not checked: ${errors.join("; ")}` : "");
 }
 
+export function updatedAll(done: number, failed: number): string {
+  const ok = `Updated ${done} ${done === 1 ? "mod" : "mods"}; their settings are kept.`;
+  return failed ? `${ok} ${failed} could not be updated: open each for why.` : ok;
+}
 export const updated = (name: string, version: string) => `Updated ${name} to ${version}; its settings are kept.`;
 
 /** A mod installed from a link: replaced, on, or off (its row says why). */
@@ -314,6 +320,7 @@ export const added = {
   on: (name: string) => `Added ${name}. It is on from the game's next start.`,
   off: (name: string) => `Added ${name}. It is off: its row says why.`,
   pack: (name: string) => `Added ${name}.`,
+  several: (count: number) => `Added or updated ${count} mods; their settings are kept.`,
   packHereNot: (name: string) => `${name} is a texture and model pack, which cannot be added here yet.`,
   packFailed: (name: string, why: string) => `${name}: ${why.length > 0 ? why : "it could not be added"}`,
 };

@@ -8,11 +8,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -21,6 +22,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include "common/env.h"
 #include "common/log.h"
 #include "renderer/vulkan/pipeline_cache_file.h"
 #include "renderer/vulkan/vkgl_internal.h"
@@ -60,31 +62,32 @@ std::filesystem::path pipeline_cache_file() {
     if (g == nullptr) {
         return {};
     }
-    if (const char* env = std::getenv("OPENRAC_VULKAN_PIPELINE_CACHE"); env != nullptr) {
-        if (std::strcmp(env, "0") == 0 || std::strcmp(env, "off") == 0
-            || std::strcmp(env, "none") == 0) {
+    // 0, off or none keep no cache; the empty string is as if the variable were unset.
+    if (const std::optional<std::string_view> chosen = env::value(env::Var::VulkanPipelineCache)) {
+        if (*chosen == "0" || *chosen == "off" || *chosen == "none") {
             return {};
         }
-        if (env[0] != '\0') {
-            return env;
+        if (!chosen->empty()) {
+            return std::filesystem::path(*chosen);
         }
     }
     std::filesystem::path base;
 #if defined(__APPLE__)
-    const char* home = std::getenv("HOME");
-    base = std::filesystem::path(home != nullptr ? home : ".") / "Library/Caches/OpenRAC";
+    const std::string home = env::system_variable("HOME").value_or(".");
+    base = std::filesystem::path(home) / "Library/Caches/OpenRAC";
 #elif defined(__ANDROID__)
-    const char* home = std::getenv("HOME");
-    base = std::filesystem::path(home != nullptr ? home : ".") / "cache";
+    const std::string home = env::system_variable("HOME").value_or(".");
+    base = std::filesystem::path(home) / "cache";
 #else
-    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg != nullptr && xdg[0] != '\0') {
-        base = std::filesystem::path(xdg) / "openrac";
+    if (const std::optional<std::string> xdg = env::system_variable("XDG_CACHE_HOME");
+        xdg.has_value() && !xdg->empty()) {
+        base = std::filesystem::path(*xdg) / "openrac";
     } else {
-        const char* home = std::getenv("USERPROFILE");
-        if (home == nullptr || home[0] == '\0') {
-            home = std::getenv("HOME");
+        std::optional<std::string> home = env::system_variable("USERPROFILE");
+        if (!home.has_value() || home->empty()) {
+            home = env::system_variable("HOME");
         }
-        base = std::filesystem::path(home != nullptr ? home : ".") / ".cache/openrac";
+        base = std::filesystem::path(home.value_or(".")) / ".cache/openrac";
     }
 #endif
     return base
@@ -107,7 +110,14 @@ void remove_other_pipeline_caches(const std::filesystem::path& path) {
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ec)) {
         const std::string name = entry.path().filename().string();
-        if (entry.path() != path && name.starts_with(prefix) && name.ends_with(".bin")) {
+        const bool cache_file = name.ends_with(".bin") || name.ends_with(".bin.manifest")
+                                || name.ends_with(".bin.spirv");
+        const bool ours = entry.path() == path
+                          || entry.path().string() == path.string() + ".manifest"
+                          || entry.path().string() == path.string() + ".spirv";
+
+        // Another build's cache, or the manifest or SPIR-V beside it; this build's stay.
+        if (!ours && name.starts_with(prefix) && cache_file) {
             std::filesystem::remove(entry.path(), ec);
         }
     }
@@ -172,6 +182,19 @@ bool make_pipeline_cache() {
             path.string()
         );
     }
+    // The keys of the pipelines earlier runs made, for the pre-warm (R-10).
+    load_pipeline_manifest(path);
+    // What glslang made in earlier runs (R-12), beside the cache; none with the cache off.
+    std::filesystem::path spirv = path;
+    spirv += path.empty() ? "" : ".spirv";
+
+    // A damaged file, or one of another compiler, is replaced at close.
+    if (g->spirv_cache.open(spirv, spirv_compiler_version()) == CacheFileState::Damaged) {
+        log::info(
+            "vulkan: SPIR-V cache {} is damaged or stale, starting a fresh one", spirv.string()
+        );
+    }
+
     return true;
 }
 
@@ -221,6 +244,9 @@ bool layer_available(const char* name) {
 }
 
 bool make_instance(const Config& config, bool validation, std::string& error) {
+    g->allow_present_id = config.present_id;
+    g->allow_present_wait = config.present_wait;
+    g->allow_latest_ready = config.fifo_latest_ready;
     std::vector<const char*> extensions;
 #if defined(__ANDROID__)
     // Asked of the driver itself (a player's own driver is not the one SDL would load).
@@ -244,7 +270,7 @@ bool make_instance(const Config& config, bool validation, std::string& error) {
         layers.push_back("VK_LAYER_KHRONOS_validation");
     }
 #if defined(OPENRAC_GPU_MARKERS)
-    debug_utils |= std::getenv("OPENRAC_GPU_MARKERS") != nullptr;
+    debug_utils |= env::flag(env::Var::GpuMarkers);
 #endif
     if (debug_utils) {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -352,9 +378,115 @@ bool pick_device(std::string& error) {
     std::vector<VkQueueFamilyProperties> queues(families);
     vkGetPhysicalDeviceQueueFamilyProperties(g->physical, &families, queues.data());
     g->timestamp_bits = queues.at(g->family).timestampValidBits;
+
+    // Whether the debug tools' GPU timers can work on this queue (the vk_gpu_timestamps gauge).
+    if (g->timestamp_bits != 0) {
+        log::info(
+            "vulkan: gpu timestamps: yes ({} valid bits, {} ns a tick)",
+            g->timestamp_bits,
+            g->properties.limits.timestampPeriod
+        );
+    } else {
+        log::info("vulkan: gpu timestamps: no (the queue keeps no timestamp bits)");
+    }
+
     vkGetPhysicalDeviceFeatures(g->physical, &g->features);
     return true;
 }
+
+namespace {
+
+// Asks for the presentation extensions (R-09) the device offers and Config allows, adding their
+// names to `extensions` and setting their features: VK_KHR_present_id, VK_KHR_present_wait (only
+// with present ids), and the FIFO latest-ready present mode (the KHR name or the older EXT one).
+// Only with a window, which they need. Returns the head of the feature chain: those asked for,
+// linked present_id to present_wait to latest_ready, then `next`; notes in `g` which.
+void* present_features(
+    std::vector<const char*>& extensions,
+    VkPhysicalDevicePresentIdFeaturesKHR& present_id,
+    VkPhysicalDevicePresentWaitFeaturesKHR& present_wait,
+    VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR& latest_ready,
+    void* next
+) {
+    g->present_id_enabled = false;
+    g->present_wait_enabled = false;
+    g->latest_ready_enabled = false;
+
+    // Without a surface there is nothing presented.
+    if (g->surface == VK_NULL_HANDLE) {
+        return next;
+    }
+
+    std::uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(g->physical, nullptr, &n, nullptr);
+    std::vector<VkExtensionProperties> offered(n);
+    vkEnumerateDeviceExtensionProperties(g->physical, nullptr, &n, offered.data());
+    const auto has = [&offered](const char* name) {
+        return std::ranges::any_of(offered, [name](const VkExtensionProperties& e) {
+            return std::strcmp(e.extensionName, name) == 0;
+        });
+    };
+    const char* latest_name = has(VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME)
+                                  ? VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME
+                                  : VK_EXT_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME;
+
+    // What the device says of each feature.
+    present_id.pNext = &present_wait;
+    present_wait.pNext = &latest_ready;
+    VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    query.pNext = &present_id;
+    vkGetPhysicalDeviceFeatures2(g->physical, &query);
+    const bool id = g->allow_present_id && has(VK_KHR_PRESENT_ID_EXTENSION_NAME)
+                    && present_id.presentId == VK_TRUE;
+    const bool wait = id && g->allow_present_wait && has(VK_KHR_PRESENT_WAIT_EXTENSION_NAME)
+                      && present_wait.presentWait == VK_TRUE;
+    const bool latest = g->allow_latest_ready && has(latest_name)
+                        && latest_ready.presentModeFifoLatestReady == VK_TRUE;
+    present_id = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    present_wait = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
+    latest_ready = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR};
+    void* head = nullptr;
+    void** tail = &head;
+
+    // Present ids: each present numbered, for the waits.
+    if (id) {
+        extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        present_id.presentId = VK_TRUE;
+        *tail = &present_id;
+        tail = &present_id.pNext;
+        g->present_id_enabled = true;
+    }
+
+    // Waits on a present id, which say when that present reached the screen.
+    if (wait) {
+        extensions.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+        present_wait.presentWait = VK_TRUE;
+        *tail = &present_wait;
+        tail = &present_wait.pNext;
+        g->present_wait_enabled = true;
+    }
+
+    // The present mode that shows the latest frame at each refresh without tearing.
+    if (latest) {
+        extensions.push_back(latest_name);
+        latest_ready.presentModeFifoLatestReady = VK_TRUE;
+        *tail = &latest_ready;
+        tail = &latest_ready.pNext;
+        g->latest_ready_enabled = true;
+    }
+
+    *tail = next;
+
+    log::info(
+        "vulkan: present ids {}, present waits {}, latest-ready mode {}",
+        id ? "yes" : "no",
+        wait ? "yes" : "no",
+        latest ? "yes" : "no"
+    );
+    return head;
+}
+
+}  // namespace
 
 bool make_device(std::string& error) {
     const float priority = 1.0f;
@@ -380,6 +512,9 @@ bool make_device(std::string& error) {
     f11.pNext = &f12;
     vkGetPhysicalDeviceFeatures2(g->physical, &available);
     g->viewport_index_supported = features.multiViewport && f12.shaderOutputViewportIndex;
+    // Vulkan 1.3 made extended dynamic state core, with no feature to ask for (documented: the
+    // Vulkan 1.3 promotion of VK_EXT_extended_dynamic_state); the device was chosen for 1.3.
+    g->extended_dynamic_state = g->properties.apiVersion >= VK_API_VERSION_1_3;
     g->bindless_supported =
         f11.shaderDrawParameters && f12.shaderSampledImageArrayNonUniformIndexing
         && f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingPartiallyBound;
@@ -429,8 +564,20 @@ bool make_device(std::string& error) {
             }
         }
     }
+
+    VkPhysicalDevicePresentIdFeaturesKHR present_id{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR
+    };
+    VkPhysicalDevicePresentWaitFeaturesKHR present_wait{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR
+    };
+    VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR latest_ready{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR
+    };
+    void* const features_chain =
+        present_features(extensions, present_id, present_wait, latest_ready, &f13);
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    info.pNext = &f13;
+    info.pNext = features_chain;
     info.queueCreateInfoCount = 1;
     info.pQueueCreateInfos = &queue;
     info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
@@ -599,10 +746,20 @@ void describe_device() {
 
 void destroy_all() {
     if (g->device != VK_NULL_HANDLE) {
+        // The pre-warm worker stops first: it uses the programs' modules and the cache.
+        stop_pipeline_prewarm();
         vkDeviceWaitIdle(g->device);
         gpu_release();
         material_release();
+        save_pipeline_manifest();
         save_pipeline_cache();
+        std::string spirv_error;
+
+        // The SPIR-V compiled this run, kept for the next.
+        if (!g->spirv_cache.save(spirv_error)) {
+            log::warn("vulkan: could not save the SPIR-V cache: {}", spirv_error);
+        }
+
         for (Frame& f : g->frames) {
             // Window teardown can run after the statistics singleton's
             // destructor. Drain measurements only at live frame-slot reuse,

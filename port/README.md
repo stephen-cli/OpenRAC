@@ -56,9 +56,11 @@ systems, and core Vulkan performance improvements remain in the core renderer.
 | [game/](game/README.md) | the games, one directory per version (`rac1-pal`, `rac1-ntsc`, `rac2-ntsc`, `rac3-ntsc`, `rac4-ntsc`): each its hostgen configuration and the table of the libraries it calls. [game/common/](game/common) is what they share: the library replacements (disc, memory card, graphics hand-off, kernel, pads, sound) and the program, `openrac-<id>` |
 | [platform/](platform) | the window, input as the console's pad, audio output, timing (SDL3) |
 | [renderer/](renderer) | the renderer: per-subsystem renderers in OpenGOAL's manner, the direct renderer for the 2D path, texture conversion (OpenGL 4.1) |
+| [renderer/ui/](renderer/ui/README.md) | what the game programs draw over the picture with the renderer's GL: Dear ImGui's draw lists on the Vulkan renderer's window, the on-screen pad, the frame-rate counter, the debug menu's picture |
 | [renderer/vulkan/](renderer/vulkan/README.md) | the renderer's OpenGL calls carried out with Vulkan 1.3, chosen with `OPENRAC_GL_API=vulkan` |
-| [viewer/](viewer) | `openrac-viewer`: a level, extracted from the player's disc by the editor, drawn natively with a free camera |
-| [common/](common) | what every module may use: the log, the crash report, the statistics, the system's description, and small helpers (`joining_thread.h`, a thread its owner joins) |
+| [scene/](scene/README.md) | a level and its live mobys, ready to draw: the editor's level export loaded, the mobys' poses and shadows read from game memory, the level drawn layer by layer through the renderer; the viewer and the game programs draw with it |
+| [viewer/](viewer/README.md) | `openrac-viewer`: a level, extracted from the player's disc by the editor, drawn natively with a free camera |
+| [common/](common/README.md) | what every module may use: the log, the crash report, the statistics, the system's description, a JSON reader, the PS2's float arithmetic, and small helpers (`joining_thread.h`, a thread its owner joins) |
 | [tests/](tests) | the runtime's tests |
 | [docs/](docs) | the port's [coding conventions](docs/CODING_CONVENTIONS.md) |
 | [tools/conventions/](tools/conventions/README.md) | the conventions' countable rules, checked in CI |

@@ -12,15 +12,23 @@ a renderer that draws its kind of thing on the GPU.
 |---|---|---|
 | `renderer.h` | `Renderer` runs a list of `BucketRenderer`s each frame in the game's drawing order (sky, terrain, ties, shrubs, mobys, particles, HUD); `FrameInput` carries each bucket's packets and the camera | `OpenGLRenderer`, `BucketRenderer`, `SharedRenderState` |
 | `direct.h` | the direct renderer: GIF packets (PACKED, REGLIST, IMAGE, A+D) of the 2D path turned into draw calls. `GifInterpreter` (CPU) assembles primitives and groups them by GPU state; `DirectRenderer` translates that state to GL: blend equation, depth test, alpha test with the double draw for fail modes, scissor, fog, texture | `DirectRenderer` |
-| `texture_pool.h` | every texture as RGBA8 on the GPU, found by the base pointer in the game's TEX0 used as an **identifier**: textures converted ahead of time are `place`d there; images the game sends with IMAGE transfers are converted when first drawn and cached by content | `TexturePool` |
+| `texture_pool.h` | every texture as RGBA8 on the GPU, found by the base pointer in the game's TEX0 used as an **identifier**: textures converted ahead of time are `place`d there; images the game sends with IMAGE transfers are converted when first drawn and cached by content; `prepare` makes a level's textures at its load (`texture-prepare`, RENDER_PERF.md) | `TexturePool` |
 | `texture.h` | conversions to RGBA8: PSMCT32/24/16, PSMT8 and PSMT4 (and their "H" forms) with CLUTs in CSM1 order, TEXA alpha; the chip's block layout only for a texture uploaded in one format and read in another | `texture_conversion.h` |
 | `gs.h` | the GS registers and the GIF tag as fields (public hardware documentation) | `common/dma/gs.h` |
 | `subsystems.h` | placeholders for terrain (tfrag), ties, shrubs, mobys, sky and particles, each documenting what it must draw | `TFragment`, `Tie3`, `Shrub`, `Merc2`, `Sky`, `Sprite3` |
 | `gl.h` | the GL functions used, loaded through the context's loader; no generated loader | glad |
+| `render_opt.h` | the optimisation registry: every render optimisation by name, its default and its tolerance, switched off with `OPENRAC_RENDER_OPT_OFF` to compare it with its reference path; its own library, `openrac_render_opt` ([cmake/Render.cmake](../cmake/Render.cmake)), so that it builds without a window ([docs/port/RENDER_PERF.md](../../docs/port/RENDER_PERF.md)) | |
+| `ambient_occlusion.h` | `AmbientOcclusion`, the frame's post-process hook for ambient occlusion: `Renderer` runs the one registered with `set_ambient_occlusion` after the world's depth prepass (for the world's lighting) or after its last pass (composited), when the frame asks (`FrameInput::gtao`). The enhanced renderer's GTAO implements it (`enhanced/renderer/gtao.h`) and the game programs register it, so the renderer includes nothing of `enhanced/` | |
+| `gtao_settings.h` | `GtaoSettings`, the ambient occlusion's settings the frame carries and the player's settings keep | |
 | `shader.h`, `framebuffer.h`, `math.h` | GLSL programs (`#version 410 core`, samplers `tex_T<n>` bound to unit n), off-screen targets, column-major matrices with a reversed-depth projection | `Shader`, `FramebufferTexturePair` |
 
 Shaders are in `shaders/` and compiled into the library
 ([cmake/Window.cmake](../cmake/Window.cmake)).
+
+`ui/` is a library of its own, `openrac_renderer_ui` ([ui/README.md](ui/README.md)): what the game
+programs draw over the game's picture with this GL (ImGui's draw lists on the Vulkan renderer's
+window, the on-screen pad, the frame-rate counter, the debug menu's picture), kept apart so that
+the renderer needs neither ImGui nor the platform's touch pad.
 
 ## Conventions (RENDERER.md, section 5)
 
@@ -61,6 +69,7 @@ bits are), DATE, dithering. The hand-off from the game (which bytes reach
 ## Tests
 
 `renderer_texture` (conversions, layout, pool), `renderer_gif` (the
-interpreter) run anywhere; `renderer_direct` draws packets into a framebuffer
+interpreter), `render_opt` and `render_opt_environment` (the registry's table and
+`OPENRAC_RENDER_OPT_OFF`) run anywhere; `renderer_direct` draws packets into a framebuffer
 and checks pixels, through SDL's offscreen driver (Mesa's llvmpipe without a
 GPU), and reports itself skipped when no OpenGL 4.1 context can be made.

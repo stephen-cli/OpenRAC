@@ -17,6 +17,16 @@ Everything else is shared: game memory and the guest contract
 the library replacements and the program ([common](common)), the platform
 layer and the renderer.
 
+The program in `common/` is being split into three folders, which the build
+takes every `.cpp` file from ([Games.cmake](../cmake/Games.cmake)), so a
+split adds no line to it. They are empty until their splits land:
+
+| Folder | |
+|---|---|
+| `common/program/` | the program itself, in every game's program, with a window or without: `main`, its options, vsync, the host side of `game_host.h` (from `main.cpp`) |
+| `common/frontend/` | the window, built only with one: the window, frame pacing, interpolation, world submission, input (from `frontend.cpp`) |
+| `common/debug/` | the debug overlay's parts, built only with a window (from `debug_overlay.cpp`): `overlay.h`, which only the overlay's files include, with its state and the helpers its panels share (defined in `overlay.cpp`), and a file for each of the panel's sections and the windows beside them: `frame.cpp`, `renderer.cpp`, `memory.cpp` (with the memory viewer), `mobys.cpp` (with the moby inspector), `game.cpp`, `shaders.cpp` |
+
 ## What a game is
 
 | File | |
@@ -25,6 +35,15 @@ layer and the renderer.
 | `libraries.tsv` | every library entry point the game calls that the port answers itself: symbol, library, name, port (`host`, `game`, `wrap`, `todo`), notes, optional signature. A `host` row binds the address to the shared replacement of that name ([common/libraries.tsv](common/libraries.tsv)) |
 | `host/*.c` | only if the game needs C of its own: `wrap` functions, its overlay hook. A game's versions share theirs (`"host_shared"`: rac1's in [rac1/host](rac1/README.md)), each with a table of its names and addresses. A routine several games have alike keeps one body in `common/lib/` and, in each game's `host/`, a two-line function at the game's address with the game's own facts: the WAD decompressor ([wad_routine.h](common/lib/wad_routine.h)) and the VU0 sine and cosine ([vu0_sine.h](common/lib/vu0_sine.h)) of rac2 and rac4 |
 | `no_c.tsv` | every function hostgen has no C for, or wrote C for from its assembly, and whether the port needs C for it (below) |
+
+What the host program's C++ knows of a game (the camera, the live mobys, the display list shown,
+the hero's shadow and state, whether its levels are extracted) comes from the game's profile,
+`host::GameProfile` ([common/profile.h](common/profile.h)): a version's own `profile.cpp` in its
+folder (Going Commando's and Deadlocked's, which send their display list), else one for the whole
+game in `port/game/<game>/profile.cpp` beside its `script_binding.c`, with a profile for each of
+its versions ([rac1's](rac1/README.md#the-games-profile)). A game with none links
+[common/profile_none.cpp](common/profile_none.cpp), the base, which reports no game state. The
+shared code never compares a game id.
 
 `hostgen.json`:
 

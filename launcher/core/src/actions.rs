@@ -107,7 +107,8 @@ pub struct Action {
 }
 
 /// What an action works on. A game has two builds, and the launcher keeps them apart.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(rename = "ActionArea")]
 #[serde(rename_all = "camelCase")]
 pub enum Area {
     /// The decompilation: the original program rebuilt and compared with the disc.
@@ -119,7 +120,8 @@ pub enum Area {
     Editor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(rename = "ActionKind")]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
     /// Getting the inputs in place: discs, extracted files, toolchains.
@@ -136,7 +138,8 @@ pub enum Kind {
 
 /// How far an action is wired up. The launcher shows all three; it runs
 /// `connected` and `unverified` ones, the latter with a warning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(rename = "ActionState")]
 #[serde(rename_all = "camelCase")]
 pub enum State {
     /// Run from the launcher end to end, on the platforms listed.
@@ -148,7 +151,7 @@ pub enum State {
     Planned,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub enum Platform {
     Linux,
@@ -206,7 +209,7 @@ pub struct Need {
 }
 
 /// Where an action belongs: the checkout, or one version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "key")]
 pub enum Scope {
     Repository,
@@ -214,7 +217,7 @@ pub enum Scope {
 }
 
 /// What the UI shows for an action: the action, and whether it can run now.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionView {
     pub id: String,
@@ -298,6 +301,13 @@ impl ActionFile {
             Scope::Version(key) => self.versions.get(key)?,
         };
         list.iter().find(|a| a.id == id)
+    }
+
+    /// Whether action `id` of `scope` plays a game: a version's action of kind `play`. The
+    /// launcher follows a play for Discord's presence and, on Android, starts it as an activity of
+    /// its own instead of a program. A repository action never plays.
+    pub fn is_play(&self, scope: &Scope, id: &str) -> bool {
+        matches!(scope, Scope::Version(_)) && self.find(scope, id).is_some_and(|a| a.kind == Kind::Play)
     }
 
     /// Every mistake in the file, checked against the checkout's catalogue:
@@ -640,6 +650,23 @@ mod tests {
             let path = doc.split('#').next().unwrap();
             assert!(under(&root, path).exists(), "{doc} does not exist");
         }
+    }
+
+    #[test]
+    fn only_a_versions_play_action_plays() {
+        let file = parse(
+            r#"{"format": 1,
+                "repository": [{"id": "play", "label": "P", "kind": "play"}],
+                "versions": {"rac1/pal": [{"id": "play", "label": "Play", "kind": "play"},
+                                          {"id": "build", "label": "Build", "kind": "build"}]}}"#,
+        )
+        .unwrap();
+        let pal = Scope::Version("rac1/pal".into());
+        assert!(file.is_play(&pal, "play"));
+        assert!(!file.is_play(&pal, "build"));
+        assert!(!file.is_play(&pal, "gone"));
+        assert!(!file.is_play(&Scope::Version("rac9/pal".into()), "play"));
+        assert!(!file.is_play(&Scope::Repository, "play"), "a repository action never plays");
     }
 
     #[test]

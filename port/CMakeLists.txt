@@ -60,7 +60,7 @@ endif()
 
 enable_testing()
 
-# ---- common: the log, crash reports and small helpers, no dependencies ----
+# ---- common: the log, crash reports, JSON, PS2 float arithmetic, helpers; no dependencies ----
 # OpenRAC's version and the checkout's commit (common/build_info.h), written at every build and
 # replaced only when they change (cmake/BuildInfo.cmake).
 set(OPENRAC_BUILD_INFO "${CMAKE_BINARY_DIR}/generated/build_info.cpp")
@@ -72,8 +72,11 @@ add_custom_target(openrac_build_info
   VERBATIM)
 add_library(openrac_common STATIC
   common/crash.cpp
+  common/env.cpp
+  common/json.cpp
   common/log.cpp
   common/process.cpp
+  common/ps2_float.cpp
   common/stats.cpp
   common/system_info.cpp
   "${OPENRAC_BUILD_INFO}"
@@ -94,6 +97,10 @@ openrac_warnings(openrac_common)
 openrac_add_test(log LIBS openrac_common)
 find_package(Threads REQUIRED)
 openrac_add_test(joining_thread LIBS openrac_common Threads::Threads)
+openrac_add_test(env LIBS openrac_common)
+openrac_add_test(stats LIBS openrac_common)
+openrac_add_test(result INCLUDES .)
+openrac_add_test(c_boundary LIBS openrac_common)
 openrac_add_test(frame_pacing INCLUDES .)
 openrac_add_test(settings SOURCES tests/settings_test.cpp game/common/settings.cpp
                           LIBS openrac_common)
@@ -123,6 +130,7 @@ add_library(openrac_runtime STATIC
   runtime/ee.cpp
   runtime/elf.cpp
   runtime/guest.cpp
+  runtime/host_env.cpp
   runtime/memory.cpp
 )
 target_include_directories(openrac_runtime PUBLIC runtime/include)
@@ -133,13 +141,10 @@ endif()
 openrac_warnings(openrac_runtime)
 
 openrac_add_test(runtime SOURCES tests/runtime_test.cpp tests/guest_c.c LIBS openrac_runtime)
+# The C entry point to the OPENRAC_* table (openrac/host_env.h), from C.
+openrac_add_c_test(host_env LIBS openrac_runtime)
 
 # ---- native mods (docs/port/MODS.md): manifests, the list, the loader ----
-# The JSON reader the viewer and the mod loader share.
-add_library(openrac_json STATIC viewer/json.cpp)
-target_include_directories(openrac_json PUBLIC .)
-openrac_warnings(openrac_json)
-
 include(Luau)
 add_library(openrac_mods STATIC
   game/common/mod_library.cpp
@@ -148,7 +153,7 @@ add_library(openrac_mods STATIC
   game/common/mods.cpp
 )
 target_include_directories(openrac_mods PUBLIC game/common game/common/include "${PROJECT_SOURCE_DIR}/../sdk/include")
-target_link_libraries(openrac_mods PUBLIC openrac_runtime openrac_json ${CMAKE_DL_LIBS}
+target_link_libraries(openrac_mods PUBLIC openrac_runtime ${CMAKE_DL_LIBS}
                       PRIVATE openrac_luau)
 openrac_warnings(openrac_mods)
 
@@ -180,6 +185,10 @@ add_dependencies(mod_scripts_test mod_loader_test_a)
 openrac_warnings(mod_scripts_test)
 add_test(NAME mod_scripts COMMAND mod_scripts_test)
 
+# The script runtime's C entry point stops an exception at the C boundary (common/c_boundary.h): a
+# script mod on a hook point of the test's own whose call throws, reported to the log.
+openrac_add_test(mod_boundary LIBS openrac_mods)
+
 # The bindings the generator writes are what their tables give, and the tables' hook points the
 # hook rows of every disc's libraries.tsv.
 find_package(Python3 COMPONENTS Interpreter QUIET)
@@ -199,11 +208,11 @@ openrac_add_c_test(crate_init NO_STRICT_ALIASING WRAPV NO_FP_CONTRACT)
 
 include(Assets)
 
-# The EE FPU's float arithmetic for C (openrac/ps2float.h): the model of assets/ps2_float.h behind C
+# The EE FPU's float arithmetic for C (openrac/ps2float.h): the model of common/ps2_float.h behind C
 # entry points, for the functions hostgen translates with it (hostgen.json "ps2_float") and the
 # port's own C that computes as the console does. The games' library links it (cmake/Games.cmake).
 add_library(openrac_ps2float STATIC runtime/ps2float.cpp)
-target_link_libraries(openrac_ps2float PUBLIC openrac_runtime openrac_assets_core)
+target_link_libraries(openrac_ps2float PUBLIC openrac_runtime)
 openrac_warnings(openrac_ps2float)
 
 openrac_add_c_test(ps2float NO_FP_CONTRACT LIBS openrac_ps2float)
@@ -260,6 +269,7 @@ openrac_add_c_test(checkpoint_restore NO_STRICT_ALIASING NO_FP_CONTRACT MATH)
 if(OPENRAC_PORT_WINDOW)
   include(Window)
 endif()
+include(Render)
 
 # ---- the games, from their decompilations (port/game/*/hostgen.json) ----
 if(OPENRAC_PORT_GAMES)

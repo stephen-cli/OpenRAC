@@ -11,8 +11,8 @@
 #include <stdexcept>
 
 #include "assets/disc/wad.h"
+#include "common/json.h"
 #include "enhanced/tools/probes/liquids.h"
-#include "viewer/json.h"
 
 namespace openrac::lighting {
 namespace {
@@ -101,13 +101,13 @@ void source_files(Hash& hash, const std::filesystem::path& root, const char* lab
 
 // The normal extractor retains raw source sections. Keep legacy explicitly
 // supplied surfaces authoritative so old exports never emit the lava twice.
-bool automatic_liquids(const viewer::LevelData& level) {
+bool automatic_liquids(const scene::LevelData& level) {
     if (level.dir.empty() || level.level != 9) {
         return false;
     }
-    viewer::json::Value manifest;
+    json::Value manifest;
     std::string error;
-    if (!viewer::json::parse_file((level.dir / "manifest.json").string(), manifest, error)) {
+    if (!json::parse_file((level.dir / "manifest.json").string(), manifest, error)) {
         throw std::runtime_error(error);
     }
     const auto& source = manifest["bake_inputs"]["liquid"].string();
@@ -153,8 +153,14 @@ std::vector<std::uint8_t> liquid_input(const std::filesystem::path& path) {
 }
 }  // namespace
 
+std::uint64_t probe_input_hash(const std::filesystem::path& directory) {
+    Hash hash;
+    source_files(hash, directory, "base");
+    return hash.value;
+}
+
 BakeSceneExport export_probe_scene(
-    const viewer::LevelData& level, unsigned light_set, Float3 environment, bool analyze_liquids
+    const scene::LevelData& level, unsigned light_set, Float3 environment, bool analyze_liquids
 ) {
     if (light_set >= 16 || level.light_sets.size() != 256) {
         throw std::runtime_error("level has no requested directional light set");
@@ -243,7 +249,7 @@ BakeSceneExport export_probe_scene(
         return texture;
     };
     for (unsigned layer = 0; layer < 5; ++layer) {
-        const auto id = static_cast<std::size_t>(viewer::Layer::Terrain) + layer;
+        const auto id = static_cast<std::size_t>(scene::Layer::Terrain) + layer;
         const bool bake_surface = layer == 4;
         for (const auto& instance : bake_surface ? level.bake_surfaces : level.instances[id]) {
             const auto& model = level.models.at(instance.model);
@@ -368,7 +374,7 @@ BakeSceneExport export_probe_scene(
         throw std::runtime_error("no static render geometry to bake");
     }
     // All mobys remain receivers, including those excluded from transport.
-    for (const auto& instance : level.instances[static_cast<std::size_t>(viewer::Layer::Mobys)]) {
+    for (const auto& instance : level.instances[static_cast<std::size_t>(scene::Layer::Mobys)]) {
         for (unsigned axis = 0; axis < 3; ++axis) {
             out.bounds_min[axis] = std::min(out.bounds_min[axis], instance.matrix[12 + axis]);
             out.bounds_max[axis] = std::max(out.bounds_max[axis], instance.matrix[12 + axis]);
@@ -380,7 +386,7 @@ BakeSceneExport export_probe_scene(
     const auto holder = level.moby_classes.find(1038);
     if (holder != level.moby_classes.end() && !holder->second.second) {
         for (const auto& instance :
-             level.instances[static_cast<std::size_t>(viewer::Layer::Mobys)]) {
+             level.instances[static_cast<std::size_t>(scene::Layer::Mobys)]) {
             if (instance.model == holder->second.first && !instance.stand_in) {
                 out.scene.point_emitters.push_back(
                     {{instance.matrix[12], instance.matrix[13], instance.matrix[14] + 0.85f},
@@ -566,7 +572,8 @@ ProbeGrid bounded_probe_grid(
 
 std::uint64_t probe_bake_settings_hash(const ProbeGrid& grid, const BakeSettings& settings) {
     Hash hash;
-    hash.u32(0x42414b09);
+    hash.u32(0x42414b0b);  // Portable integration's exponent-32 squaring changes moment rounding.
+    hash.u32(kProbeTexelSamplesPerAxis);
     hash.u32(settings.use_level_sky ? 1u : 0u);
     hash.f32(settings.sky_intensity);
     hash.f32(settings.sky_weight);

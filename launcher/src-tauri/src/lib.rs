@@ -260,50 +260,25 @@ fn run_action(
     let config = state.config.lock().unwrap().clone();
     let inputs = openrac_launcher_core::actions::Inputs { level, path, option };
     let plan = library::plan(&config, &scope, &id, &inputs)?;
-    let is_play = if let Scope::Version(_) = &scope {
-        if let Some(root) = &config.root {
-            if let Ok(file) = openrac_launcher_core::actions::load(root) {
-                file.find(&scope, &id).map(|a| a.kind == openrac_launcher_core::actions::Kind::Play).unwrap_or(false)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+    let is_play = library::is_play(&config, &scope, &id);
 
-    if is_play && config.discord_rpc {
-        if let Some(root) = &config.root {
-            if let Ok(catalog) = openrac_launcher_core::catalog::load(root) {
-                if let Scope::Version(key) = &scope {
-                    if let Some(v) = catalog.version(key) {
-                        let discord = state.discord.clone();
-                        let play_status = openrac_launcher_core::discord::DiscordStatus::PlayingGame {
-                            title: v.title.clone(),
-                            region: v.region.clone(),
-                            game_id: v.game.clone(),
-                            start_time: Some(openrac_launcher_core::discord::now_sec()),
-                        };
-                        tauri::async_runtime::spawn_blocking(move || {
-                            let mut discord = discord.lock().unwrap();
-                            let app_start = discord.app_start;
-                            let _ = discord.ipc.set_status(&play_status, app_start);
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // The game id whose planet names the play job's log gives (Discord).
-    let play_game = match (&scope, is_play, &config.root) {
-        (Scope::Version(key), true, Some(root)) => {
-            openrac_launcher_core::catalog::load(root).ok().and_then(|c| c.version(key).map(|v| v.game.clone()))
+    // The play job's Discord presence (core discord.rs): its status now, its game for its log.
+    let play = match (is_play, &config.root) {
+        (true, Some(root)) => {
+            openrac_launcher_core::discord::play(root, &scope, openrac_launcher_core::discord::now_sec())
         }
         _ => None,
     };
+    if let (Some(play), true) = (&play, config.discord_rpc) {
+        let discord = state.discord.clone();
+        let status = play.status.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut discord = discord.lock().unwrap();
+            let app_start = discord.app_start;
+            let _ = discord.ipc.set_status(&status, app_start);
+        });
+    }
+    let play_game = play.map(|p| p.game);
     // On Android the game is an activity of the launcher's own, not a program it runs.
     if is_play && Platform::current() == Platform::Android {
         launcher_log::line(&format!("play: {}", openrac_launcher_core::jobs::command_line(&plan)));
@@ -316,15 +291,14 @@ fn run_action(
         let _ = match &event {
             Event::Output { line, .. } => {
                 // The planet and bolts the game logs.
-                if let Some(game) =
-                    play_game.clone().filter(|_| line.contains("now playing level") || line.contains("] bolts "))
+                if let Some(log) =
+                    play_game.as_deref().and_then(|game| openrac_launcher_core::discord::read_game_log(game, line))
                 {
                     if let Some(st) = app_handle.try_state::<AppState>() {
                         if st.config.lock().unwrap().discord_rpc {
                             let discord = st.discord.clone();
-                            let line = line.clone();
                             tauri::async_runtime::spawn_blocking(move || {
-                                let _ = discord.lock().unwrap().ipc.on_game_log(&game, &line);
+                                let _ = discord.lock().unwrap().ipc.on_game_log(log);
                             });
                         }
                     }
@@ -348,10 +322,7 @@ fn run_action(
                             tauri::async_runtime::spawn_blocking(move || {
                                 let mut discord = discord.lock().unwrap();
                                 let app_start = discord.app_start;
-                                let _ = discord.ipc.set_planet(None);
-                                let _ = discord
-                                    .ipc
-                                    .set_status(&openrac_launcher_core::discord::DiscordStatus::Idle, app_start);
+                                let _ = discord.ipc.end_play(app_start);
                             });
                         }
                     }
@@ -765,33 +736,10 @@ async fn sync_progress_from_web(state: State<'_, AppState>) -> Result<Library, S
     let root = config.root.clone().ok_or("the OpenRAC folder is not set")?;
     let cache = config.progress_cache.clone().ok_or("no per-user folder for the launcher's own files")?;
 
-    // Every project's latest progress from bytematch.dev, and each game's project JSON for its
-    // functional C, with curl (on Linux, macOS and Windows 10+). Offline, the kept copy is read.
-    let root_for_fetch = root.clone();
-    let cache_for_fetch = cache.clone();
+    // Every project's latest progress from bytematch.dev, with curl (core progress_sync.rs).
+    // Offline, or when the site cannot be read, the kept copy is read as it was.
     tauri::async_runtime::spawn_blocking(move || {
-        use openrac_launcher_core::catalog;
-        // detect::quiet: each curl opened a console window of its own on Windows, at every start.
-        let fetch = |url: &str| -> Option<String> {
-            let out = detect::quiet(Path::new("curl"))
-                .args(["-s", "-f", "--connect-timeout", "4", "--max-time", "10", url])
-                .stdin(std::process::Stdio::null())
-                .output()
-                .ok()?;
-            if out.status.success() {
-                String::from_utf8(out.stdout).ok()
-            } else {
-                None
-            }
-        };
-        let Some(list) = fetch(catalog::BYTEMATCH_PROJECTS) else { return };
-        let mut jsons = std::collections::BTreeMap::new();
-        for (_key, slug) in catalog::bytematch_projects_for(&root_for_fetch, &list).unwrap_or_default() {
-            if let Some(text) = fetch(&catalog::bytematch_project_url(&slug)) {
-                jsons.insert(slug, text);
-            }
-        }
-        let _ = catalog::update_progress_from_bytematch(&root_for_fetch, &cache_for_fetch, &list, &jsons);
+        let _ = openrac_launcher_core::progress_sync::sync(&root, &cache, &remote::QuickCurl);
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1034,6 +982,12 @@ async fn plugins_install(
     on_plugins(state, &game, move |dir| plugins::install(dir, &g, &version, &path)).await
 }
 
+/// The mods a chosen folder holds (one mod, or a repository's checkout of several).
+#[tauri::command]
+fn plugins_mod_folders(path: PathBuf) -> Result<Vec<PathBuf>, String> {
+    plugins::mod_folders(&path)
+}
+
 /// What the port did with the game's mods at its last start (`status.json`), if it wrote it.
 /// A game's mods from a repository's address (docs/port/MODS.md, section 10): what it holds,
 /// installing one, newer versions, keeping one at its version. Through curl, no git needed.
@@ -1192,157 +1146,15 @@ fn open_saves_folder(app: AppHandle, serial: String) -> Result<(), String> {
     open_path_with_system(&app, &dir.to_string_lossy())
 }
 
-/// Writes `bytes` to `path` unless it already holds them; true when it wrote.
+/// The launcher's icons in each size the desktop's icon theme takes (core desktop.rs).
 #[cfg(target_os = "linux")]
-fn write_if_changed(path: &std::path::Path, bytes: &[u8]) -> bool {
-    if std::fs::read(path).map(|old| old == bytes).unwrap_or(false) {
-        return false;
-    }
-    std::fs::write(path, bytes).is_ok()
-}
-
-/// The menu entry and icons the desktop finds the launcher by. On Wayland the window's app id
-/// (the program's name, `openrac-launcher`) names the .desktop file the taskbar takes the icon
-/// from; `dev.openrac.launcher` is the bundle's identifier. Both entries are kept so either id
-/// finds the icon, but only one shows in the menu. Files are written, and the desktop's caches
-/// refreshed, only when something changed: nothing to do on most starts.
-#[cfg(target_os = "linux")]
-fn ensure_linux_desktop_integration() {
-    let sizes: &[(&str, &[u8])] = &[
-        ("32x32", include_bytes!("../icons/32x32.png")),
-        ("64x64", include_bytes!("../icons/64x64.png")),
-        ("128x128", include_bytes!("../icons/128x128.png")),
-        ("256x256", include_bytes!("../icons/128x128@2x.png")),
-        ("512x512", include_bytes!("../icons/icon.png")),
-    ];
-    let Ok(home) = std::env::var("HOME") else { return };
-    let home_path = PathBuf::from(home);
-    let icons_base = home_path.join(".local/share/icons/hicolor");
-    let app_dir = home_path.join(".local/share/applications");
-    let _ = std::fs::create_dir_all(&app_dir);
-
-    let mut icons_changed = false;
-    for (size, bytes) in sizes {
-        let dir = icons_base.join(size).join("apps");
-        let _ = std::fs::create_dir_all(&dir);
-        icons_changed |= write_if_changed(&dir.join("dev.openrac.launcher.png"), bytes);
-        icons_changed |= write_if_changed(&dir.join("openrac-launcher.png"), bytes);
-    }
-
-    // An AppImage runs from a mount that is gone when it exits (/tmp/.mount_…): the entry starts
-    // the AppImage file itself, or the menu's launcher started nothing once it was closed. A
-    // package (deb, rpm) puts its own entry in the menu: this one is then only for the taskbar's
-    // icon, hidden, so the menu does not list the launcher twice.
-    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|path| path.is_file());
-    let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("openrac-launcher"));
-    let packaged = appimage.is_none() && exe_path.starts_with("/usr");
-    let program = appimage.unwrap_or(exe_path);
-    let entry = |wm_class: &str, hidden: bool| {
-        format!(
-            "[Desktop Entry]\nType=Application\nName=OpenRAC Launcher\nComment=Set up, build and play the decompiled Ratchet & Clank games\nExec={}\nIcon=dev.openrac.launcher\nTerminal=false\nCategories=Game;Development;\nStartupNotify=true\nStartupWMClass={}\n{}",
-            detect::desktop_exec(&program),
-            wm_class,
-            if hidden { "NoDisplay=true\n" } else { "" }
-        )
-    };
-    let mut entries_changed = false;
-    entries_changed |= write_if_changed(
-        &app_dir.join("dev.openrac.launcher.desktop"),
-        entry("dev.openrac.launcher", packaged).as_bytes(),
-    );
-    entries_changed |=
-        write_if_changed(&app_dir.join("openrac-launcher.desktop"), entry("openrac-launcher", true).as_bytes());
-
-    if icons_changed {
-        let _ = detect::quiet(Path::new("gtk-update-icon-cache")).arg("-f").arg("-t").arg(&icons_base).status();
-    }
-    if entries_changed || icons_changed {
-        let _ = detect::quiet(Path::new("update-desktop-database")).arg(&app_dir).status();
-        let _ = detect::quiet(Path::new("kbuildsycoca6")).status();
-    }
-
-    // If Flatpak Discord is running, ensure standard XDG_RUNTIME_DIR socket symlink exists
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let standard_sock = PathBuf::from(&runtime_dir).join("discord-ipc-0");
-        let flatpak_sock = PathBuf::from(&runtime_dir).join("app/com.discordapp.Discord/discord-ipc-0");
-        if flatpak_sock.exists() && !standard_sock.exists() {
-            let _ = std::os::unix::fs::symlink(&flatpak_sock, &standard_sock);
-        }
-    }
-}
-
-/// Game desktop entries and icons so KDE Plasma and other Linux desktop taskbars show the game's
-/// icon when launched from the launcher or directly.
-#[cfg(target_os = "linux")]
-fn ensure_linux_game_desktop_integration(root: &std::path::Path) {
-    // The copy inside an AppImage is mounted afresh at each start: an entry for its game would
-    // name a folder that is gone once the launcher exits.
-    if openrac_launcher_core::appimage::appdir().is_some_and(|appdir| root.starts_with(appdir)) {
-        return;
-    }
-    let Ok(home) = std::env::var("HOME") else { return };
-    let home_path = PathBuf::from(home);
-    let icons_base = home_path.join(".local/share/icons/hicolor");
-    let app_dir = home_path.join(".local/share/applications");
-    let _ = std::fs::create_dir_all(&app_dir);
-
-    let games_dir = root.join("port/game");
-    let Ok(entries) = std::fs::read_dir(games_dir) else { return };
-
-    let mut icons_changed = false;
-    let mut entries_changed = false;
-
-    for entry in entries.flatten() {
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let game_id = entry.file_name().to_string_lossy().to_string();
-        let icon_path = entry.path().join("icon.png");
-        if !icon_path.is_file() {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(&icon_path) else { continue };
-
-        let dir = icons_base.join("512x512/apps");
-        let _ = std::fs::create_dir_all(&dir);
-        let app_id = format!("dev.openrac.{game_id}");
-        let prog_id = format!("openrac-{game_id}");
-
-        icons_changed |= write_if_changed(&dir.join(format!("{app_id}.png")), &bytes);
-        icons_changed |= write_if_changed(&dir.join(format!("{prog_id}.png")), &bytes);
-
-        let exe_path = root.join(format!("port/build/release/openrac-{game_id}"));
-        let title = match game_id.as_str() {
-            "rac1-pal" => "Ratchet & Clank (PAL)",
-            "rac1-ntsc" => "Ratchet & Clank (NTSC)",
-            "rac2-ntsc" => "Ratchet & Clank: Going Commando (NTSC)",
-            "rac3-ntsc" => "Ratchet & Clank: Up Your Arsenal (NTSC)",
-            "rac4-ntsc" => "Ratchet: Deadlocked (NTSC)",
-            _ => "Ratchet & Clank",
-        };
-
-        let make_entry = |wm_class: &str, hidden: bool| {
-            format!(
-                "[Desktop Entry]\nType=Application\nName={title}\nComment=Play {title} with OpenRAC\nExec={}\nIcon={app_id}\nTerminal=false\nCategories=Game;\nStartupNotify=true\nStartupWMClass={wm_class}\n{}",
-                detect::desktop_exec(&exe_path),
-                if hidden { "NoDisplay=true\n" } else { "" }
-            )
-        };
-
-        entries_changed |=
-            write_if_changed(&app_dir.join(format!("{app_id}.desktop")), make_entry(&app_id, false).as_bytes());
-        entries_changed |=
-            write_if_changed(&app_dir.join(format!("{prog_id}.desktop")), make_entry(&prog_id, true).as_bytes());
-    }
-
-    if icons_changed {
-        let _ = detect::quiet(Path::new("gtk-update-icon-cache")).arg("-f").arg("-t").arg(&icons_base).status();
-    }
-    if entries_changed || icons_changed {
-        let _ = detect::quiet(Path::new("update-desktop-database")).arg(&app_dir).status();
-        let _ = detect::quiet(Path::new("kbuildsycoca6")).status();
-    }
-}
+const LAUNCHER_ICONS: &[openrac_launcher_core::desktop::Icon] = &[
+    ("32x32", include_bytes!("../icons/32x32.png")),
+    ("64x64", include_bytes!("../icons/64x64.png")),
+    ("128x128", include_bytes!("../icons/128x128.png")),
+    ("256x256", include_bytes!("../icons/128x128@2x.png")),
+    ("512x512", include_bytes!("../icons/icon.png")),
+];
 
 /// What an AppImage's AppRun hands over: its own PYTHONHOME, its own paths,
 /// its own libraries. They are of no use to anything the launcher starts (a
@@ -1452,147 +1264,13 @@ fn fit_to_screen(window: &tauri::WebviewWindow) {
 }
 
 // On Android and iOS the launcher is a library the app's activity starts through this entry point.
+// It starts in steps, in this order: the process's environment, the plugins, the app's setup once
+// it exists, then the commands the page calls (docs/ARCHITECTURE.md lists them).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "linux")]
-    clean_appimage_env();
-    #[cfg(target_os = "linux")]
-    tune_webkit();
-    #[cfg(target_os = "linux")]
-    ensure_wayland_cursor_fallback();
-    let builder = tauri::Builder::default();
-    // A second start while the launcher is open shows the open one's window and goes. Registered
-    // first, as the plugin asks. Without it, on Linux the GTK application id (enableGTKAppId)
-    // handed the second start to the first launcher, which set its window up again and stopped:
-    // "a webview with label `main` already exists".
-    #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-    }));
-    let builder = builder.plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init());
-    #[cfg(desktop)]
-    let builder = builder.plugin(
-        tauri_plugin_updater::Builder::new()
-            // A build of a branch carries the release's plain version and its run (LAUNCHER_BUILD):
-            // compared as X.Y.Z-dev.<run>, so each build of the branch updates the one before.
-            .default_version_comparator(|current, release| {
-                let current = openrac_launcher_core::update::effective_version(&current.to_string(), LAUNCHER_BUILD);
-                openrac_launcher_core::update::is_newer(&current, &release.version.to_string())
-            })
-            .build(),
-    );
-    #[cfg(target_os = "android")]
-    let builder = builder.plugin(android::init());
-    builder
-        .setup(|app| {
-            #[cfg(target_os = "linux")]
-            ensure_linux_desktop_integration();
-
-            #[cfg(desktop)]
-            if let Some(window) = app.get_webview_window("main") {
-                if let Some(icon) = app.default_window_icon() {
-                    let _ = window.set_icon(icon.clone());
-                }
-                fit_to_screen(&window);
-            }
-
-            let config_file = app.path().app_config_dir().ok().map(|dir| dir.join("launcher.json"));
-            let mut config = config_file.as_deref().map(config::load).unwrap_or_default();
-            config.progress_cache = progress_cache(config_file.as_deref());
-
-            // First run / startup: ensure the OpenRAC folder exists in the user's home directory.
-            // On Linux: /home/<user>/OpenRAC
-            // On macOS: /Users/<user>/OpenRAC
-            // On Windows: C:\Users\<user>\OpenRAC
-            let home_dir = app.path().home_dir().ok().or_else(detect::home_dir);
-            let openrac_home = home_dir.as_ref().and_then(|h| detect::ensure_openrac_dir_in(h).ok());
-
-            // OpenGOAL asks for an install folder at first start; until the
-            // player picks one, games are set up in the user's OpenRAC folder (or launcher's data folder).
-            let local_data = app.path().app_local_data_dir().ok();
-            if let Some(openrac_dir) = &openrac_home {
-                if config.install_dir.is_none() || config.install_dir.as_ref() == local_data.as_ref() {
-                    if let Some(data) = &local_data {
-                        let old_active = data.join("active");
-                        let new_active = openrac_dir.join("active");
-                        if old_active.exists() && !new_active.exists() {
-                            let _ = std::fs::rename(&old_active, &new_active);
-                        }
-                    }
-                    config.install_dir = Some(openrac_dir.clone());
-                    if let Some(cfg_file) = &config_file {
-                        let _ = config::save(cfg_file, &config);
-                    }
-                }
-            } else if config.install_dir.is_none() {
-                config.install_dir = local_data;
-            }
-
-            // The copy of OpenRAC the launcher carries: what a player plays from (detect::settle).
-            // A copy whose Python does not run here is not for this machine (an Intel Mac has the
-            // Apple silicon one): the launcher then works on a checkout, as it did.
-            // On Android the copy is unpacked from the APK into the app's files (OpenracSetup.kt),
-            // maybe still now: the page waits for it (tools_ready) before it reads anything there.
-            // `tauri dev` works on its checkout: a copy in its resources is a leftover of an
-            // installer built there, as old as that build (detect::leave_copy). OPENRAC_STANDALONE
-            // set makes a debug build an installed launcher, to try the copy.
-            let resources_copy = app.path().resource_dir().ok().and_then(|dir| detect::bundled_root(&dir));
-            let contributor = cfg!(debug_assertions) && std::env::var_os("OPENRAC_STANDALONE").is_none();
-            let bundled = if Platform::current() == Platform::Android {
-                android::bundled_root()
-            } else if contributor {
-                if let Some(copy) = &resources_copy {
-                    detect::leave_copy(&mut config, copy, &start_folders());
-                }
-                None
-            } else {
-                resources_copy.filter(|dir| {
-                    detect::bundled_python(dir).is_some_and(|python| detect::check_tool(Tool::Python, &python).ok)
-                })
-            };
-            // Android's picker gives no paths: the disc images the player picks are copied into
-            // one folder of the app's, which is then the games folder.
-            if config.discs_dir.is_none() && Platform::current() == Platform::Android {
-                config.discs_dir = android::discs_dir();
-            }
-            detect::settle(&mut config, bundled.as_deref());
-
-            #[cfg(target_os = "linux")]
-            if let Some(root) = &config.root {
-                ensure_linux_game_desktop_integration(root);
-            }
-
-            let client_id = config
-                .discord_client_id
-                .clone()
-                .unwrap_or_else(|| openrac_launcher_core::discord::DEFAULT_CLIENT_ID.to_string());
-            let ipc = openrac_launcher_core::discord::DiscordIpc::new(client_id);
-            let app_start = openrac_launcher_core::discord::now_sec();
-            let discord = Arc::new(Mutex::new(DiscordState { ipc, app_start }));
-            // Discord can take seconds to answer: connect without holding up the window.
-            if config.discord_rpc {
-                let discord = discord.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let mut discord = discord.lock().unwrap();
-                    let _ = discord.ipc.set_status(&openrac_launcher_core::discord::DiscordStatus::Idle, app_start);
-                });
-            }
-
-            if let Some(dir) = config_file.as_deref().and_then(Path::parent) {
-                launcher_log::init(dir);
-                launcher_log::line(&format!(
-                    "the launcher {} started on {:?}",
-                    app.package_info().version,
-                    Platform::current()
-                ));
-            }
-            app.manage(AppState { config: Mutex::new(config), config_file, jobs: Jobs::default(), discord, bundled });
-            Ok(())
-        })
+    prepare_environment();
+    with_plugins(tauri::Builder::default())
+        .setup(setup)
         .invoke_handler(tauri::generate_handler![
             app_info,
             relaunch_app,
@@ -1634,6 +1312,7 @@ pub fn run() {
             plugins_set_setting,
             plugins_remove,
             plugins_install,
+            plugins_mod_folders,
             plugins_status,
             plugins_preview,
             plugins_install_remote,
@@ -1669,4 +1348,169 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("the launcher failed to start");
+}
+
+/// What the process's environment must say before GTK and WebKit start, on Linux: the AppImage's
+/// variables gone, WebKit's renderers tuned to the system, a cursor theme for Wayland.
+fn prepare_environment() {
+    #[cfg(target_os = "linux")]
+    {
+        clean_appimage_env();
+        tune_webkit();
+        ensure_wayland_cursor_fallback();
+    }
+}
+
+/// The launcher's plugins, registered in this order: one instance, the file dialogs, the system's
+/// opener, the launcher's own updates on a desktop, and on Android the app's own plugin
+/// (android.rs).
+fn with_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    // A second start while the launcher is open shows the open one's window and goes. Registered
+    // first, as the plugin asks. Without it, on Linux the GTK application id (enableGTKAppId)
+    // handed the second start to the first launcher, which set its window up again and stopped:
+    // "a webview with label `main` already exists".
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+    let builder = builder.plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init());
+    #[cfg(desktop)]
+    let builder = builder.plugin(
+        tauri_plugin_updater::Builder::new()
+            // A build of a branch carries the release's plain version and its run (LAUNCHER_BUILD):
+            // compared as X.Y.Z-dev.<run>, so each build of the branch updates the one before.
+            .default_version_comparator(|current, release| {
+                let current = openrac_launcher_core::update::effective_version(&current.to_string(), LAUNCHER_BUILD);
+                openrac_launcher_core::update::is_newer(&current, &release.version.to_string())
+            })
+            .build(),
+    );
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(android::init());
+    builder
+}
+
+/// What the launcher sets up once the app exists, before the page asks for anything, in this
+/// order: the desktop's entries and the window, launcher.json, the install folder, the copy of
+/// OpenRAC it carries, the folder and Python it works with, Discord, its log; then the state every
+/// command shares ([`AppState`]).
+fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    set_up_desktop(app);
+    let config_file = app.path().app_config_dir().ok().map(|dir| dir.join("launcher.json"));
+    let mut config = config_file.as_deref().map(config::load).unwrap_or_default();
+    config.progress_cache = progress_cache(config_file.as_deref());
+    settle_install_dir(app, &mut config, config_file.as_deref());
+    let bundled = bundled_copy(app, &mut config);
+    settle_root(&mut config, bundled.as_deref());
+    let discord = start_discord(&config);
+    start_log(app, config_file.as_deref());
+    app.manage(AppState { config: Mutex::new(config), config_file, jobs: Jobs::default(), discord, bundled });
+    Ok(())
+}
+
+/// The menu entry and icons the desktop finds the launcher by, and Discord's socket where a
+/// Flatpak Discord hides it, on Linux (core desktop.rs, discord.rs); the window's icon and its size
+/// on the screen, on a desktop.
+#[cfg_attr(mobile, allow(unused_variables))]
+fn set_up_desktop(app: &tauri::App) {
+    #[cfg(target_os = "linux")]
+    {
+        openrac_launcher_core::desktop::ensure_launcher(LAUNCHER_ICONS);
+        openrac_launcher_core::discord::link_flatpak_socket();
+    }
+
+    #[cfg(desktop)]
+    if let Some(window) = app.get_webview_window("main") {
+        if let Some(icon) = app.default_window_icon() {
+            let _ = window.set_icon(icon.clone());
+        }
+        fit_to_screen(&window);
+    }
+}
+
+/// The install folder: ~/OpenRAC, made at first start, with what older launchers set up in the
+/// data folder moved into it (core install.rs).
+fn settle_install_dir(app: &tauri::App, config: &mut Config, config_file: Option<&Path>) {
+    let home_dir = app.path().home_dir().ok().or_else(detect::home_dir);
+    let local_data = app.path().app_local_data_dir().ok();
+    install::settle_install_dir(config, home_dir.as_deref(), local_data.as_deref(), config_file);
+}
+
+/// The copy of OpenRAC the launcher carries: what a player plays from (detect::settle).
+/// A copy whose Python does not run here is not for this machine (an Intel Mac has the
+/// Apple silicon one): the launcher then works on a checkout, as it did.
+/// On Android the copy is unpacked from the APK into the app's files (OpenracSetup.kt),
+/// maybe still now: the page waits for it (tools_ready) before it reads anything there.
+/// `tauri dev` works on its checkout: a copy in its resources is a leftover of an
+/// installer built there, as old as that build (detect::leave_copy). OPENRAC_STANDALONE
+/// set makes a debug build an installed launcher, to try the copy.
+fn bundled_copy(app: &tauri::App, config: &mut Config) -> Option<PathBuf> {
+    let resources_copy = app.path().resource_dir().ok().and_then(|dir| detect::bundled_root(&dir));
+    let contributor = cfg!(debug_assertions) && std::env::var_os("OPENRAC_STANDALONE").is_none();
+    if Platform::current() == Platform::Android {
+        android::bundled_root()
+    } else if contributor {
+        if let Some(copy) = &resources_copy {
+            detect::leave_copy(config, copy, &start_folders());
+        }
+        None
+    } else {
+        resources_copy.filter(|dir| {
+            detect::bundled_python(dir).is_some_and(|python| detect::check_tool(Tool::Python, &python).ok)
+        })
+    }
+}
+
+/// The folder and Python the launcher works with (detect::settle), and on Linux the games' entries
+/// and icons in that folder, so the taskbar shows a game's own icon (core desktop.rs).
+fn settle_root(config: &mut Config, bundled: Option<&Path>) {
+    // Android's picker gives no paths: the disc images the player picks are copied into
+    // one folder of the app's, which is then the games folder.
+    if config.discs_dir.is_none() && Platform::current() == Platform::Android {
+        config.discs_dir = android::discs_dir();
+    }
+    detect::settle(config, bundled);
+
+    #[cfg(target_os = "linux")]
+    if let Some(root) = &config.root {
+        openrac_launcher_core::desktop::ensure_games(root);
+    }
+}
+
+/// Discord's connection, shared by the commands that change the status (`set_discord_status`,
+/// `run_action`). Discord can take seconds to answer: with the setting on, it is connected and
+/// shown idle without holding up the window.
+fn start_discord(config: &Config) -> Arc<Mutex<DiscordState>> {
+    let client_id = config
+        .discord_client_id
+        .clone()
+        .unwrap_or_else(|| openrac_launcher_core::discord::DEFAULT_CLIENT_ID.to_string());
+    let ipc = openrac_launcher_core::discord::DiscordIpc::new(client_id);
+    let app_start = openrac_launcher_core::discord::now_sec();
+    let discord = Arc::new(Mutex::new(DiscordState { ipc, app_start }));
+    if config.discord_rpc {
+        let discord = discord.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut discord = discord.lock().unwrap();
+            let _ = discord.ipc.set_status(&openrac_launcher_core::discord::DiscordStatus::Idle, app_start);
+        });
+    }
+    discord
+}
+
+/// The launcher's own log, beside launcher.json (core launcher_log.rs), opened with the version and
+/// the platform it started on.
+fn start_log(app: &tauri::App, config_file: Option<&Path>) {
+    if let Some(dir) = config_file.and_then(Path::parent) {
+        launcher_log::init(dir);
+        launcher_log::line(&format!(
+            "the launcher {} started on {:?}",
+            app.package_info().version,
+            Platform::current()
+        ));
+    }
 }

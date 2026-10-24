@@ -178,7 +178,7 @@ void func_00119F38(double v) {
 /* _printf: the SDK libc formatter behind printf/sprintf: walks fmt, takes
    each argument from the 8-byte slots at ap and writes characters through
    the output hook at D_0012FD00, with interrupts held off around it.
-   Adapted from Lombyte (MIT): src/sdk/debug/printf_impl.c, _printf. */
+   Adapted from Lombyte (GPL-3.0): src/sdk/debug/printf_impl.c, _printf. */
 
 extern s32 DIntr_A0A0(void) __asm__("func_0011D960");
 extern s32 EnableInterrupts_A0A0(void) __asm__("func_0011D9A8");
@@ -490,25 +490,25 @@ void func_0011A780(void) {
     D_0012FD04 = 1;
     t6 = (unsigned)D_00154E80 | 0x20000000;
     t5 = (unsigned)D_00154F00 | 0x20000000;
-    D_00154F58.a0 = (void *)t6;
-    D_00154F58.a1 = (void *)t5;
-    D_00154F58.a2 = 0;
-    D_00154F58.a3 = D_00154F80;
-    D_00154F58.a4 = 0x20;
-    D_00154F58.a5 = 0;
-    D_00154F58.a6 = 0;
-    D_00154F58.a7 = D_00155080;
+    sif_cmd_data.a0 = (void *)t6;
+    sif_cmd_data.a1 = (void *)t5;
+    sif_cmd_data.a2 = 0;
+    sif_cmd_data.a3 = sif_system_handlers;
+    sif_cmd_data.a4 = 0x20;
+    sif_cmd_data.a5 = 0;
+    sif_cmd_data.a6 = 0;
+    sif_cmd_data.a7 = D_00155080;
     for (i = 0; i < 32; i++) {
-        D_00154F80[i].f = 0;
-        D_00154F80[i].arg = 0;
+        sif_system_handlers[i].f = 0;
+        sif_system_handlers[i].arg = 0;
     }
     for (i = 0; i < 32; i++) {
         D_00155080[i] = 0;
     }
-    D_00154F80[0].f = (void (*)(void *, void *))func_0011A748;
-    D_00154F80[1].f = (void (*)(void *, void *))func_0011A728;
-    D_00154F80[0].arg = &D_00154F58;
-    D_00154F80[1].arg = &D_00154F58;
+    sif_system_handlers[0].f = (void (*)(void *, void *))func_0011A748;
+    sif_system_handlers[1].f = (void (*)(void *, void *))func_0011A728;
+    sif_system_handlers[0].arg = &sif_cmd_data;
+    sif_system_handlers[1].arg = &sif_cmd_data;
     func_0011D9A8();
     func_00118D80(0);
     if (*(volatile unsigned *)0x1000E010 & 0x20) {
@@ -519,20 +519,20 @@ void func_0011A780(void) {
     }
     D_00154F54 = func_00118AB0(5, func_0011AC48, 0);
     func_00119460(5);
-    D_00154F58.a2 = ((int (*)(unsigned))func_00118E70)(0x80000000);
-    if (D_00154F58.a2 != 0) {
-        D_00154F40.u10 = D_00154E80;
-        func_0011ABC8(0x80000000, (int)&D_00154F40, 0x14, 0, 0, 0);
+    sif_cmd_data.a2 = ((int (*)(unsigned))func_00118E70)(0x80000000);
+    if (sif_cmd_data.a2 != 0) {
+        sif_init_packet.u10 = D_00154E80;
+        func_0011ABC8(0x80000000, (int)&sif_init_packet, 0x14, 0, 0, 0);
         return;
     }
     do {
     } while (!(func_00118E70(4) & 0x20000));
-    D_00154F58.a2 = func_00118E70(2);
-    func_00118E60(0x80000000, D_00154F58.a2);
-    func_00118E60(0x80000001, (int)&D_00154F58);
-    D_00154F40.u10 = D_00154E80;
-    D_00154F40.pad2 = 0;
-    func_0011ABC8(0x80000002, (int)&D_00154F40, 0x14, 0, 0, 0);
+    sif_cmd_data.a2 = func_00118E70(2);
+    func_00118E60(0x80000000, sif_cmd_data.a2);
+    func_00118E60(0x80000001, (int)&sif_cmd_data);
+    sif_init_packet.u10 = D_00154E80;
+    sif_init_packet.pad2 = 0;
+    func_0011ABC8(0x80000002, (int)&sif_init_packet, 0x14, 0, 0, 0);
 }
 
 extern void func_001193F8(int);
@@ -597,7 +597,7 @@ extern void func_0011AD70(void *addr, s32 size);
 extern s32 func_00118E20();
 extern s32 func_00118E30();
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/sdk/rpc/sce_sif_send_cmd.c, _sceSifSendCmd. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/sdk/rpc/sce_sif_send_cmd.c, _sceSifSendCmd. */
 s32 func_0011AA90(u32 packet, s32 mode, SifCmd *cmd, s32 size, u32 src, u32 dst, s32 dst_size) {
     SifDma tags[2];
     s32 num;
@@ -662,20 +662,13 @@ ASM_FUNC("asm/handwritten/core_text", func_0011AC48);
 ASM_FUNC("asm/handwritten/core_text", func_0011AD70);
 
 /*
- * NOT a match, despite being recorded as one until now. Retail is a bare
- * 4-byte `jr $31` with nothing in its delay slot (the next function's
- * first instruction sits there). `void f(void) {}` emits `jr $ra; nop`
- * -- 8 bytes -- and GCC additionally force-aligns a compiled function to
- * 8 bytes where retail sits at a 4-aligned address, so this cost 8 bytes
- * of core_text layout drift in total.
- *
- * It read as a match only because tools/check_match.py compares exactly
- * `retail_size` bytes: the first 4 bytes (`jr`) matched, and the extra
- * nop was invisible to the comparison. Any function that is CORRECT in
- * its first N bytes but LONGER than retail will report a false match the
- * same way -- see docs/DECOMP_PROGRESS.md.
+ * The last word of sceSifWriteBackDCache (func_0011AD70, hand-written): a bare
+ * `jr $31` whose delay slot is the next object's first instruction. The SDK's
+ * libkernl.a gives the function 176 bytes in sifcmd.o (0x11AD70..0x11AE20),
+ * this word included, after its own `last:` label's `jr $31; nop`
+ * (docs/ASM_CLASSIFICATION.md).
  */
-INCLUDE_ASM("asm/nonmatchings/core_text", func_0011AE1C);
+ASM_FUNC("asm/handwritten/core_text", func_0011AE1C);
 
 typedef struct {
     int pid;
@@ -707,16 +700,16 @@ extern void func_0011B198(void *, void *);
 
 /* sceSifInitRpc: once, set up the RPC tables and command handlers, then
    tell the IOP (SIF register 0x80000002) and wait for it. Adapted from
-   Lombyte (MIT) for PAL. */
+   Lombyte (GPL-3.0) for PAL. */
 void func_0011AE20(int mode) {
     int *packet;
 
     func_0011D960();
-    if (D_0012FD08) {
+    if (RpcCommandState) {
         func_0011D9A8();
         return;
     }
-    D_0012FD08 = 1;
+    RpcCommandState = 1;
     func_0011D9A8();
     func_0011A780();
     func_0011D960();
@@ -750,7 +743,7 @@ extern void func_0011AA00(void);
 
 void func_0011AFC0(void) {
     func_0011AA00();
-    D_0012FD08 = 0;
+    RpcCommandState = 0;
 }
 
 extern int func_0011D960(void);
@@ -1005,7 +998,7 @@ extern int func_00118C70(void *);   /* CreateSema */
 extern void func_00118C80(int);     /* DeleteSema */
 extern int func_00118CB0(int);      /* WaitSema */
 
-/* sceSifBindRpc. Adapted from Lombyte (MIT) for PAL. */
+/* sceSifBindRpc. Adapted from Lombyte (GPL-3.0) for PAL. */
 int func_0011B2F8(void *client, int arg1, int arg2) {
     BindClient *arg0 = client;
     int sema_param[6];
@@ -1139,7 +1132,7 @@ extern s32_1B4C8 func_0011B090_1B4C8() __asm__("func_0011B090");
 extern s32_1B4C8 func_0011ABC8();
 extern s32_1B4C8 func_0011AD70_1B4C8() __asm__("func_0011AD70");
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/sdk/rpc/sce_sif_call_rpc.c, sceSifCallRpc. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/sdk/rpc/sce_sif_call_rpc.c, sceSifCallRpc. */
 s32_1B4C8 func_0011B4C8_r(struct SifRpcClient_1B4C8 *client, s32_1B4C8 rpc_number, s32_1B4C8 mode, s32_1B4C8 send_buf, s32_1B4C8 send_size,
                           s32_1B4C8 recv_buf, s32_1B4C8 recv_size, s32_1B4C8 end_func, s32_1B4C8 end_data) __asm__("func_0011B4C8");
 s32_1B4C8 func_0011B4C8_r(struct SifRpcClient_1B4C8 *client, s32_1B4C8 rpc_number, s32_1B4C8 mode, s32_1B4C8 send_buf, s32_1B4C8 send_size,
@@ -1541,10 +1534,10 @@ s32 func_0011BCB0(void) {
     if (r < 0) {
         return (s32)0xFFFEFFFF;
     }
-    *(struct W4 *)D_001580A8 = *(struct W4 *)((u32)D_001575C0 | 0x20000000);
+    *(struct W4 *)FsResetBuffer = *(struct W4 *)((u32)D_001575C0 | 0x20000000);
     w = *(struct W4 *)((u32)(D_001575C0 + 4) | 0x20000000);
     D_0012FD98[0] = (*(s32 *)&w == 2);
-    D_0012FD94 = 1;
+    FsResetState = 1;
     return 0;
 }
 
@@ -1563,7 +1556,7 @@ extern int D_0012FDA8;
    order of the locals decides it. */
 int func_0011BEB8(void) {
     char *buf = D_0012FCEC;
-    char *slot = D_001580A8;
+    char *slot = FsResetBuffer;
     int r = 0;
 
     if (func_001151B4(slot, buf, 4) != 0 &&
@@ -1577,8 +1570,8 @@ extern void func_001153FC(void *, int, int);
 extern int D_0012FD94;
 
 int func_0011BF48(void) {
-    D_0012FD94 = 0;
-    func_001153FC(D_001580A8, 0, 0x4);
+    FsResetState = 0;
+    func_001153FC(FsResetBuffer, 0, 0x4);
     return 0;
 }
 
@@ -1623,7 +1616,7 @@ extern struct SifFileSlot *func_0011B770_1BF80(void) __asm__("func_0011B770");
 extern s32 func_0011BCB0(void);
 extern s32 func_0011B4C8(void *, s32, s32, void *, s32, void *, s32, void *, void *);
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/sdk/library/sceopen.c, sceOpen. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/sdk/library/sceopen.c, sceOpen. */
 s32 func_0011BF80(const u8 *path, s32 flags, ...)
 {
     struct SemaphoreParameters semaphore_parameters;
@@ -1731,7 +1724,7 @@ extern int func_00118CB0(int);
 extern int func_0011B4C8();
 extern int func_0011BC40_arg(int) __asm__("func_0011BC40");
 
-/* sceClose: close a SIF file handle, adapted from Lombyte (MIT) for PAL. */
+/* sceClose: close a SIF file handle, adapted from Lombyte (GPL-3.0) for PAL. */
 int func_0011C208(unsigned int fd) {
     CloseSema sema;
     int result;
@@ -1742,7 +1735,7 @@ int func_0011C208(unsigned int fd) {
 
     iob = func_0011B7F8(fd);
     func_0011BC40_arg(1);
-    if (D_0012FD94 == 0) {
+    if (FsResetState == 0) {
         func_0011BC70();
         return -1;
     }
@@ -1811,7 +1804,7 @@ extern s32 func_0011BC70_1C388(void) __asm__("func_0011BC70");
 extern s32 func_00118C70_1C388(struct SemaphoreParameters2 *) __asm__("func_00118C70");
 extern s32 func_00118C80_1C388(s32) __asm__("func_00118C80");
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/sdk/library/sce_lseek.c, sceLseek. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/sdk/library/sce_lseek.c, sceLseek. */
 s32 func_0011C388(s32 fd, s32 offset, s32 origin)
 {
     struct FsSeekRequest *request;
@@ -1898,7 +1891,7 @@ extern s32 func_00118C70_1C5C0(struct SemaphoreParameters2 *) __asm__("func_0011
 extern s32 func_00118C80_1C5C0(s32) __asm__("func_00118C80");
 extern void func_0011AD70(void *, s32);
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/sdk/library/sceRead.c, sceRead. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/sdk/library/sceRead.c, sceRead. */
 s32 func_0011C5C0(s32 fd, void *buffer, s32 length)
 {
     struct FsReadRequest *request;
@@ -1992,7 +1985,7 @@ extern s32 func_00118CB0(s32);
 extern void func_0011AD70(void *, s32);
 extern s32 func_0011B4C8(void *, s32, s32, void *, s32, void *, s32, void *, void *);
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/sdk/library/scewrite.c, sceWrite. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/sdk/library/scewrite.c, sceWrite. */
 s32 func_0011C820(s32 fd, u8 *buffer, s32 length)
 {
     struct FsWriteRequest *request;

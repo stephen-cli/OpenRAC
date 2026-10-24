@@ -44,6 +44,7 @@ import collision_scene as cs
 from formats import FormatError
 import gltf_read
 import moby_collision as mc
+from util import cross, f32
 
 FORMAT = 1
 ALPHA = 0.55
@@ -116,12 +117,11 @@ def column_major(basis_columns: tuple, origin: tuple) -> list[float]:
 
 
 def unit(v: tuple) -> tuple:
+    """V scaled to length 1. Not one with sky.unit: this length is sum()'s, which Python 3.12 and
+    newer add with compensated summation, so for some vectors its last bit differs from sky's
+    plain left-to-right sum (test_util.UnitTests)."""
     n = math.sqrt(sum(c * c for c in v))
     return tuple(c / n for c in v)
-
-
-def cross(a: tuple, b: tuple) -> tuple:
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
 
 def along(axis: tuple) -> tuple:
@@ -177,8 +177,8 @@ def node_metadata(p: mc.Primitive, index: int) -> dict:
     return meta
 
 
-def scene_nodes(scene, blob: mc.Blob | None, joints: list, class_scale: float, class_id: int,
-                level_dir: Path, res: str) -> dict:
+def add_class_collision_nodes(scene, blob: mc.Blob | None, joints: list, class_scale: float, class_id: int,
+                              level_dir: Path, res: str) -> dict:
     """Adds the Collision node and its children to a class scene (godot.Scene) and writes the mesh
     part's glTF files under LEVEL_DIR/mobys/collision; returns what was written, for level.json."""
     from godot import transform
@@ -330,8 +330,8 @@ def node_primitive(node: dict, sub: dict, joints: list) -> mc.Primitive:
             raise FormatError(f"{node['name']}: a capsule needs rc1_joints, the two joints it runs between")
         p.joints = tuple(pair)
         p.radius = values["radius"] * min(scales[0], scales[2]) * mc.PACKED
-    p.radius, p.height = mc.f32(p.radius), mc.f32(p.height)
-    p.centre = tuple(mc.f32(c) for c in p.centre)
+    p.radius, p.height = f32(p.radius), f32(p.height)
+    p.centre = tuple(f32(c) for c in p.centre)
     return p
 
 
@@ -468,8 +468,8 @@ def replace_in_scene(path: Path, blob: mc.Blob) -> None:
     for stale in (level_dir / "mobys" / "collision").glob(f"moby_{class_id}_*.glb"):
         stale.unlink()
     part = Scene()
-    scene_nodes(part, blob, [], float(meta(layer, "class_scale") or 1.0), class_id, level_dir,
-                "res://" + level_dir.relative_to(project).as_posix())
+    add_class_collision_nodes(part, blob, [], float(meta(layer, "class_scale") or 1.0), class_id, level_dir,
+                              "res://" + level_dir.relative_to(project).as_posix())
     prefix = "collision_"
     while any(t.startswith(prefix) for t in taken):
         prefix = "new_" + prefix

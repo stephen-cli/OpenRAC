@@ -68,8 +68,8 @@ extern int func_001160D8(void);
 extern void *D_00154A40 NOT_SDA;
 
 void *func_00119868(void *arg0) {
-    char *self = (char *)&D_00154A40;
-    D_00154A40 = arg0;
+    char *self = (char *)&InitBlockData;
+    InitBlockData = arg0;
     *(int *)(self + 0x4) = 0;
     *(void **)(self + 0xC) = self + 0x10;
     *(void **)(self + 0x8) = self + 0x10;
@@ -201,7 +201,7 @@ extern s32 func_0011D960();
 extern s32 func_0011D9A8();
 extern void func_00119798(s32);
 
-/* Adapted from Lombyte (MIT) for PAL by OpenRAC's tools/port.py: src/sdk/debug/sce_tty_write.c, sceTtyWrite. */
+/* Adapted from Lombyte (GPL-3.0) for PAL by OpenRAC's tools/port.py: src/sdk/debug/sce_tty_write.c, sceTtyWrite. */
 s32 func_00119AA8(s8 *text, s32 text_len) {
     s32 written_count; /* characters consumed -> return value */
     s32 remaining; /* countdown, hits -1 after len+1 tests */

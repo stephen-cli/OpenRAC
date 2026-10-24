@@ -275,24 +275,46 @@ function(openrac_add_game config)
   string(REGEX REPLACE "^${game}-" "" version "${id}")
   set(fixes_cpp "${CMAKE_BINARY_DIR}/generated/openrac_fixes_${target_id}.cpp")
   openrac_write_fixes("${game}" "${version}" "${fixes_cpp}")
+  # The host program's source folders in game/common (port/game/README.md), globbed like the
+  # library replacements so that splitting main.cpp, frontend.cpp and debug_overlay.cpp into files
+  # there adds no line here. Each stays empty until its split lands.
+  # program/: what main.cpp is split into (main, its options, vsync, the host side of game_host.h),
+  # in every program, with a window or without.
+  file(GLOB program_sources CONFIGURE_DEPENDS "${OPENRAC_GAME_DIR}/common/program/*.cpp")
+  # frontend/: what frontend.cpp is split into (the window, frame pacing, interpolation, world
+  # submission, input), with the window's sources.
+  file(GLOB frontend_sources CONFIGURE_DEPENDS "${OPENRAC_GAME_DIR}/common/frontend/*.cpp")
+  # debug/: what debug_overlay.cpp is split into (the overlay's panels), with the window's sources.
+  file(GLOB debug_sources CONFIGURE_DEPENDS "${OPENRAC_GAME_DIR}/common/debug/*.cpp")
   foreach(target IN LISTS targets)
     target_link_libraries(${target} PRIVATE openrac_${target_id}_game openrac_runtime openrac_mods)
-    target_sources(${target} PRIVATE "${OPENRAC_GAME_DIR}/common/fixes.cpp" "${fixes_cpp}")
+    target_sources(${target} PRIVATE "${OPENRAC_GAME_DIR}/common/fixes.cpp" "${fixes_cpp}"
+                                     ${program_sources})
     target_include_directories(${target} PRIVATE "${OPENRAC_GAME_DIR}/common")
     if(MINGW)
       target_link_libraries(${target} PRIVATE winmm)
     endif()
     # The window: the renderer draws what the game holds in memory (game/common/frontend.h).
-    if(TARGET openrac_viewer_lib AND TARGET openrac_platform)
+    if(TARGET openrac_scene_renderer AND TARGET openrac_platform)
       target_sources(${target} PRIVATE "${OPENRAC_GAME_DIR}/common/frontend.cpp"
                                        "${OPENRAC_GAME_DIR}/common/debug_menu.cpp"
                                        "${OPENRAC_GAME_DIR}/common/debug_overlay.cpp"
-                                       "${OPENRAC_GAME_DIR}/common/fps_counter.cpp"
-                                       "${OPENRAC_GAME_DIR}/common/imgui_gl.cpp"
                                        "${OPENRAC_GAME_DIR}/common/options_menu.cpp"
                                        "${OPENRAC_GAME_DIR}/common/settings.cpp"
-                                       "${OPENRAC_GAME_DIR}/common/touch_overlay.cpp")
-      target_link_libraries(${target} PRIVATE openrac_viewer_lib openrac_platform openrac_imgui)
+                                       ${frontend_sources} ${debug_sources})
+      # The scene draws the level and the live mobys.
+      target_link_libraries(${target} PRIVATE openrac_scene_renderer openrac_viewer_lib
+                                              openrac_renderer_ui openrac_platform openrac_imgui)
+      # What the window reads of the game's memory: the game's profile (game/common/profile.h), the
+      # version's own (port/game/<id>/profile.cpp), else the game's, openrac_game_<game>_profile
+      # from port/game/<game>/profile.cpp, else the one that reports no game state.
+      if(EXISTS "${config_dir}/profile.cpp")
+        target_sources(${target} PRIVATE "${config_dir}/profile.cpp")
+      elseif(TARGET openrac_game_${game_name}_profile)
+        target_link_libraries(${target} PRIVATE openrac_game_${game_name}_profile)
+      else()
+        target_sources(${target} PRIVATE "${OPENRAC_GAME_DIR}/common/profile_none.cpp")
+      endif()
       # The debug overlay's moby class names: the editor's table, as text.
       openrac_moby_class_names(names_cpp)
       target_sources(${target} PRIVATE "${names_cpp}")

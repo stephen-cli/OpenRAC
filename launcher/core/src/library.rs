@@ -12,7 +12,7 @@ use crate::install::{self, InstallState};
 use crate::port_build;
 use crate::status::{self, DiscState, VersionStatus};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Library {
     pub root: PathBuf,
@@ -26,7 +26,7 @@ pub struct Library {
     pub actions_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GameView {
     pub id: String,
@@ -38,7 +38,7 @@ pub struct GameView {
     pub versions: Vec<VersionView>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionView {
     #[serde(flatten)]
@@ -166,6 +166,14 @@ pub fn plan(config: &Config, scope: &Scope, id: &str, inputs: &Inputs) -> Result
     }
 }
 
+/// Whether action `id` of `scope` plays a game (ActionFile::is_play), from the checkout's
+/// actions.json as it is now. False without a checkout or a file that reads; a repository action
+/// is answered without reading it.
+pub fn is_play(config: &Config, scope: &Scope, id: &str) -> bool {
+    let (Scope::Version(_), Some(root)) = (scope, &config.root) else { return false };
+    actions::load(root).is_ok_and(|file| file.is_play(scope, id))
+}
+
 /// A version's action's arguments and artifact, filled in, whether or not it can run now
 /// (Action::filled).
 pub fn filled(config: &Config, key: &str, id: &str) -> Result<(Vec<String>, Option<std::path::PathBuf>), String> {
@@ -288,6 +296,19 @@ mod tests {
         let library = library(&config).unwrap();
         assert_eq!(library.actions_error, None);
         assert_the_editor_is_offered(&library, &editable_versions());
+    }
+
+    #[test]
+    fn the_checkouts_play_actions_play() {
+        let config = Config { root: Some(checkout()), ..Config::default() };
+        let pal = Scope::Version("rac1/pal".into());
+        assert!(is_play(&config, &pal, "play"));
+        assert!(!is_play(&config, &pal, "build"));
+        assert!(!is_play(&config, &Scope::Repository, "discs"));
+        assert!(!is_play(&Config::default(), &pal, "play"), "no checkout");
+        let elsewhere = tempfile::tempdir().unwrap();
+        let unreadable = Config { root: Some(elsewhere.path().to_path_buf()), ..Config::default() };
+        assert!(!is_play(&unreadable, &pal, "play"), "no actions.json");
     }
 
     #[test]
