@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import subprocess
@@ -182,8 +183,16 @@ def in_container(arguments: list[str]) -> int:
     # An explicitly selected/local image already chooses the host platform.
     # For the registry default, select the same 32-bit variant as run.sh.
     args = [container_argument(a, ROOT) for a in arguments]
+    # A checkout whose toolchain/ is a link to a directory outside it (one toolchains directory shared by
+    # several checkouts) mounts that directory where the link points inside the container.
+    mounts = ["-v", ROOT.as_posix() + ":/work"]
+    toolchain = ROOT / "toolchain"
+    if toolchain.is_symlink():
+        inside = posixpath.normpath(posixpath.join("/work", Path(os.readlink(toolchain)).as_posix()))
+        if not inside.startswith("/work/"):
+            mounts += ["-v", toolchain.resolve().as_posix() + ":" + inside]
     return subprocess.call([cli, "run", "--rm", "--init", *platform_args,
-                            "-v", ROOT.as_posix() + ":/work", "-w", "/work", image,
+                            *mounts, "-w", "/work", image,
                             "python", "tools/gcc323.py", *args])
 
 
