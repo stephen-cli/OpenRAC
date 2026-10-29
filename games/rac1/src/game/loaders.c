@@ -1905,11 +1905,11 @@ extern int active_class_resource_index MACRO_ADDR;
 extern int active_decode_buffer MACRO_ADDR;
 extern void fast_decompress();
 extern int class_resource_ids[];
-/* These parallel class-resource arrays form one block. The first base is paired through its
-   level loader; the later arrays do not each have a direct address-forming instruction there. */
-#define D_001CBEA0 ((int *)((char *)D_001CBE40 + 0x60))
-#define D_001CBF60 ((char (*)[16])((char *)D_001CBE40 + 0x120))
-#define D_001CC0E0 ((short (*)[16])((char *)D_001CBE40 + 0x2A0))
+/* These parallel class-resource arrays form one block after D_001CBE40. Each is addressed on its own
+   here (lui/addiu per array), as retail does: one base plus offsets compiles 12 bytes shorter. */
+extern int D_001CBEA0[];
+extern char D_001CBF60[][16];
+extern short D_001CC0E0[][16];
 extern unsigned char resident_indexed_textures[];
 extern GadgetRec_05270 item_info_table[];
 extern unsigned char gold_weapon_purchased[];
