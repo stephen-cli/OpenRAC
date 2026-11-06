@@ -2,6 +2,7 @@
 // job queue. Pages read `app` and call the functions below; nothing else
 // talks to the Rust side except through api.ts.
 import { hidePaths } from "./paths";
+import { bakeFailure, type BakeFailure } from "./bakeFailure";
 import {
   api,
   ask,
@@ -25,14 +26,21 @@ import {
   updateChannelOf,
   updateBranchOf,
   updateSourceOf,
+  watchFirstDraw,
 } from "./api";
 import { stopSlides } from "./motion";
 import { Queue, type Job } from "./queue";
 import { backgroundStatus } from "./progress";
 import { lastLines, PLAY_ACTIONS, unseenRecent, type StopNotice } from "./reports";
-import { checkForUpdate, offerUpdate, readPutOff, type UpdateInfo } from "./updates";
+import { checkForUpdate, offerUpdate, readPutOff, switchingChannel, type UpdateInfo } from "./updates";
 
 export type Page = "library" | "game" | "mods" | "tasks" | "develop" | "settings";
+
+export interface BakeNotice {
+  failure: BakeFailure;
+  version: string;
+  jobKey: number;
+}
 
 interface AppState {
   info: AppInfo | null;
@@ -52,14 +60,19 @@ interface AppState {
   version: string | null;
   /** What Develop shows: "checkout", "console", or a version's key (`rac1/pal`). */
   develop: string;
-  toasts: { id: number; text: string; kind: "info" | "error" }[];
+  toasts: {
+    id: number;
+    text: string;
+    kind: "info" | "error";
+    bake?: BakeNotice;
+  }[];
   update: UpdateInfo | null;
   showUpdateModal: boolean;
   /** The game stopped unexpectedly: the notice on its Play page, until dismissed. */
   stopped: StopNotice | null;
   /** Bumped when the logs may have changed (the game ended): the logs list reads them again. */
   reportsChanged: number;
-  /** Bumped when saves were brought onto a card from elsewhere (a PCSX2 import): the saves list reads them again. */
+  /** Bumped when a card may have changed (a PCSX2 import, the game ended): the saves list reads it again. */
   savesChanged: number;
   /** Each set-up game's crash reports: how many, and how many in the last three days (the tiles' mark). */
   crashes: Record<string, { total: number; recent: number }>;
@@ -106,10 +119,18 @@ export const app = $state<AppState>({
  *  in front and after a start. */
 export async function readGame() {
   if (!onAndroid) return;
+  const wasRunning = app.game?.running ?? false;
   try {
     app.game = await api.gameStatus();
   } catch {
     app.game = null;
+  }
+  // The game's activity ended since (its own process: no job ends with it): its log, any crash
+  // report and its saves are new, so the lists read them again.
+  if (wasRunning && !app.game?.running) {
+    app.reportsChanged++;
+    app.savesChanged++;
+    void countCrashes();
   }
 }
 
@@ -195,9 +216,9 @@ function expire(id: number) {
 }
 
 /** Says something for a moment; an error stays until it is dismissed, as it may need reading twice. */
-export function toast(text: string, kind: "info" | "error" = "info") {
+export function toast(text: string, kind: "info" | "error" = "info", bake?: BakeNotice) {
   const id = ++toastId;
-  app.toasts.push({ id, text, kind });
+  app.toasts.push({ id, text, kind, bake });
   // No more than four errors at once: the oldest gives way.
   const errors = app.toasts.filter((t) => t.kind === "error");
   if (errors.length > 4 && errors[0]) expire(errors[0].id);
@@ -297,6 +318,10 @@ export async function start() {
     }
     app.info = await api.appInfo();
     if (app.info.noCompositing) stopSlides();
+    if (app.info.platform === "linux" && !app.info.noCompositing) watchFirstDraw();
+    if (app.info.safeRenderingAfterCrash) {
+      toast("The launcher crashed last time, so Safe rendering is now on (Settings, Advanced).");
+    }
     // Android: the config names the carried tools' Python only once they are unpacked.
     if (onAndroid) await prepareTools();
     app.config = await firstRun(await api.getConfig());
@@ -350,12 +375,17 @@ function handleExit(job: Job) {
   const played = version !== null && PLAY_ACTIONS.includes(job.actionId);
   if (played) {
     app.reportsChanged++;
+    // The game may have saved: the Saves list reads the card again, without leaving the page.
+    app.savesChanged++;
     void countCrashes();
   }
   // The game stopping on its own is not a failed task: the Play page says what happened.
   if (job.state === "failed" && played) void gameStopped(job);
   // Setting a game up says why it stopped itself (installFromDisc).
-  else if (job.state === "failed" && !job.actionId.startsWith("install:")) toast(`${job.title} failed`, "error");
+  else if (job.state === "failed" && job.actionId === "probe-bake" && version !== null) {
+    const failure = bakeFailure(job);
+    toast(failure.title, "error", { failure, version, jobKey: job.key });
+  } else if (job.state === "failed" && !job.actionId.startsWith("install:")) toast(`${job.title} failed`, "error");
   // Played to the end since: the notice folds to a line (CrashNotice), the report still a click away.
   if (job.state === "succeeded" && played && app.stopped && version.startsWith(`${app.stopped.game}/`)) {
     app.stopped = { ...app.stopped, playedSince: true };
@@ -466,7 +496,9 @@ export function dismissStopped() {
 export async function lookForUpdate(config: Config | null = app.config): Promise<boolean> {
   if (!app.info?.version) return false;
   const channel = updateChannelOf(app.info, config);
-  const up = await checkForUpdate(app.info.version, updateSourceOf(app.info, config), channel, updateBranchOf(config));
+  const source = updateSourceOf(app.info, config);
+  const switching = switchingChannel(app.info.updates, source);
+  const up = await checkForUpdate(app.info.version, source, channel, updateBranchOf(config), switching);
   app.update = up;
   return !!up;
 }

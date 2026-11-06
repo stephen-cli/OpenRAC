@@ -102,7 +102,7 @@ collision.
 | **Delete the selected faces** | the game no longer meets them (hero wall faces: delete only) |
 | **Move the selected faces by this** | moves them by the X, Y, Z offset in game units (Z up) |
 | **Add a floor quad / a box here** | adds one where you last clicked, of the size given, with the chosen type byte |
-| **Make collision from the selected mesh** | adds the triangles of the selected `MeshInstance3D` (or the meshes under a node): collision for your own models, simplified to fit the game's cells |
+| **Make collision from the selected mesh** | adds the triangles of the selected `MeshInstance3D` (or the meshes under a node), snapped to the game's collision grid |
 | **Check the limits** | estimates the cells over the game's limit before you pack |
 
 Every edit is one step of the scene's undo history (Ctrl+Z) and is saved with
@@ -124,16 +124,25 @@ counter-clockwise from; an added box faces out.
 
 The game keeps the collision in a grid of 4-unit cells. The packer refuses,
 for that level's collision only, what the game cannot hold, and says why in
-`changes.txt`: more than 255 corners in one cell (simplify the mesh there;
-**Check the limits** estimates it), anything outside 0 to 1024 units on an
-axis. Positions snap to the game's grid, 1/16 unit across and 1/64 up; a
+`changes.txt`: more than 2,147,483,647 unique corners in one cell, anything
+outside 0 to 131,072 units on a positive axis in expanded collision (vanilla
+queries remain inside 0 to 1024 units), or another format bound. **Check the
+limits** estimates the cell counts and world bounds. Positions snap to the
+game's grid, 1/16 unit across and 1/64 up; a
 sliver that becomes a line there is left out, and a large face is cut in
-pieces small enough for the cells.
+pieces small enough for the cells. Dense edited cells use OpenRAC's expanded
+leaf format and automatically select an expanded level-data stream. Edited and added hero-wall meshes split into
+game groups of at most 255 triangles and 255 unique vertices.
 
 A level whose collision grew past its place on the disc gets it moved to the
-end of the level's core data, which takes more of the level's memory. That
-has not been tried in the running game yet: keep additions modest, and report
-how it goes.
+end of the level's core data, which takes more of the level's memory. With an
+expanded level-data stream, the editor can move a larger compressed core into
+virtual sectors while leaving the disc image unchanged. The game still has
+format and memory limits. Exact decoded core, compressed core-stream, original
+core-stream slot and expanded level-data container sizes are written to `changes.txt`
+for each collision edit; use that report to see how much the edit adds to the
+modded level. The expanded leaf decoder builds for PAL and NTSC-U,
+but dense-cell behavior in live gameplay has not yet been verified.
 
 ### Advanced: the tiles in Blender
 
@@ -150,8 +159,9 @@ Keep the file in the level's `collision/` folder under its own name; Godot
 reimports it when the editor gets focus. The dock's edits apply on top of
 what the tiles hold, so edit a tile in Blender before you edit its faces in
 the dock (a face the dock removed that the tile no longer has is reported, not
-guessed at). Hero walls are the same under `Game/HeroWalls`, at most 255
-triangles per wall (more become several walls).
+guessed at). Hero walls are the same under `Game/HeroWalls`; each exported
+game group holds at most 255 triangles and 255 unique vertices, and larger
+meshes split into several groups.
 
 ## Object collision: a crate's shape
 
@@ -194,13 +204,18 @@ triangles in Blender as you would a tile. The details are in the
 
 ## Projects from an older extractor
 
-The extractor never overwrites a project, so a project made before the
-editable collision (no `collision/` folder in the level) keeps the old
-display-only `Collision` node: its other edits still pack, its collision is
-left as the disc has it. To get the new scene and keep your edits: move the
-project aside, extract the level again, and redo the edits in the new scene
-(Godot saves scenes as text, so a diff of your old scene against a fresh
-export of the same extractor shows each edit).
+A project an older extractor made (an older `schema` in its level.json, or a
+PAL project read from the 50 Hz gameplay copy) is found by the launcher, whose
+Level editor tab then says "Your levels need an update". **Update project**
+extracts the levels again: the old project moves to `<disc>-backups/<time>/`
+with your edits, a fresh one takes its place, and your moby edits (moved,
+turned, scaled, class, values, added, deleted) are carried over onto it
+([carry.py](carry.py)). What cannot be carried is listed on the panel and in
+`carried.json` beside the scene, to redo by hand in the new scene (Godot saves
+scenes as text, so a diff of your old scene against the backup shows each
+edit). **Export the levels again**, under **Your levels** below the status,
+does the same for every level whenever you want fresh copies, and the section
+also holds Pack again and the resets (README.md, "Your levels").
 
 A project made before the Collision dock gets it the next time you extract the
 levels into the same folder (the launcher's **Extract the levels**): the dock is

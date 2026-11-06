@@ -11,9 +11,11 @@
 #include <cstring>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/log.h"
+#include "exit_menu.h"
 #include "menu_fit.h"
 #include "mods.h"
 #include "openrac/game_host.h"
@@ -89,7 +91,8 @@ constexpr int kTitleSlot = 2;
 constexpr int kListSlot = 3;
 constexpr int kFooterSlot = 4;
 
-// The main menu's rows: the slot each is drawn in and its seq. The game's own are the first three.
+// The main menu's rows: the slot each is drawn in and its seq. The game's own are the first three,
+// then the mods' and the port's Exit (exit_menu.h), last.
 constexpr std::array<int, 5> kRowSlots = {2, 3, 4, 5, 7};
 constexpr std::array<std::int32_t, 5> kRowSeqs = {16, 17, 18, 19, 20};
 constexpr int kGameRows = 3;
@@ -156,9 +159,11 @@ struct GamePage {
 constexpr gaddr kMobyPosition = 0x10;
 constexpr gaddr kMobyMode = 0x34;
 constexpr gaddr kMobySeq = 0x52;
-constexpr gaddr kMobyFrame = 0x78;  // pvars: the frame's corners, then its box on the screen
+constexpr gaddr kMobyAnimTime = 0x54;  // from a frame to the next, 0 to 1
+constexpr gaddr kMobyFrame = 0x78;     // pvars: the frame's corners, then its box on the screen
 constexpr gaddr kMobyRows = 0xC0;
 constexpr gaddr kAcross = 4;  // a vector's y: the screen's x
+constexpr gaddr kUpward = 8;  // a vector's z: the screen's y
 constexpr std::uint16_t kOwnRows = 0x100;
 constexpr std::uint16_t kRowFlipped = 0x8000;  // row 1 negated at each update: left alone
 constexpr gaddr kCornerFirst = 0x00;
@@ -228,6 +233,31 @@ struct Fit {
     int game = -1, page = -1;  // the page shown whose stretch it is
 };
 
+// A switch to or from the main menu, in its ticks (the first is 1): the game's rows shrink to their
+// smallest by tick 4 going away (frames 1 to 3 of their flight) and are smallest at tick 6 coming
+// back (the same frames backwards), where the rows below them are merged into Options; they part
+// from it over the 3 ticks before (away) or after (back). And how far below the screen their mobys
+// are put while out of sight, past the 4 units a moby may move between two ticks and still be drawn
+// part way (frontend/geometry.cpp).
+constexpr float kMergedAway = 4.0f;
+constexpr float kMergedBack = 6.0f;
+constexpr float kPartTicks = 3.0f;
+constexpr float kHiddenBelow = 100.0f;
+
+// The main menu's rows raised as a block, so that the rows under the game's leave it centred where
+// the game's three were: each row's frame moby moved up along z (the screen's y) by `by` of
+// `height`, half the extra rows' height (the game's rows' step, learnt from their frames once they
+// are settled). A moby's own z is taken again whenever the game moved it since (a switch's flight),
+// so the rows only ever sit `height` above where the game puts them.
+struct Raise {
+    std::array<gaddr, kRowSlots.size()> moby{};  // 0: not moved
+    std::array<float, kRowSlots.size()> own_z{}, put_z{};
+    float height = 0.0f;  // 0: none seen yet
+    float step = 0.0f;    // from one row to the next, along with the height
+    bool learnt = false;  // the height of the settled rows
+    float by = 0.0f;
+};
+
 struct State {
     bool built = false;
     std::array<GamePage, kGamePages> pages{};
@@ -236,21 +266,26 @@ struct State {
     gaddr texts = 0;   // kTexts strings of kTextBytes
     gaddr question = 0;
     bool patched = false;                         // the main menu has the mods' rows
+    std::array<gaddr, kRowSlots.size()> rows{};   // the main menu's widgets, by row
     std::array<gaddr, kGameRows> game_widgets{};  // the game's items' widgets, by row
-    int extra_rows = 0;
-    int second = -1;                  // the mod page the second level shows
-    int game = -1;                    // the game page on the screen (pages' index), or -1
-    int shown = -1;                   // the mod page on the screen, or -1
-    bool asking = false;              // a question is open
-    std::uint32_t tag = 0;            // its tag
-    std::int32_t kind = 0;            // the prompt kind it replaced
-    bool switch_seen = false;         // the page switch running was looked at
-    gaddr restore_on = 0;             // the page whose own seqs the main menu's rows go back to
+    gaddr exit_widget = 0, exit_item = 0;         // the port's Exit row
+    int extra_rows = 0;                           // the rows under the game's: the mods' and Exit
+    int second = -1;                              // the mod page the second level shows
+    int game = -1;             // the game page on the screen (pages' index), or -1
+    int shown = -1;            // the mod page on the screen, or -1
+    bool asking = false;       // a question is open
+    std::uint32_t tag = 0;     // its tag
+    std::int32_t kind = 0;     // the prompt kind it replaced
+    gaddr follow_page = 0;     // whose seqs the rows below fly a switch with (follow_switch)
+    bool follow_out = false;   // that switch goes away from the main menu
+    bool follow_seen = false;  // it began
+    std::array<std::int32_t, OPENRAC_UI_MAIN_ITEMS_MAX> follow_seqs{};  // the page's own
     std::uint16_t previous = 0xFFFF;  // pad 0 as last seen (active low)
     std::uint16_t held = 0, pressed = 0;
     std::uint16_t swallow = 0;  // held as a page left: kept from the game until let go
     std::array<int, kDirections.size()> held_for{};
     Fit fit;
+    Raise raise;
 };
 
 State s;
@@ -407,15 +442,52 @@ bool main_menu_is_the_games(gaddr page) {
     return true;
 }
 
+// Puts the main menu's rows (s.rows: the game's, the mods' and Exit) in their slots of `page`, the
+// cursor going round them in order.
+void put_rows(gaddr page) {
+    const auto n = static_cast<std::size_t>(kGameRows + s.extra_rows);
+
+    for (std::size_t r = 0; r < n; ++r) {
+        const auto slot = static_cast<gaddr>(kRowSlots[r]);
+        GREF(std::int32_t, page + kSeqs + 4 * slot) = kRowSeqs[r];
+        put_word(page + kScreens + 4 * slot, s.rows[r]);
+        put_word(s.rows[r] + kListUp, s.rows[(r + n - 1) % n]);
+        put_word(s.rows[r] + kListDown, s.rows[(r + 1) % n]);
+    }
+}
+
+// Makes the port's Exit row: a copy of the main menu's Options widget `options` whose one item
+// opens the question page (exit_menu.h), as a mod's item opens its page.
+gaddr make_exit_row(const openrac_front_end& fe, gaddr options) {
+    s.exit_item = openrac_guest_static(kItemBytes * 2);
+    std::memset(G(s.exit_item), 0, kItemBytes * 2);
+    put_item(
+        s.exit_item, exit_menu::text_id(exit_menu::kExit), kActionPage, exit_menu::title_page(fe)
+    );
+    s.exit_widget = copy_widget(options, kListBytes);
+    put_word(s.exit_widget + kListItems, s.exit_item);
+    return s.exit_widget;
+}
+
 // The main menu with the mods' rows: each after the game's item it names (in the order added),
-// every widget in its row's slot, the cursor going round them in order.
+// then the port's Exit (a copy of the Options item opening its question, exit_menu.h) where a slot
+// is left (with two mods' rows there is none), every widget in its row's slot, the cursor going
+// round them in order.
 void patch_main(const openrac_front_end& fe) {
+    const gaddr page = fe.main_page;
+
+    // Quit Game puts the boot program's data back (rac1 boot.c), the main menu's three rows with
+    // it: the rows made the first time go back in.
     if (s.patched) {
+        if (s.extra_rows > 0 && main_menu_is_the_games(page)) {
+            put_rows(page);
+            log::info("mod ui: the main menu's rows put back after the game made it again");
+        }
+
         return;
     }
 
     s.patched = true;
-    const gaddr page = fe.main_page;
 
     if (!main_menu_is_the_games(page)) {
         log::warn("mod ui: the main menu is not the game's three items; its items are left out");
@@ -458,60 +530,106 @@ void patch_main(const openrac_front_end& fe) {
         rows.insert(at, s.main_widgets[index]);
     }
 
-    s.extra_rows = count;
-    const auto n = rows.size();
-
-    for (std::size_t r = 0; r < n; ++r) {
-        const auto slot = static_cast<gaddr>(kRowSlots[r]);
-        GREF(std::int32_t, page + kSeqs + 4 * slot) = kRowSeqs[r];
-        put_word(page + kScreens + 4 * slot, rows[r]);
-        put_word(rows[r] + kListUp, rows[(r + n - 1) % n]);
-        put_word(rows[r] + kListDown, rows[(r + 1) % n]);
+    // Exit last, in a free row's slot: two mods' rows take both.
+    if (rows.size() < kRowSlots.size()) {
+        rows.push_back(make_exit_row(fe, options));
+    } else {
+        log::warn("mod ui: the main menu's rows are the mods'; Exit is left out");
     }
 
-    log::info("mod ui: {} item(s) in the main menu", count);
+    s.extra_rows = static_cast<int>(rows.size()) - kGameRows;
+    std::copy(rows.begin(), rows.end(), s.rows.begin());
+    put_rows(page);
+
+    log::info(
+        "mod ui: {} item(s) in the main menu{}", count, s.exit_widget != 0 ? ", and Exit" : ""
+    );
 }
 
-// A page switch to or from the main menu: the rows below the game's fly in and out with its own.
-// The page switched to plays its seq for their slots, a park, at once; the rows' own seqs are
-// played instead, on (to the off pose, as the menu's close) or back (to the row, as its open), and
-// once a switch away is over the slots go back to the page's own.
+// The frame moby in panel slot `slot`, or 0.
+gaddr panel(const openrac_front_end& fe, int slot) {
+    return word(fe.panel_slots + 4 * static_cast<gaddr>(slot));
+}
+
+// The seq page `page` gives slot `slot` in a switch.
+std::int32_t& page_seq(gaddr page, int slot) {
+    return GREF(std::int32_t, page + kSeqs + 4 * static_cast<gaddr>(slot));
+}
+
+// A page switch to or from the main menu: the rows below the game's fly as Options does. The game
+// gives every slot its seq when the switch begins (update_menu_system), from the page coming (its
+// seqs from the first frame) or, going back, from the page leaving (its own, played backwards from
+// the last): the main menu's own rows morph into that page's frames and back, and the rows below
+// would play the page's seqs for their slots, which park them off the screen to the left. So once
+// the game asked for such a switch, before it begins, that page's seqs for those slots are Options'
+// for the switch, and the game plays them in step with Options' own. raise_rows moves them: away,
+// they merge into Options as the frames shrink and are then out of sight; back, out of sight until
+// Options' frame is at its smallest, then out of it, growing with it into their own. Once the
+// switch is over the page has its seqs back and the rows their own, settled: parked on the page (as
+// the page's seqs leave them), or the row on the main menu (its seq's first frame, as the game's
+// open leaves it). Called after all that may ask for a switch, so that none begins unseen.
 void follow_switch(const openrac_front_end& fe) {
     const gaddr menu = fe.page_menu;
-    const bool starting = GREF(std::int32_t, menu + kState) == kSwitching
-                          && GREF(std::int32_t, menu + kTimer) == kSwitchTicks;
+    const bool switching = GREF(std::int32_t, menu + kState) == kSwitching;
+    const gaddr current = word(menu + kCurrent);
+    const gaddr next = word(menu + kNext);
+    const int options = kRowSlots[static_cast<std::size_t>(kGameRows - 1)];
 
-    if (starting && !s.switch_seen) {
-        const gaddr from = word(menu + kPrevious);
-        const gaddr to = word(menu + kNext);
-        const bool in = to == fe.main_page && from != fe.main_page;
-        const bool out = from == fe.main_page && to != fe.main_page && to != 0;
+    if (s.follow_page == 0 && !switching && next != 0 && s.extra_rows > 0) {
+        const bool out = current == fe.main_page && next != fe.main_page;
+        const bool back = next == fe.main_page && current != 0 && current != fe.main_page
+                          && word(current + kBack) == fe.main_page;
+        const gaddr page = out ? next : back ? current : 0;
 
-        for (int r = 0; (in || out) && r < s.extra_rows; ++r) {
-            const auto row = static_cast<std::size_t>(kGameRows + r);
-            fe.panel_animation(kRowSlots[row], kRowSeqs[row], in ? 1 : 0, in ? -1.0f : 1.0f);
+        for (int r = 0; page != 0 && r < s.extra_rows; ++r) {
+            std::int32_t& seq = page_seq(page, kRowSlots[static_cast<std::size_t>(kGameRows + r)]);
+            s.follow_seqs[static_cast<std::size_t>(r)] = seq;
+            seq = page_seq(page, options);
         }
 
-        s.restore_on = out ? to : 0;
+        s.follow_page = page;
+        s.follow_out = out;
+        s.follow_seen = false;
     }
 
-    s.switch_seen = starting;
+    s.follow_seen = s.follow_seen || (s.follow_page != 0 && switching);
 
-    // The switch away is over: the page's own seqs (parks, one frame) for those slots.
-    if (s.restore_on != 0 && GREF(std::int32_t, menu + kState) != kSwitching
-        && word(menu + kCurrent) == s.restore_on) {
+    // The switch over (or not made): the page's seqs back, and the rows their own.
+    if (s.follow_page != 0 && !switching && next == 0) {
         for (int r = 0; r < s.extra_rows; ++r) {
             const int slot = kRowSlots[static_cast<std::size_t>(kGameRows + r)];
-            fe.panel_animation(
-                slot,
-                GREF(std::int32_t, s.restore_on + kSeqs + 4 * static_cast<gaddr>(slot)),
-                1,
-                1.0f
-            );
+            const std::int32_t own = s.follow_seqs[static_cast<std::size_t>(r)];
+            page_seq(s.follow_page, slot) = own;
+
+            if (s.follow_seen && s.follow_out && current == s.follow_page) {
+                fe.panel_animation(slot, own, 1, 1.0f);
+            } else if (s.follow_seen && !s.follow_out && current == fe.main_page) {
+                // Its seq's first frame, held: the main menu's seqs fly the rows in played
+                // backwards (the last frame is off the screen to the left), and a frame moby whose
+                // seq ended backwards keeps its time at 1 (quad_moby_update), which would show the
+                // second frame.
+                fe.panel_animation(
+                    slot, kRowSeqs[static_cast<std::size_t>(kGameRows + r)], 0, 0.0f
+                );
+
+                if (panel(fe, slot) != 0) {
+                    GREF(float, panel(fe, slot) + kMobyAnimTime) = 0.0f;
+                }
+            }
         }
 
-        s.restore_on = 0;
+        s.follow_page = 0;
     }
+}
+
+// The menus gone: a page whose seqs a switch borrowed has them back.
+void unfollow() {
+    for (int r = 0; s.follow_page != 0 && r < s.extra_rows; ++r) {
+        page_seq(s.follow_page, kRowSlots[static_cast<std::size_t>(kGameRows + r)]) =
+            s.follow_seqs[static_cast<std::size_t>(r)];
+    }
+
+    s.follow_page = 0;
 }
 
 // The game page `page` is, or -1.
@@ -605,10 +723,6 @@ void show(int game, int page) {
 
     std::memset(G(g.footer_items + kItemBytes * static_cast<gaddr>(ids.size())), 0, kItemBytes);
     put_word(g.footer + kListItems, ids.empty() ? g.game_footer_items : g.footer_items);
-}
-
-gaddr panel(const openrac_front_end& fe, int slot) {
-    return word(fe.panel_slots + 4 * static_cast<gaddr>(slot));
 }
 
 std::span<const std::uint8_t> glyphs(const openrac_front_end& fe, int font) {
@@ -923,6 +1037,159 @@ void unfit(const openrac_front_end& fe) {
     s.fit.page = -1;
 }
 
+// The centre of the frame of the moby in `slot` along the world's z (the screen's y), or false
+// while it is not the row's `seq` settled.
+bool row_middle(const openrac_front_end& fe, int slot, std::int32_t seq, float& middle) {
+    const gaddr moby = panel(fe, slot);
+    const gaddr frame = moby != 0 ? word(moby + kMobyFrame) : 0;
+
+    if (frame == 0 || GREF(std::uint8_t, moby + kMobySeq) != seq) {
+        return false;
+    }
+
+    middle = (GREF(float, frame + kCornerFirst + kUpward)
+              + GREF(float, frame + kCornerOpposite + kUpward))
+             / 2.0f;
+    return true;
+}
+
+// A row's moby at its own z, where it was moved.
+void lower(Raise& r, std::size_t row) {
+    const gaddr moby = r.moby[row];
+
+    if (GREF(float, moby + kMobyPosition + kUpward) == r.put_z[row]) {
+        GREF(float, moby + kMobyPosition + kUpward) = r.own_z[row];
+    }
+
+    r.moby[row] = 0;
+}
+
+// Once a tick: the main menu's rows raised by the part of the height the main menu has on the
+// screen (all of it while shown, along a switch to or from it as the frames fly, none on another
+// page), each moby put back at its own z once it has none.
+void raise_rows(const openrac_front_end& fe) {
+    Raise& r = s.raise;
+    const int rows = kGameRows + s.extra_rows;
+    const gaddr menu = fe.page_menu;
+    const bool switching = GREF(std::int32_t, menu + kState) == kSwitching;
+    const bool main_menu = word(menu + kCurrent) == fe.main_page;
+
+    // The game's first two rows' step, half of it per extra row: followed while the main menu's
+    // rows fly in (both play the same flight, a step apart), so that the rows are raised from their
+    // first showing, and kept once the main menu is settled.
+    const bool coming = switching && word(menu + kNext) == fe.main_page;
+
+    if (!r.learnt && s.extra_rows > 0 && (main_menu || coming)) {
+        float first = 0.0f;
+        float second = 0.0f;
+
+        if (row_middle(fe, kRowSlots[0], kRowSeqs[0], first)
+            && row_middle(fe, kRowSlots[1], kRowSeqs[1], second)) {
+            r.step = first - second;
+            r.height = r.step * static_cast<float>(s.extra_rows) / 2.0f;
+            r.learnt = main_menu && !switching;
+
+            if (r.learnt) {
+                log::verbose("mod ui: the main menu's rows raised by {}", r.height);
+            }
+        }
+    }
+
+    float goal = main_menu ? 1.0f : 0.0f;
+    // The rows below the game's along a switch they follow (follow_switch): how far apart from
+    // Options they are (1 at their rows, 0 merged into it), or out of sight.
+    float apart = 1.0f;
+    bool hidden = s.follow_page != 0 && !switching && !s.follow_out && !s.follow_seen;
+
+    if (switching) {
+        const auto left = static_cast<float>(GREF(std::int32_t, menu + kTimer));
+        const float ticks = kSwitchTicks - left + 1.0f;  // this one's included
+        const float done = std::clamp(ticks / kSwitchTicks, 0.0f, 1.0f);
+        // Away, they merge as the frames shrink and then go; back, they come out of Options at its
+        // smallest and grow with it into their rows.
+        apart = std::clamp(
+            (s.follow_out ? kMergedAway - ticks : ticks - kMergedBack) / kPartTicks, 0.0f, 1.0f
+        );
+        hidden = s.follow_page != 0 && (s.follow_out ? ticks > kMergedAway : ticks < kMergedBack);
+        const bool out = word(menu + kPrevious) == fe.main_page;
+        goal = coming == out ? (coming ? 1.0f : 0.0f) : (coming ? done : 1.0f - done);
+        r.by = goal;
+    } else {
+        r.by += (goal - r.by) * kEase;
+
+        if (std::fabs(goal - r.by) < 0.002f) {
+            r.by = goal;
+        }
+    }
+
+    for (int i = 0; i < rows; ++i) {
+        const auto row = static_cast<std::size_t>(i);
+        const gaddr moby = panel(fe, kRowSlots[row]);
+
+        // One the menu made anew is not the one moved: that one is gone.
+        if (r.moby[row] != 0 && r.moby[row] != moby) {
+            r.moby[row] = 0;
+        }
+
+        if (moby == 0) {
+            continue;
+        }
+
+        // A row below the game's out of sight: its moby put far below the screen (beyond what the
+        // frames between ticks blend, so it neither slides away nor back).
+        if (i >= kGameRows && hidden) {
+            if (r.moby[row] == 0) {
+                r.moby[row] = moby;
+                r.own_z[row] = GREF(float, moby + kMobyPosition + kUpward);
+            }
+
+            r.put_z[row] = r.own_z[row] - kHiddenBelow;
+            GREF(float, moby + kMobyPosition + kUpward) = r.put_z[row];
+            continue;
+        }
+
+        if (r.by == 0.0f || r.height == 0.0f) {
+            if (r.moby[row] != 0) {
+                lower(r, row);
+            }
+
+            continue;
+        }
+
+        const float z = GREF(float, moby + kMobyPosition + kUpward);
+
+        // New, or moved by the game since: its own z is where it is now.
+        if (r.moby[row] == 0 || z != r.put_z[row]) {
+            r.moby[row] = moby;
+            r.own_z[row] = z;
+        }
+
+        r.put_z[row] = r.own_z[row] + r.height * r.by;
+
+        // Flying Options' flight, `row - Options` steps below Options at the row and none merged.
+        if (s.follow_page != 0 && switching && i >= kGameRows) {
+            r.put_z[row] -= r.step * static_cast<float>(i - (kGameRows - 1)) * apart;
+        }
+
+        GREF(float, moby + kMobyPosition + kUpward) = r.put_z[row];
+    }
+}
+
+// The menu gone: the rows' mobys put back where they are still the menu's.
+void unraise(const openrac_front_end& fe) {
+    Raise& r = s.raise;
+
+    for (std::size_t row = 0; fe.panel_slots != 0 && row < kRowSlots.size(); ++row) {
+        if (r.moby[row] != 0 && r.moby[row] == panel(fe, kRowSlots[row])) {
+            lower(r, row);
+        }
+
+        r.moby[row] = 0;
+    }
+
+    r.by = 0.0f;
+}
+
 void cue(const openrac_front_end& fe, int sound) {
     if (s.game >= 0) {
         fe.menu_cue(sound, word(s.pages[static_cast<std::size_t>(s.game)].list + kMoby));
@@ -1012,6 +1279,17 @@ void open(const openrac_front_end& fe, int page) {
     cue(fe, OPENRAC_UI_SOUND_PAGE);
     mods::ui_set_shown(page, false);
     send(page, OPENRAC_UI_SHOW);
+}
+
+// From the title's main menu, mod page `page` opened as its main-menu item's own: the switch to
+// that item's page. Nothing for a page no item opens.
+void open_main_item(const openrac_front_end& fe, int page) {
+    for (int i = 0; i < s.extra_rows; ++i) {
+        if (mods::ui_main_item(i)->page == page) {
+            put_word(fe.page_menu + kNext, s.pages[static_cast<std::size_t>(i)].page);
+            return;
+        }
+    }
 }
 
 // The next item from the cursor that it takes, `by` 1 down or -1 up, round the ends; the cursor's
@@ -1155,31 +1433,324 @@ void change_page(const openrac_front_end& fe, int game) {
     }
 }
 
+/*
+ * The pause menu's pages of the mods' items (openrac_api.ui_pause_item). In a level the pause
+ * menu's Options page gets an item per mod's after Video (options_menu.cpp makes them with the
+ * Options items of each level program), each opening a copy of the game's Camera page: its title
+ * box and its list of rows, each a label and a value (pause_rows.h). The game draws them and moves
+ * their cursor, with its own sounds; Triangle is the game's (back to Options) but on a page made
+ * with OPENRAC_UI_OWN_BACK and while a question is open, where the port takes it. What the rows say
+ * is put each tick from the mod's page, a window of kPauseRowsShown of its items moving with the
+ * cursor; a question is the title and two rows, Yes and No.
+ */
+namespace pause {
+
+constexpr int kRows = options_menu::kPauseRowsShown;
+// The texts' ids, past the main menu pages' (kTextFirst + kTexts) and below the port's Exit's
+// (0x7D80, exit_menu.cpp): the items' labels, the page's title, its rows' labels, then their values.
+constexpr int kItemText = 0x7D00;
+constexpr int kTitleText = kItemText + OPENRAC_UI_PAUSE_ITEMS_MAX;
+constexpr int kRowText = kTitleText + 1;
+constexpr int kAllTexts = kRowText + 2 * kRows - kItemText;
+static_assert(kTextFirst + kTexts <= kItemText && kItemText + kAllTexts <= 0x7D80);
+// The row widget's list: its cursor (its rows at +0x34); a row's bytes and its int's value at rest.
+constexpr gaddr kCursorAt = 0x38;
+constexpr gaddr kRowBytes = 0x18;
+constexpr std::int32_t kAtRest = 1;
+// The pad's pressed buttons as the game's menus test them (its +0x1C4, the two bytes swapped).
+constexpr gaddr kPadPressed = 0x1C4;
+constexpr std::uint32_t kPadLeft = 0x8000;
+constexpr std::uint32_t kPadRight = 0x2000;
+
+struct State {
+    gaddr texts = 0;
+    int item = -1;   // the pause item whose page is current, -1 none
+    int shown = -1;  // the mod's page on it (its own, or one ui_open put there)
+    int top = 0;     // the item in the first row
+    bool asking = false;
+    std::uint32_t tag = 0;
+    std::string question;
+    std::uint16_t taken = 0;    // Triangle pressed while the port has it
+    std::uint16_t swallow = 0;  // held as the port let go of it
+    bool takes_back = false;    // the port has Triangle now
+    std::string logged;         // what the rows showed when last logged
+};
+
+State p;
+
+gaddr text_at(int id) {
+    return p.texts + kTextBytes * static_cast<gaddr>(id - kItemText);
+}
+
+void put(int id, const std::string& utf8) {
+    std::snprintf(static_cast<char*>(G(text_at(id))), kTextBytes, "%s", game_line(utf8).c_str());
+}
+
+void tell(std::uint32_t kind, int item = -1, int value = 0, std::uint32_t tag = 0) {
+    openrac_ui_event e{};
+    e.kind = kind;
+    e.item = item;
+    e.value = value;
+    e.tag = tag;
+    mods::ui_send(p.shown, e);
+}
+
+void answer(bool yes) {
+    if (!p.asking) {
+        return;
+    }
+    p.asking = false;
+    tell(OPENRAC_UI_ANSWER, -1, yes ? 1 : 0, p.tag);
+}
+
+// The page current changed to pause item `item`'s (-1 none): the last told it left, the new one
+// that it came.
+void change(int item) {
+    if (p.shown >= 0) {
+        answer(false);
+        tell(OPENRAC_UI_HIDE);
+    }
+    p.item = item;
+    p.shown = -1;
+    p.top = 0;
+    p.taken = 0;
+    if (const mods::UiPauseItem* it = mods::ui_pause_item(item); it != nullptr) {
+        p.shown = it->page;
+        put_word(options_menu::pause_rows(item).list + kCursorAt, 0);
+        mods::ui_set_shown(p.shown, false);
+        tell(OPENRAC_UI_SHOW);
+    }
+}
+
+// What the rows show of `page` now, from its item `top`: the lines, as many as there are.
+std::vector<PauseRow> lines(const mods::UiPage& page) {
+    if (p.asking) {
+        return {{"Yes", ""}, {"No", ""}};
+    }
+    std::vector<PauseRow> out;
+    for (const mods::UiItem& item : page.items) {
+        out.push_back(
+            pause_row(item.kind == OPENRAC_UI_CHOICE, item.label, item.choices, item.choice)
+        );
+    }
+    return out;
+}
+
+// The rows of `rows` showing `page` from p.top.
+void fill(const options_menu::PauseRows& rows, const mods::UiPage& page) {
+    const std::vector<PauseRow> all = lines(page);
+    put(kTitleText, p.asking ? p.question : page.title);
+    const int count = std::clamp(static_cast<int>(all.size()) - p.top, 1, kRows);  // one at least
+    for (int i = 0; i < kRows; ++i) {
+        const gaddr row = rows.rows + kRowBytes * static_cast<gaddr>(i);
+        const std::size_t at = static_cast<std::size_t>(p.top + i);
+        GREF(std::int32_t, row) = i < count ? kRowText + i : 0;  // a 0 label ends the rows
+        put(kRowText + i, at < all.size() ? all[at].label : "");
+        put(kRowText + kRows + i, at < all.size() ? all[at].value : "");
+    }
+    GREF(std::int32_t, rows.title + 0x34) = kTitleText;
+    // What the page shows, logged (verbose) each time it changes.
+    std::string shown = p.asking ? p.question : page.title;
+    for (int i = 0; i < count; ++i) {
+        const std::size_t at = static_cast<std::size_t>(p.top + i);
+        if (at < all.size()) {
+            shown += " | " + all[at].label + (all[at].value.empty() ? "" : ": " + all[at].value);
+        }
+    }
+    if (shown != p.logged) {
+        p.logged = shown;
+        log::verbose("mod ui: pause page {}", shown);
+    }
+}
+
+void step(const mods::UiPage& page, int index, int by) {
+    const mods::UiItem& item = page.items[static_cast<std::size_t>(index)];
+    if (item.kind != OPENRAC_UI_CHOICE || item.choices.empty()
+        || (item.flags & OPENRAC_UI_DISABLED) != 0) {
+        return;
+    }
+    const int n = static_cast<int>(item.choices.size());
+    const int value = ((static_cast<int>(item.choice) + by) % n + n) % n;
+    mods::ui_set_choice(p.shown, index, static_cast<std::uint32_t>(value));
+    tell(OPENRAC_UI_CHANGE, index, value);
+}
+
+// The tick's input on the page: a row the widget stepped (Cross), Left and Right, Triangle when the
+// port has it; the cursor's window.
+void input(const openrac_front_end& fe, const options_menu::PauseRows& rows) {
+    const mods::UiPage* page = mods::ui_page(p.shown);
+    if (page == nullptr) {
+        return;
+    }
+    int crossed = -1;
+    for (int i = 0; i < kRows; ++i) {
+        std::int32_t& v = GREF(std::int32_t, rows.values + 4 * static_cast<gaddr>(i));
+        if (v != kAtRest) {
+            crossed = p.top + i;
+            v = kAtRest;
+        }
+    }
+    const std::uint16_t taken = std::exchange(p.taken, 0);
+    const int count = p.asking ? 2 : static_cast<int>(page->items.size());
+    std::int32_t& cursor = GREF(std::int32_t, rows.list + kCursorAt);
+    cursor = std::clamp(cursor, 0, std::max(std::min(count - p.top, kRows) - 1, 0));
+    if (p.asking) {
+        if (crossed >= 0 || (taken & kTriangle) != 0) {
+            answer(crossed == 0 && (taken & kTriangle) == 0);
+            p.top = 0;
+            cursor = 0;
+        }
+        return;
+    }
+    const int at = p.top + cursor;
+    const std::uint32_t pressed = GREF(std::uint32_t, fe.pad + kPadPressed);
+    if (crossed >= 0 && crossed < count) {
+        const mods::UiItem& item = page->items[static_cast<std::size_t>(crossed)];
+        if (item.kind == OPENRAC_UI_BUTTON && (item.flags & OPENRAC_UI_DISABLED) == 0) {
+            tell(OPENRAC_UI_CHOOSE, crossed);
+        } else {
+            step(*page, crossed, 1);
+        }
+    } else if ((pressed & (kPadLeft | kPadRight)) != 0 && at < count) {
+        step(*page, at, (pressed & kPadRight) != 0 ? 1 : -1);
+    }
+    if ((taken & kTriangle) != 0) {
+        tell(OPENRAC_UI_BACK);
+    }
+    pause_scroll(p.top, cursor, count, kRows);
+    mods::ui_set_cursor(p.shown, p.top + cursor);
+}
+
+// What the mod asked for during the tick's events: a question, a page in this one's place, back.
+void apply(gaddr menu, const options_menu::PauseRows& rows) {
+    const mods::UiRequests r = mods::take_ui_requests();
+    if (r.confirm && r.confirm_page == p.shown && !p.asking) {
+        p.asking = true;
+        p.tag = r.tag;
+        p.question = r.question;
+        p.top = 0;
+        put_word(rows.list + kCursorAt, 1);  // on No
+    }
+    if (!r.open) {
+        return;
+    }
+    if (r.page == OPENRAC_UI_GO_BACK) {
+        put_word(menu + kNext, word(rows.page + kBack));
+    } else if (r.page != p.shown) {
+        answer(false);
+        tell(OPENRAC_UI_HIDE);
+        p.shown = r.page;
+        p.top = 0;
+        put_word(rows.list + kCursorAt, 0);
+        mods::ui_set_shown(p.shown, false);
+        tell(OPENRAC_UI_SHOW);
+    }
+}
+
+void reset() {
+    if (p.shown >= 0) {
+        change(-1);
+    }
+    p.item = -1;
+    p.takes_back = false;
+}
+
+// Once a tick in a level: the page current, the mod's page on it, its input and events.
+void update(const openrac_front_end& fe) {
+    const int count = std::min(mods::ui_pause_item_count(), OPENRAC_UI_PAUSE_ITEMS_MAX);
+    // A menu over the level (the pause menu, the game's dialogs); its pages stay in memory after it.
+    std::int32_t level = -1;
+    const openrac_game_play* play = openrac_game_play_host;
+    if (count == 0 || play == nullptr || play->phase(&level) != OPENRAC_GAME_PHASE_MENU) {
+        reset();
+        return;
+    }
+    if (p.texts == 0) {
+        p.texts = openrac_guest_static(kTextBytes * kAllTexts);
+        std::memset(G(p.texts), 0, kTextBytes * kAllTexts);
+    }
+    for (int i = 0; i < count; ++i) {
+        put(kItemText + i, mods::ui_pause_item(i)->label);
+    }
+    const gaddr menu = OPENRAC_DATA(fe.page_menu);
+    const gaddr current = word(menu + kCurrent);
+    const gaddr next = word(menu + kNext);
+    int item = -1, coming = -1;
+    for (int i = 0; i < count; ++i) {
+        const gaddr page = options_menu::pause_rows(i).page;
+        item = page != 0 && page == current ? i : item;
+        coming = page != 0 && page == next ? i : coming;
+    }
+    if (item != p.item) {
+        change(item);
+    }
+    if (p.shown < 0) {
+        p.takes_back = false;
+        mods::ui_set_shown(-1, false);
+        mods::take_ui_requests();
+        // A switch to a mod's page: its first rows ready before it shows.
+        if (const mods::UiPauseItem* it = mods::ui_pause_item(coming); it != nullptr) {
+            if (const mods::UiPage* page = mods::ui_page(it->page); page != nullptr) {
+                p.top = 0;
+                fill(options_menu::pause_rows(coming), *page);
+            }
+        }
+        return;
+    }
+    const options_menu::PauseRows rows = options_menu::pause_rows(p.item);
+    mods::ui_set_shown(p.shown, p.asking);
+    input(fe, rows);
+    tell(OPENRAC_UI_FRAME);
+    apply(menu, rows);
+    mods::ui_set_shown(p.shown, p.asking);
+    if (const mods::UiPage* page = mods::ui_page(p.shown); page != nullptr) {
+        fill(rows, *page);
+        p.takes_back = p.asking || (page->flags & OPENRAC_UI_OWN_BACK) != 0;
+    }
+}
+
+}  // namespace pause
+
 }  // namespace
 
 void update(int loaded_overlay) {
     const openrac_front_end* fe = front_end();
 
-    // Only the boot program's menus, with a mod's item in them.
-    if (fe == nullptr || loaded_overlay != OPENRAC_OVERLAY_EXE || mods::ui_main_item_count() == 0) {
+    // Only the boot program's menus while the title stays (a game a mod's page started leaves it:
+    // the movies and the load after it have the pad). The main menu has the port's Exit even with
+    // no mod's item.
+    const int title_exit =
+        fe != nullptr && fe->title_exit != 0 ? GREF(std::int16_t, fe->title_exit) : 0;
+
+    if (fe == nullptr || !menus_up(loaded_overlay == OPENRAC_OVERLAY_EXE, title_exit)) {
         if (fe != nullptr && s.shown >= 0) {
             change_page(*fe, -1);
         }
 
         if (fe != nullptr && s.built) {
             unfit(*fe);
+            unraise(*fe);
+            unfollow();
         }
 
         s.game = -1;
         s.shown = -1;
         mods::ui_set_shown(-1, false);
+        mods::ui_set_main_menu(false);
         mods::take_ui_requests();
+        // In a level: the pause menu's pages of the mods' items.
+        if (fe != nullptr && loaded_overlay != OPENRAC_OVERLAY_EXE && loaded_overlay >= 0) {
+            pause::update(*fe);
+        } else {
+            pause::reset();
+        }
         return;
     }
+    pause::reset();
 
     build(*fe);
     patch_main(*fe);
-    follow_switch(*fe);
+    exit_menu::update_title(*fe);
     // A page is on the screen once its switch is over.
     const bool settled = GREF(std::int32_t, fe->page_menu + kState) != kSwitching;
     const int game = settled ? game_page_of(word(fe->page_menu + kCurrent)) : -1;
@@ -1188,15 +1759,25 @@ void update(int loaded_overlay) {
         change_page(*fe, game);
     }
 
+    // The title's main menu itself on the screen: a mod may open its main-menu item's page.
+    const bool main_menu = settled && word(fe->page_menu + kCurrent) == fe->main_page;
+
     if (s.shown >= 0) {
         mods::ui_set_shown(s.shown, s.asking);
+        mods::ui_set_main_menu(false);
         input(*fe);
         send(s.shown, OPENRAC_UI_FRAME);
         apply(*fe);
         mods::ui_set_shown(s.shown, s.asking);
     } else {
         mods::ui_set_shown(-1, false);
-        mods::take_ui_requests();
+        const mods::UiRequests r = mods::take_ui_requests();
+
+        if (main_menu && r.open) {
+            open_main_item(*fe, r.page);
+        }
+
+        mods::ui_set_main_menu(main_menu);
     }
 
     if (s.game >= 0 && s.shown >= 0) {
@@ -1211,12 +1792,25 @@ void update(int loaded_overlay) {
     }
 
     fit_frames(*fe);
+    // After all that may ask for a switch (the game's pages, the Exit question, the mods' pages).
+    follow_switch(*fe);
+    raise_rows(*fe);
 }
 
 void filter_pad(std::uint16_t& buttons) {
     const auto down = static_cast<std::uint16_t>(~buttons);
     const auto pressed = static_cast<std::uint16_t>(down & s.previous);  // newly down
     s.previous = buttons;
+
+    // A pause page of a mod's whose Triangle the port has (its own back, a question): kept from
+    // the game, and after, until let go.
+    if (pause::p.takes_back) {
+        pause::p.taken |= static_cast<std::uint16_t>(pressed & kTriangle);
+        pause::p.swallow |= static_cast<std::uint16_t>(down & kTriangle);
+    } else {
+        pause::p.swallow &= down;
+    }
+    buttons = static_cast<std::uint16_t>(buttons | pause::p.swallow);
 
     // With no page of a mod shown, the pad is the game's, but for what was held as one left (the
     // game would take it for a press: Triangle on the main menu closes it).
@@ -1232,7 +1826,24 @@ void filter_pad(std::uint16_t& buttons) {
     buttons = 0xFFFF;
 }
 
+int pause_item_text(int index) {
+    return pause::kItemText + index;
+}
+
+int pause_title_text() {
+    return pause::kTitleText;
+}
+
+int pause_row_text() {
+    return pause::kRowText;
+}
+
 std::uint32_t text(int id) {
+    // The pause menu's pages' texts.
+    if (pause::p.texts != 0 && id >= pause::kItemText && id < pause::kItemText + pause::kAllTexts) {
+        return pause::text_at(id);
+    }
+
     // While a question is open the memory card prompt's text is the question.
     if (id == kPromptText && s.asking) {
         return s.question;

@@ -245,6 +245,9 @@ pub struct ActionView {
     pub blockers: Vec<String>,
     /// Its `artifact` exists: for a step that makes one, it has been done.
     pub done: bool,
+    /// It needs its own `artifact` (Play, its program) and that is not there: only a step that
+    /// makes it (a build) unblocks it, never reading the levels again.
+    pub missing_artifact: bool,
     /// Listed only with Developer tools on (`Action::developer`).
     pub developer: bool,
     /// Confirmed before it starts (`Action::warning`).
@@ -414,6 +417,10 @@ impl Action {
                 Some(made) => fill(made, ctx, None).is_ok_and(|p| abs(ctx.root, &p).exists()),
                 None => self.artifact_path(ctx).is_ok_and(|p| p.exists()),
             },
+            // Android plays the game its APK carries, so its Play never misses a program.
+            missing_artifact: ctx.platform != Platform::Android
+                && self.requires.contains(&Requirement::Artifact)
+                && !self.artifact_path(ctx).is_ok_and(|p| p.exists()),
             developer: self.developer,
             warning: self.warning.clone(),
         }
@@ -524,6 +531,13 @@ impl Action {
             {
                 args.push("--map".to_string());
             }
+            if ctx.config.play_with_mods
+                && args
+                    .windows(2)
+                    .any(|pair| pair[0] == "--mods" && Path::new(&pair[1]).join("destinations.json").is_file())
+            {
+                args.push("--destinations".to_string());
+            }
         }
         let cwd = match (&self.cwd, ctx.version) {
             (Some(cwd), _) => abs(ctx.root, &fill(cwd)?),
@@ -537,16 +551,20 @@ impl Action {
             Some(v) => format!("{} · {} ({})", self.label, v.title, v.region),
             None => self.label.clone(),
         };
+        let mut env = Vec::new();
+        // The bake transcript identifies the running launcher even when it uses another checkout.
+        if self.id == crate::enhanced::BAKE_ACTION {
+            env.push(("OPENRAC_LAUNCHER_VERSION".to_string(), env!("CARGO_PKG_VERSION").to_string()));
+        }
         // Developer tools on: the native port offers its developer features (a level select in the
         // front end's Options).
-        let mut env = Vec::new();
         if self.kind == Kind::Play && ctx.config.developer {
             env.push(("OPENRAC_DEVELOPER".to_string(), "1".to_string()));
         }
         // Settings, "Theme": the game's options drawer wears the launcher's colours (theme.rs).
         if self.kind == Kind::Play {
             let game = ctx.version.map(|v| v.game.as_str());
-            env.push((crate::theme::ENV.to_string(), crate::theme::ui_colors(&ctx.config.theme, game, ctx.platform)));
+            env.push((crate::theme::ENV.to_string(), crate::theme::ui_colors(&ctx.config.theme, game)));
         }
         // Settings, "Multiplayer name": the name online mods show the other players
         // (multiplayer.rs); one that is not valid is left out, and the mod uses its own.
@@ -567,6 +585,10 @@ impl Action {
         {
             env.push(("OPENRAC_GL_API".to_string(), "vulkan".to_string()));
         }
+        // Settings, "HDR": the launcher's choice over the game's own for this start.
+        if self.kind == Kind::Play && matches!(ctx.config.hdr.as_str(), "off" | "auto" | "on") {
+            env.push(("OPENRAC_HDR".to_string(), ctx.config.hdr.clone()));
+        }
         // The Mods tab's Enhanced graphics (enhanced.rs): with `enhanced_rendering = 1` in the
         // version's settings file the game draws with Vulkan, the one renderer that has it, and
         // takes the probe bakes made from the player's levels. Off, nothing is added. On Android
@@ -585,6 +607,17 @@ impl Action {
                             }
                         }
                         args.extend(more_args);
+                    }
+                }
+            }
+        }
+        // A game's Texture packs, "Save the game's textures while you play" (texture_packs.rs):
+        // the dump folder in the data home, for the port to write each texture it meets into.
+        if self.kind == Kind::Play {
+            if let Some(v) = ctx.version {
+                if let Some(pair) = crate::texture_packs::play_env(&crate::saves::data_home(), &v.game, &v.name) {
+                    if !env.iter().any(|(k, _)| *k == pair.0) {
+                        env.push(pair);
                     }
                 }
             }
@@ -647,8 +680,12 @@ fn fill(text: &str, ctx: &Context, artifact: Option<&Path>) -> Result<String, St
 }
 
 fn value(name: &str, ctx: &Context) -> Result<String, String> {
+    // Without Windows' `\\?\` prefix (detect::plain): a build that bakes a program's path into a
+    // `cmd /C` line (CMake's hostgen step) cannot start a program named that way.
     let path = |p: &Option<PathBuf>, what: &str| {
-        p.as_ref().map(|p| p.display().to_string()).ok_or_else(|| format!("{what} is not set (Settings)"))
+        p.as_ref()
+            .map(|p| crate::detect::plain(p).display().to_string())
+            .ok_or_else(|| format!("{what} is not set (Settings)"))
     };
     let version = || ctx.version.ok_or_else(|| format!("{{{name}}} needs a version"));
     Ok(match name {
@@ -761,6 +798,30 @@ mod tests {
         assert!(parse(r#"{"format": 1, "extra": true}"#).is_err());
     }
 
+    /// A bake using a different checkout still reports this launcher's actual compiled version.
+    #[test]
+    fn bake_plan_passes_running_launcher_version() {
+        let root = checkout();
+        let config = Config::default();
+        let ctx = Context {
+            root: &root,
+            config: &config,
+            version: None,
+            status: None,
+            toolchains: false,
+            platform: Platform::current(),
+            level: None,
+            path: None,
+            option: None,
+        };
+        let action: Action = serde_json::from_str(
+            r#"{"id": "probe-bake", "label": "Bake", "kind": "build", "state": "unverified", "program": "python"}"#,
+        )
+        .unwrap();
+        let plan = action.plan(&ctx).unwrap();
+        assert!(plan.env.contains(&("OPENRAC_LAUNCHER_VERSION".to_string(), env!("CARGO_PKG_VERSION").to_string())));
+    }
+
     #[test]
     fn a_developers_action_runs_only_with_developer_tools_on() {
         let root = checkout();
@@ -809,6 +870,75 @@ mod tests {
         assert!(everyone.shown(&player));
         let view = everyone.view(&ctx(&player));
         assert!(view.runnable && !view.developer && view.warning.is_none());
+    }
+
+    /// A tool path with Windows' `\\?\` prefix (Tauri's resource folder adds it to the bundled
+    /// Python) is filled in without it: Going Commando's build on Windows started hostgen through
+    /// `cmd /C "\\?\D:\...\python.exe"`, which cmd cannot find.
+    #[test]
+    fn a_tool_path_is_filled_in_without_the_verbatim_prefix() {
+        let config = Config {
+            python: Some(PathBuf::from(r"\\?\D:\claude code\openrac\python\python.exe")),
+            ..Config::default()
+        };
+        let ctx = Context {
+            root: Path::new("."),
+            config: &config,
+            version: None,
+            status: None,
+            toolchains: false,
+            platform: Platform::Windows,
+            level: None,
+            path: None,
+            option: None,
+        };
+        assert_eq!(value("python", &ctx).unwrap(), r"D:\claude code\openrac\python\python.exe");
+    }
+
+    /// A Play whose program is not there says so (`missing_artifact`), so that the launcher offers
+    /// a build for it and never reading the levels again, which cannot make the program: Going
+    /// Commando in launcher 1.0.0, which carried neither its program nor a way to build it, sent
+    /// the player round "Rebuild" (the levels again) forever.
+    #[test]
+    fn a_play_without_its_program_says_its_artifact_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("openrac-rac2-ntsc");
+        let play: Action = serde_json::from_str(&format!(
+            r#"{{"id": "play", "label": "Play", "kind": "play", "state": "unverified", "program": "{{artifact}}",
+                "requires": ["artifact"], "artifact": {}}}"#,
+            serde_json::to_string(&program.to_string_lossy()).unwrap()
+        ))
+        .unwrap();
+        let config = Config::default();
+        let ctx = Context {
+            root: dir.path(),
+            config: &config,
+            version: None,
+            status: None,
+            toolchains: false,
+            platform: Platform::Linux,
+            level: None,
+            path: None,
+            option: None,
+        };
+        // Android plays the game its APK carries: its Play never misses a program, so Rebuild
+        // there stays the levels read again.
+        let on_android = Context { platform: Platform::Android, ..ctx };
+        assert!(!play.view(&on_android).missing_artifact);
+        let view = play.view(&ctx);
+        assert!(view.missing_artifact && !view.runnable && !view.done, "{view:?}");
+        std::fs::write(&program, "").unwrap();
+        let view = play.view(&ctx);
+        assert!(!view.missing_artifact && view.runnable && view.done, "{view:?}");
+
+        // An action that does not need its artifact to run (an export, which makes it) is never
+        // missing it.
+        let export: Action = serde_json::from_str(
+            r#"{"id": "port-levels", "label": "Levels", "kind": "build", "state": "unverified",
+                "program": "make", "artifact": "/nowhere/levels-20.json"}"#,
+        )
+        .unwrap();
+        assert!(!export.view(&ctx).missing_artifact);
     }
 
     #[test]
@@ -905,6 +1035,12 @@ mod tests {
         std::fs::write(map_folder.path().join("map.json"), "{}").unwrap();
         assert!(map_play.plan(&ctx(&with_mods)).unwrap().args.iter().any(|a| a == "--map"));
         assert!(!map_play.plan(&ctx(&installed)).unwrap().args.iter().any(|a| a == "--map"));
+        std::fs::remove_file(map_folder.path().join("map.json")).unwrap();
+        std::fs::write(map_folder.path().join("destinations.json"), "{}").unwrap();
+        let added = map_play.plan(&ctx(&with_mods)).unwrap();
+        assert!(added.args.iter().any(|a| a == "--destinations"));
+        assert!(!added.args.iter().any(|a| a == "--map"));
+        assert!(!map_play.plan(&ctx(&installed)).unwrap().args.iter().any(|a| a == "--destinations"));
         // Settings, "Detailed game logs": the game's verbose log.
         let detailed = Config { detailed_game_log: true, ..installed.clone() };
         let plan = play.plan(&ctx(&detailed)).unwrap();
@@ -920,9 +1056,19 @@ mod tests {
         );
         let unnamed = Config { multiplayer_name: "no spaces".into(), ..installed.clone() };
         assert!(!play.plan(&ctx(&unnamed)).unwrap().env.iter().any(|(k, _)| k == "OPENRAC_PLAYER_NAME"));
-        // Settings, "Renderer": Vulkan on the desktops; OpenGL, the default, sets nothing.
-        assert!(!plan.env.iter().any(|(k, _)| k == "OPENRAC_GL_API"));
-        let vulkan = Config { renderer: "vulkan".into(), ..installed.clone() };
+        // Settings, "HDR": nothing by default (the game's own), else the launcher's word.
+        assert!(!plan.env.iter().any(|(k, _)| k == "OPENRAC_HDR"));
+        let modes = ["off", "auto", "on"].map(|mode| Config { hdr: mode.into(), ..installed.clone() });
+        for hdr in &modes {
+            let plan = play.plan(&ctx(hdr)).unwrap();
+            assert!(plan.env.contains(&("OPENRAC_HDR".to_string(), hdr.hdr.clone())), "{:?}", plan.env);
+        }
+        let odd = Config { hdr: "bright".into(), ..installed.clone() };
+        assert!(!play.plan(&ctx(&odd)).unwrap().env.iter().any(|(k, _)| k == "OPENRAC_HDR"));
+        // Settings, "Renderer": Vulkan, the default, on the desktops; OpenGL sets nothing.
+        let opengl = Config { renderer: "opengl".into(), ..installed.clone() };
+        assert!(!play.plan(&ctx(&opengl)).unwrap().env.iter().any(|(k, _)| k == "OPENRAC_GL_API"));
+        let vulkan = installed.clone();
         let plan = play.plan(&ctx(&vulkan)).unwrap();
         assert!(plan.env.contains(&("OPENRAC_GL_API".to_string(), "vulkan".to_string())), "{:?}", plan.env);
         // macOS as well: the game's bundle carries MoltenVK.

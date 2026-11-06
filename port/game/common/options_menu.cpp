@@ -13,6 +13,8 @@
 
 #include "common/log.h"
 #include "fixes.h"
+#include "mod_ui.h"
+#include "mods.h"
 #include "openrac/game_host.h"
 #include "openrac/guest.h"
 #include "pause_options.h"
@@ -29,7 +31,6 @@ namespace {
 constexpr const char* kLabels[kRows] = {
     "Display mode",
     "Monitor",
-    "Resolution",
     "Picture",
     "HUD",
     "Render scale",
@@ -37,11 +38,14 @@ constexpr const char* kLabels[kRows] = {
     "Anisotropic filtering",
     "Scenery detail",
     "VSync",
+    "HDR",
     "Frame rate",
     "Frame cap",
+    "Low-latency frames",
     "Frame counter",
     "Mute in background",
     "Skip cutscenes",
+    "Responsive controls",
 
 };
 
@@ -58,7 +62,6 @@ struct Words {
 constexpr Words kWords[] = {
     {{"Display mode", "Mode d'affichage", "Anzeigemodus", "Modo de pantalla", "Modalità schermo"}},
     {{"Monitor", "Écran", "Monitor", "Monitor", "Monitor"}},
-    {{"Resolution", "Résolution", "Auflösung", "Resolución", "Risoluzione"}},
     {{"Picture", "Format d'image", "Bildformat", "Formato de imagen", "Formato immagine"}},
     {{"HUD", "Interface", "HUD", "HUD", "HUD"}},
     {{"Render scale",
@@ -78,12 +81,18 @@ constexpr Words kWords[] = {
       "Detalle del escenario",
       "Dettaglio scenario"}},
     {{"VSync", "Synchro verticale", "VSync", "Sincronía vertical", "Sincronia verticale"}},
+    {{"HDR", "HDR", "HDR", "HDR", "HDR"}},
     {{"Frame rate", "Fréquence d'images", "Bildrate", "Fotogramas", "Frequenza fotogrammi"}},
     {{"Frame cap",
       "Limite d'images",
       "Bildratenlimit",
       "Límite de fotogramas",
       "Limite fotogrammi"}},
+    {{"Low-latency frames",
+      "Images à faible latence",
+      "Bilder mit niedriger Latenz",
+      "Fotogramas de baja latencia",
+      "Fotogrammi a bassa latenza"}},
     {{"Frame counter",
       "Compteur d'images",
       "Bildzähler",
@@ -99,6 +108,11 @@ constexpr Words kWords[] = {
       "Videos überspringen",
       "Saltar cinemáticas",
       "Salta filmati"}},
+    {{"Responsive controls",
+      "Commandes réactives",
+      "Reaktive Steuerung",
+      "Controles reactivos",
+      "Controlli reattivi"}},
     {{"Game fixes",
       "Corrections du jeu",
       "Spielkorrekturen",
@@ -124,6 +138,11 @@ constexpr Words kWords[] = {
       "Breitbild-Verkehr",
       "Tráfico panorámico",
       "Traffico widescreen"}},
+    {{"Wide-screen fires",
+      "Feux écran large",
+      "Breitbild-Feuer",
+      "Fuegos panorámicos",
+      "Fuochi widescreen"}},
     {{"On", "Activé", "An", "Sí", "Sì"}},
     {{"Off", "Désactivé", "Aus", "No", "No"}},
     {{"Original", "Original", "Original", "Original", "Originale"}},
@@ -141,6 +160,7 @@ constexpr Words kWords[] = {
     {{"Centre", "Centre", "Mitte", "Centro", "Centro"}},
     {{"Edges", "Bords", "Ränder", "Bordes", "Bordi"}},
     {{"Adaptive", "Adaptative", "Adaptiv", "Adaptativa", "Adattiva"}},
+    {{"Auto", "Auto", "Auto", "Auto", "Auto"}},
     {{"Unlimited", "Illimitée", "Unbegrenzt", "Ilimitada", "Illimitata"}},
     {{"Display", "Écran", "Bildschirm", "Pantalla", "Schermo"}},
     {{"Video", "Vidéo", "Video", "Vídeo", "Video"}},
@@ -157,6 +177,8 @@ constexpr Words kAnisotropic = {{"Anisotropic ", "Anisotrope ", "Anisotrop ", "A
 constexpr Words kNotConnected =
     {{" (not connected)", " (non connecté)", " (nicht verbunden)", " (no conectado)", " (non collegato)"}};
 
+}  // namespace
+
 // The game's language as an index into Words (its word: 0 or 1 English, 2 French, 3 German,
 // 4 Spanish, 5 Italian); English for a game without one.
 int language() {
@@ -172,6 +194,8 @@ int language() {
         default: return 0;
     }
 }
+
+namespace {
 
 // An English text of the page in the game's language.
 std::string translated(const std::string& text, int lang) {
@@ -195,6 +219,10 @@ std::string translated(const std::string& text, int lang) {
 }
 
 }  // namespace
+
+std::string shown(const std::string& english) {
+    return game_text(translated(english, language()));
+}
 
 // UTF-8 in the game's text: ASCII as it is, and the accented letters at the game's own codes
 // (each vowel's acute, grave, circumflex and diaeresis in turn from 0x84 for a, 0x8C e, 0x94 i,
@@ -283,11 +311,6 @@ std::string value_of(int row) {
             const platform::DisplayInfo& d = all[static_cast<std::size_t>(s.monitor - 1)];
             return std::format("{}: {}x{} {:.0f} Hz", s.monitor, d.width, d.height, d.refresh_rate);
         }
-        case kResolution:
-            // Only the fullscreen display mode changes the display's own.
-            return s.fullscreen_width > 0 && s.fullscreen_height > 0
-                       ? std::format("{}x{}", s.fullscreen_width, s.fullscreen_height)
-                       : std::string("Desktop");
         case kAspect:
             return s.aspect == settings::Aspect::Custom
                        ? std::format("Custom {}:{}", s.aspect_custom_x, s.aspect_custom_y)
@@ -309,16 +332,22 @@ std::string value_of(int row) {
             return s.original_lod ? "Original" : "Full";
         case kVSync:
             return settings::name(s.vsync);
+        case kHdr:
+            return hdr::kModeNames[static_cast<int>(s.hdr)];
         case kFrameRate:
             return settings::frame_rate_name(s);
         case kFrameCap:
             return s.frame_rate == settings::FrameRate::Capped ? std::to_string(s.frame_cap) : std::string("Off");
+        case kLowLatency:
+            return s.low_latency_frames ? "On" : "Off";
         case kShowFps:
             return settings::name(s.show_fps);
         case kMuteUnfocused:
             return s.mute_unfocused ? "On" : "Off";
         case kSkipCutscenes:
             return s.skip_cutscenes ? "Start" : "Off";
+        case kResponsiveControls:
+            return s.responsive_controls ? "On" : "Off";
         default:
             return {};
     }
@@ -342,22 +371,6 @@ void step_value(int row, int by) {
             // 0 (the display the window is on), then each display connected.
             const int count = static_cast<int>(platform::displays().size()) + 1;
             s.monitor = ((s.monitor < count ? s.monitor : 0) + by + count) % count;
-            // Another display has other modes: back to its desktop's.
-            s.fullscreen_width = s.fullscreen_height = 0;
-            break;
-        }
-        case kResolution: {
-            // The desktop's own mode, then the display's sizes, largest first.
-            std::vector<platform::DisplaySize> sizes = platform::fullscreen_sizes(s.monitor);
-            sizes.insert(sizes.begin(), platform::DisplaySize{0, 0});
-            const platform::DisplaySize now{s.fullscreen_width, s.fullscreen_height};
-            const auto at = std::find(sizes.begin(), sizes.end(), now);
-            const std::size_t index = at == sizes.end() ? 0 : static_cast<std::size_t>(at - sizes.begin());
-            const platform::DisplaySize next =
-                sizes[(index + sizes.size() + static_cast<std::size_t>(by + static_cast<int>(sizes.size())))
-                      % sizes.size()];
-            s.fullscreen_width = next.width;
-            s.fullscreen_height = next.height;
             break;
         }
         case kAspect:
@@ -389,6 +402,10 @@ void step_value(int row, int by) {
             break;
         case kVSync:
             s.vsync = stepped_enum(s.vsync, by);
+            break;
+        case kHdr:
+            // From Off, it counts from the next start (frontend/window.cpp, apply_hdr).
+            s.hdr = stepped_enum(s.hdr, by);
             break;
         case kFrameRate: {
             // Original, Display, the caps, Unlimited: one list, the cap's number its place in it.
@@ -430,6 +447,9 @@ void step_value(int row, int by) {
                 s.frame_cap = std::clamp(s.frame_cap + by * 5, settings::kFrameCapMin, settings::kFrameCapMax);
             }
             break;
+        case kLowLatency:
+            s.low_latency_frames = !s.low_latency_frames;
+            break;
         case kShowFps:
             settings::step_frame_counter(by);
             break;
@@ -438,6 +458,9 @@ void step_value(int row, int by) {
             break;
         case kSkipCutscenes:
             s.skip_cutscenes = !s.skip_cutscenes;
+            break;
+        case kResponsiveControls:
+            s.responsive_controls = !s.responsive_controls;
             break;
         default:
             break;
@@ -640,15 +663,16 @@ std::uint32_t text(int id) {
 
 /* In a level, the pause menu's Options page (HelpDesk, Save, Load, Sound, Camera, Subtitles, Quit
  * Game) is level code with no Video page, so one is made: a copy of the Camera page (with the Sound
- * page's frames, which are taller), whose list
- * widget shows rows of a label and one of up to four value names chosen by an int (each row 0x18:
- * label, the int's address, the names, 0). The port's rows are given to it kShownHere at a time,
- * each with its value as all three names and its int at 1: Right makes it 2 and Left 0 (whether the
+ * page's frames, which are taller), whose list widget shows rows of a label and one of up to four
+ * value names chosen by an int (each row 0x18: label, the int's address, the names, 0). The port's
+ * rows are given to it kShownHere at a time, each with its value as all three names and its int at
+ * 1: Right makes it 2 and Left 0 (whether the
  * widget wraps or stops), which steps the setting, and the int goes back to 1. "Video" goes into a
  * copy of the Options list's items after Sound, put in the list each time the game gives it its own,
  * as on the title's Options page, and the hint box's texts and the picture box's entries get one for
- * Video too (both are read by the list's index). Made again for each level program (each has its own
- * menu data). */
+ * Video too (both are read by the list's index). The mods' items (openrac_api.ui_pause_item) follow
+ * Video, each opening a page made as Video's, whose rows mod_ui.cpp fills. Made again for each level
+ * program (each has its own menu data). */
 namespace pause_page {
 
 constexpr std::int16_t kSoundText = 20258;   // the Options items' "Sound" and "Camera"
@@ -658,10 +682,20 @@ constexpr gaddr kScreenBytes = 0x80;         // what of the Camera list widget i
 constexpr gaddr kChoiceBytes = 0x18;
 constexpr gaddr kTitleBytes = 0x58;          // the Camera page's title box: +0x34 its text
 constexpr int kShownHere = page::kPauseRows;  // the rows shown at once
+static_assert(kShownHere == kPauseRowsShown);
+
+// A page of rows made from the Camera page: the page, its list widget, its rows and their ints, its
+// title box.
+struct Rows {
+    gaddr page = 0, list = 0, rows = 0, values = 0, title = 0;
+};
 
 struct Made {
     gaddr items_for = 0;  // the game's Options items these were made from
     gaddr items = 0, page = 0, list = 0, rows = 0, values = 0;
+    std::vector<Rows> mods;  // the mods' items' pages, in their order
+    int extra = 1;           // the items after Sound: Video's and the mods'
+
     gaddr hints_for = 0, hints = 0;  // the Options hint box's texts by item, with Video's
     gaddr pictures_for = 0, pictures = 0;  // the Options picture stream's entries by item, with Video's
     int top = 0;
@@ -711,35 +745,59 @@ gaddr hint_screen(gaddr options_page, int count) {
 
 // ---- Menu construction ----
 
-void make(gaddr items) {
-    gaddr camera = 0, sound = 0;
-    const int count = count_items(items, &camera, &sound);
+// A page of rows as the Camera page (with the Sound page's frames when there is one), titled
+// `title_text`, its rows' labels `row_text` + i and their values `row_text` + kShownHere + i.
+Rows make_rows(gaddr camera, gaddr sound, int title_text, int row_text) {
     const gaddr camera_page = GREF(std::uint32_t, camera + 4);
     const gaddr camera_list = GREF(std::uint32_t, camera_page + 0x40);
-    m = Made{};
-    m.items_for = items;
-    m.page = openrac_guest_static(kPageBytes);
-    m.list = openrac_guest_static(kScreenBytes);
-    m.rows = openrac_guest_static(kChoiceBytes * (kShownHere + 1));
-    m.values = openrac_guest_static(4 * kShownHere);
-    std::memcpy(G(m.page), G(camera_page), kPageBytes);
-    std::memcpy(G(m.list), G(camera_list), kScreenBytes);
+    Rows r;
+    r.page = openrac_guest_static(kPageBytes);
+    r.list = openrac_guest_static(kScreenBytes);
+    r.rows = openrac_guest_static(kChoiceBytes * (kShownHere + 1));
+    r.values = openrac_guest_static(4 * kShownHere);
+    std::memcpy(G(r.page), G(camera_page), kPageBytes);
+    std::memcpy(G(r.list), G(camera_list), kScreenBytes);
     if (sound != 0) {
         // The Sound page's frames for the list and the boxes around it: tall enough for five rows
         // (the Camera page's hold three). The title's stays the Camera page's.
         const gaddr sound_page = GREF(std::uint32_t, sound + 4);
-        std::memcpy(G(m.page + 4), G(sound_page + 4), 4 * 4);
+        std::memcpy(G(r.page + 4), G(sound_page + 4), 4 * 4);
     }
-    // The title box, the screen after the page in the level's data, with the port's title.
+    // The title box, the screen after the page in the level's data, with the page's title.
     const gaddr camera_title = camera_page + kPageBytes;
-    const gaddr title = openrac_guest_static(kTitleBytes);
-    std::memcpy(G(title), G(camera_title), kTitleBytes);
-    GREF(std::int32_t, title + 0x34) = page::kTextVideo + 1;
+    r.title = openrac_guest_static(kTitleBytes);
+    std::memcpy(G(r.title), G(camera_title), kTitleBytes);
+    GREF(std::int32_t, r.title + 0x34) = title_text;
     for (gaddr at = 0x40; at < 0x7C; at += 4) {
-        if (GREF(std::uint32_t, m.page + at) == camera_title) {
-            GREF(std::uint32_t, m.page + at) = title;
+        if (GREF(std::uint32_t, r.page + at) == camera_title) {
+            GREF(std::uint32_t, r.page + at) = r.title;
         }
     }
+    for (gaddr at = 0x40; at < 0x7C; at += 4) {  // the focus and the screens: the rows for Camera's
+        if (GREF(std::uint32_t, r.page + at) == camera_list) {
+            GREF(std::uint32_t, r.page + at) = r.list;
+        }
+    }
+    std::memset(G(r.rows), 0, kChoiceBytes * (kShownHere + 1));
+    for (int i = 0; i < kShownHere; ++i) {
+        const gaddr row = r.rows + kChoiceBytes * static_cast<gaddr>(i);
+        GREF(std::int32_t, row + 0x00) = row_text + i;
+        GREF(std::uint32_t, row + 0x04) = r.values + 4 * static_cast<gaddr>(i);
+        for (gaddr k = 0; k < 3; ++k) {
+            GREF(std::int32_t, row + 0x08 + 4 * k) = row_text + kShownHere + i;
+        }
+        GREF(std::int32_t, r.values + 4 * static_cast<gaddr>(i)) = 1;
+    }
+    GREF(std::uint32_t, r.list + 0x34) = r.rows;
+    GREF(std::int32_t, r.list + 0x38) = 0;
+    return r;
+}
+
+void make(gaddr items) {
+    gaddr camera = 0, sound = 0;
+    const int count = count_items(items, &camera, &sound);
+    m = Made{};
+    m.items_for = items;
     if (page::pause_rows_text == 0) {
         page::pause_rows_text = openrac_guest_static(page::kTextBytes * 2 * kShownHere);
     }
@@ -750,41 +808,44 @@ void make(gaddr items) {
     page::put_text(page::pause_texts, "Video");
     page::put_text(page::pause_texts + page::kTextBytes, "Video Options");
     page::put_text(page::pause_texts + 2 * page::kTextBytes, "Change the display, picture and frame rate");
-    for (gaddr at = 0x40; at < 0x7C; at += 4) {  // the focus and the screens: our list for Camera's
-        if (GREF(std::uint32_t, m.page + at) == camera_list) {
-            GREF(std::uint32_t, m.page + at) = m.list;
-        }
+    const Rows video = make_rows(camera, sound, page::kTextVideo + 1, page::kPauseRowText);
+    m.page = video.page;
+    m.list = video.list;
+    m.rows = video.rows;
+    m.values = video.values;
+    // The mods' items' pages: their texts are mod_ui's.
+    const int mods_count = std::min(mods::ui_pause_item_count(), OPENRAC_UI_PAUSE_ITEMS_MAX);
+    for (int i = 0; i < mods_count; ++i) {
+        m.mods.push_back(
+            make_rows(camera, sound, mod_ui::pause_title_text(), mod_ui::pause_row_text())
+        );
     }
-    std::memset(G(m.rows), 0, kChoiceBytes * (kShownHere + 1));
-    for (int i = 0; i < kShownHere; ++i) {
-        const gaddr row = m.rows + kChoiceBytes * static_cast<gaddr>(i);
-        GREF(std::int32_t, row + 0x00) = page::kPauseRowText + i;
-        GREF(std::uint32_t, row + 0x04) = m.values + 4 * static_cast<gaddr>(i);
-        for (gaddr k = 0; k < 3; ++k) {
-            GREF(std::int32_t, row + 0x08 + 4 * k) = page::kPauseRowText + kShownHere + i;
-        }
-        GREF(std::int32_t, m.values + 4 * static_cast<gaddr>(i)) = 1;
-    }
-    GREF(std::uint32_t, m.list + 0x34) = m.rows;
-    GREF(std::int32_t, m.list + 0x38) = 0;
-    // The items: the game's, and Video after Sound (before Camera when there is no Sound).
+    m.extra = 1 + mods_count;
+    // The items: the game's, and Video after Sound (before Camera when there is no Sound), then the
+    // mods'.
     const gaddr after = sound != 0 ? sound : camera - page::kItemBytes;
     const int before = static_cast<int>((after - items) / page::kItemBytes) + 1;
-    m.items = openrac_guest_static(page::kItemBytes * static_cast<gaddr>(count + 2));
+    m.items = openrac_guest_static(page::kItemBytes * static_cast<gaddr>(count + 1 + m.extra));
     std::memcpy(G(m.items), G(items), page::kItemBytes * static_cast<gaddr>(before));
-    const gaddr video = m.items + page::kItemBytes * static_cast<gaddr>(before);
-    std::memcpy(G(video), G(camera), page::kItemBytes);
-    GREF(std::int16_t, video) = page::kTextVideo;
-    GREF(std::uint32_t, video + 4) = m.page;
-    std::memcpy(G(video + page::kItemBytes), G(items + page::kItemBytes * static_cast<gaddr>(before)),
-                page::kItemBytes * static_cast<gaddr>(count - before + 1));  // with the end item
+    for (int e = 0; e < m.extra; ++e) {
+        const gaddr item = m.items + page::kItemBytes * static_cast<gaddr>(before + e);
+        std::memcpy(G(item), G(camera), page::kItemBytes);
+        GREF(std::int16_t, item) =
+            static_cast<std::int16_t>(e == 0 ? page::kTextVideo : mod_ui::pause_item_text(e - 1));
+        GREF(std::uint32_t, item + 4) =
+            e == 0 ? m.page : m.mods[static_cast<std::size_t>(e - 1)].page;
+    }
+    std::memcpy(
+        G(m.items + page::kItemBytes * static_cast<gaddr>(before + m.extra)),
+        G(items + page::kItemBytes * static_cast<gaddr>(before)),
+        page::kItemBytes * static_cast<gaddr>(count - before + 1)
+    );  // with the end item
     m.top = 0;
-    (void)count;
 }
 
 // ---- Menu navigation ----
 
-// The hint box's list with Video's hint at Video's place, in place of the game's while ours is shown.
+// The hint box's list with Video's hint at Video's place (and the mods' items' after it), in place of the game's while ours is shown.
 void hints(gaddr options_page, gaddr game_items) {
     gaddr camera = 0, sound = 0;
     const int count = count_items(game_items, &camera, &sound);
@@ -797,16 +858,23 @@ void hints(gaddr options_page, gaddr game_items) {
         const gaddr after = sound != 0 ? sound : camera - page::kItemBytes;
         const int before = static_cast<int>((after - game_items) / page::kItemBytes) + 1;
         m.hints_for = list;
-        m.hints = openrac_guest_static(4 * static_cast<gaddr>(count + 2));
+        m.hints = openrac_guest_static(4 * static_cast<gaddr>(count + 1 + m.extra));
         std::memcpy(G(m.hints), G(list), 4 * static_cast<gaddr>(before));
         GREF(std::int32_t, m.hints + 4 * static_cast<gaddr>(before)) = page::kTextVideo + 2;
-        std::memcpy(G(m.hints + 4 * static_cast<gaddr>(before + 1)), G(list + 4 * static_cast<gaddr>(before)),
-                    4 * static_cast<gaddr>(count - before + 1));
+        for (int e = 1; e < m.extra; ++e) {  // a mod's item: its label
+            GREF(std::int32_t, m.hints + 4 * static_cast<gaddr>(before + e)) =
+                mod_ui::pause_item_text(e - 1);
+        }
+        std::memcpy(
+            G(m.hints + 4 * static_cast<gaddr>(before + m.extra)),
+            G(list + 4 * static_cast<gaddr>(before)),
+            4 * static_cast<gaddr>(count - before + 1)
+        );
     }
     GREF(std::uint32_t, screen + 0x34) = m.hints;
 }
 
-// The picture box's entries with an empty one at Video's place, in place of the game's while ours
+// The picture box's entries with an empty one at Video's place (and the mods' items'), in place of the game's while ours
 // is shown: the stream reads entries[selected] of the list (pause_options.h, options_stream).
 void pictures(gaddr options_page, gaddr list, gaddr game_items) {
     gaddr camera = 0, sound = 0;
@@ -821,37 +889,66 @@ void pictures(gaddr options_page, gaddr list, gaddr game_items) {
         const gaddr after = sound != 0 ? sound : camera - page::kItemBytes;
         const int before = static_cast<int>((after - game_items) / page::kItemBytes) + 1;
         m.pictures_for = entries;
-        m.pictures = openrac_guest_static(pause_options::kStreamEntryBytes * static_cast<gaddr>(count + 1));
-        pause_options::entries_with_video(static_cast<const std::uint32_t*>(G(entries)), count, before,
-                                          static_cast<std::uint32_t*>(G(m.pictures)));
+        m.pictures = openrac_guest_static(
+            pause_options::kStreamEntryBytes * static_cast<gaddr>(count + m.extra)
+        );
+        pause_options::entries_with_extra(
+            static_cast<const std::uint32_t*>(G(entries)),
+            count,
+            before,
+            m.extra,
+            static_cast<std::uint32_t*>(G(m.pictures))
+        );
     }
     GREF(std::uint32_t, screen + pause_options::kStreamEntries) = m.pictures;
+}
+
+// The Options page (pause_options.h): its list's items are the game's with Camera in them; they
+// become ours, with the hints and pictures to match. Another page's focus may be no list at all: the
+// item grids keep floats where a list keeps its items.
+void options_items(gaddr page) {
+    const gaddr list =
+        pause_options::options_list([](gaddr at) { return GREF(std::uint32_t, at); }, page);
+    if (list == 0) {
+        return;
+    }
+    const gaddr items = GREF(std::uint32_t, list + 0x34);
+    gaddr camera = 0, sound = 0;
+    if (items != 0 && items == m.items) {
+        // Ours already, given before the game entered the page: the picture box gets its buffer
+        // only then, so its entries are taken now.
+        hints(page, m.items_for);
+        pictures(page, list, m.items_for);
+        return;
+    }
+    if (items != 0 && count_items(items, &camera, &sound) > 0 && camera != 0) {
+        if (m.items_for != items) {
+            make(items);
+            m.hints_for = 0;
+        }
+        hints(page, items);
+        pictures(page, list, items);
+        GREF(std::uint32_t, list + 0x34) = m.items;
+    }
 }
 
 bool update(gaddr page_menu, gaddr pad) {
     const gaddr shown = GREF(std::uint32_t, page_menu + 4);
     if (shown == 0) {
+        // Between pages (menu_system.current 0, .next the page coming): the Options page gets its
+        // items before the game enters it, or its rows first show without Video and move on the
+        // next frame.
+        const gaddr next = GREF(std::uint32_t, page_menu + 8);
+        if (next != 0 && next != m.page) {
+            options_items(next);
+        }
         return false;
     }
+    if (std::any_of(m.mods.begin(), m.mods.end(), [&](const Rows& r) { return r.page == shown; })) {
+        return false;  // a mod's page: mod_ui.cpp's
+    }
     if (shown != m.page || m.page == 0) {
-        // The Options page (pause_options.h): its list's items are the game's with Camera in them.
-        // Another page's focus may be no list at all: the item grids keep floats where a list keeps
-        // its items.
-        const gaddr list = pause_options::options_list([](gaddr at) { return GREF(std::uint32_t, at); }, shown);
-        if (list == 0) {
-            return false;
-        }
-        const gaddr items = GREF(std::uint32_t, list + 0x34);
-        gaddr camera = 0, sound = 0;
-        if (items != 0 && items != m.items && count_items(items, &camera, &sound) > 0 && camera != 0) {
-            if (m.items_for != items) {
-                make(items);
-                m.hints_for = 0;
-            }
-            hints(shown, items);
-            pictures(shown, list, items);
-            GREF(std::uint32_t, list + 0x34) = m.items;
-        }
+        options_items(shown);
         return false;
     }
     // The port's Video page.
@@ -900,6 +997,15 @@ const openrac_front_end* front_end() {
 
 }  // namespace
 
+void savestate_restored() {
+    // These are port-side caches of guest addresses. The restored RAM and overlay can come from
+    // another process, so none of them may be reused by the next menu update.
+    page::n = {};
+    page::pause_texts = 0;
+    page::pause_rows_text = 0;
+    pause_page::m = {};
+}
+
 int row_count() {
     return fixes::count() > 0 ? kRows + 1 + fixes::count() : kRows;
 }
@@ -941,13 +1047,24 @@ bool update(int loaded_overlay) {
     }
     if (loaded_overlay != OPENRAC_OVERLAY_EXE) {
         // In a level: the pause menu's own Options page, on the level program's menu data.
-        return loaded_overlay >= 0 && pause_page::update(OPENRAC_DATA(fe->page_menu), fe->pad);
+        return loaded_overlay >= 0 && fe->page_menu != 0
+               && pause_page::update(OPENRAC_DATA(fe->page_menu), fe->pad);
     }
-    return page::update(*fe);
+    // A game that describes no Video page here (Going Commando's is its host C) has none of these
+    // widgets: their words would be read and written at the bottom of game memory.
+    return fe->video_page != 0 && page::update(*fe);
 }
 
 std::uint32_t text(int id) {
     return front_end() != nullptr ? page::text(id) : 0;
+}
+
+PauseRows pause_rows(int index) {
+    if (index < 0 || index >= static_cast<int>(pause_page::m.mods.size())) {
+        return {};
+    }
+    const pause_page::Rows& r = pause_page::m.mods[static_cast<std::size_t>(index)];
+    return {r.page, r.list, r.rows, r.values, r.title};
 }
 
 std::uint32_t options_items() {

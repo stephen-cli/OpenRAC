@@ -583,10 +583,74 @@ std::vector<std::uint8_t> draw_cull_cases(
     return target.read_rgba();
 }
 
-// Tests that cull and front face toggled between draws in one pass draw the same pixels with the
-// fixed state as dynamic state as with it baked into each pipeline, and the pixels each case's
-// winding and culling give.
-void test_cull_and_front_face_toggled_in_one_pass() {
+std::vector<std::uint8_t> draw_depth_stencil_cases(
+    const renderer::FrameBuffer& target, const renderer::Shader& shader, unsigned vao
+) {
+    glBindFramebuffer(GL_FRAMEBUFFER, target.id());
+    glBindVertexArray(vao);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glStencilMask(0xff);
+    glClearDepth(1.0);
+    glClearStencil(0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    shader.use();
+
+    glViewport(0, 0, 1, 1);
+    glDepthFunc(GL_ALWAYS);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glViewport(1, 0, 1, 1);
+    glDepthFunc(GL_NEVER);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDepthFunc(GL_ALWAYS);
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_EQUAL, 1, 0xff);
+    glViewport(2, 0, 1, 1);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    // Write stencil without colour, then require the written value to draw white.
+    glViewport(3, 0, 1, 1);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glStencilFunc(GL_ALWAYS, 1, 0xff);
+    glStencilOpSeparate(GL_FRONT_AND_BACK, GL_KEEP, GL_KEEP, GL_INCR_WRAP);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_EQUAL, 1, 0xff);
+    glStencilOpSeparate(GL_FRONT_AND_BACK, GL_KEEP, GL_KEEP, GL_KEEP);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    // A masked depth write must leave the cleared depth, so equality fails.
+    glViewport(4, 0, 1, 1);
+    glDisable(GL_STENCIL_TEST);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glDepthMask(GL_FALSE);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthFunc(GL_EQUAL);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_DEPTH_TEST);
+    return target.read_rgba();
+}
+
+void check_fixed_state_pixels(
+    const std::vector<std::uint8_t>& dynamic,
+    const std::vector<std::uint8_t>& baked,
+    const std::array<bool, 5>& drawn
+) {
+    CHECK(dynamic == baked);
+    constexpr std::size_t kChannels = 4;
+    CHECK(dynamic.size() == drawn.size() * kChannels);
+    for (std::size_t n = 0; n < drawn.size() && dynamic.size() == drawn.size() * kChannels; ++n) {
+        CHECK((dynamic[n * kChannels] == 255) == drawn[n]);
+    }
+}
+
+// Compare baked and dynamic cull, depth and stencil state across draws in one pass.
+void test_fixed_state_toggled_in_one_pass() {
     renderer::Shader shader;
     std::string error;
     CHECK(shader.build(
@@ -611,19 +675,25 @@ void main() {
     glGenVertexArrays(1, &vao);
     namespace render_opt = renderer::render_opt;
     const bool began = render_opt::enabled(render_opt::Opt::VkExtendedDynamicState);
+    const bool libraries = render_opt::enabled(render_opt::Opt::VkPipelineLibrary);
+    render_opt::set(render_opt::Opt::VkPipelineLibrary, false);
+    const auto before = vkgl::submission_counters().pipelines_created;
     render_opt::set(render_opt::Opt::VkExtendedDynamicState, true);
     const std::vector<std::uint8_t> dynamic = draw_cull_cases(target, shader, vao);
+    const auto dynamic_depth = draw_depth_stencil_cases(target, shader, vao);
+    const auto middle = vkgl::submission_counters().pipelines_created;
     render_opt::set(render_opt::Opt::VkExtendedDynamicState, false);
     const std::vector<std::uint8_t> baked = draw_cull_cases(target, shader, vao);
+    const auto baked_depth = draw_depth_stencil_cases(target, shader, vao);
+    const auto after = vkgl::submission_counters().pipelines_created;
     render_opt::set(render_opt::Opt::VkExtendedDynamicState, began);
-    constexpr std::size_t kChannels = 4;
-    constexpr std::array<bool, 5> kDrawn = {true, true, false, false, true};
-    CHECK(dynamic == baked);
-    CHECK(dynamic.size() == kDrawn.size() * kChannels);
-
-    // Each pixel white where its case draws and black where it culls.
-    for (std::size_t n = 0; n < kDrawn.size() && dynamic.size() == kDrawn.size() * kChannels; ++n) {
-        CHECK((dynamic[n * kChannels] == 255) == kDrawn[n]);
+    render_opt::set(render_opt::Opt::VkPipelineLibrary, libraries);
+    check_fixed_state_pixels(dynamic, baked, {true, true, false, false, true});
+    check_fixed_state_pixels(dynamic_depth, baked_depth, {true, false, false, true, false});
+    CHECK(middle > before);
+    if (vkgl::extended_dynamic_state_supported()) {
+        // The baked path creates distinct pipelines for state that the dynamic draws share.
+        CHECK(after - middle > middle - before);
     }
 
     glDeleteVertexArrays(1, &vao);
@@ -724,6 +794,127 @@ void main() {
 
     glDeleteVertexArrays(1, &vao);
     CHECK(glGetError() == GL_NO_ERROR);
+}
+
+// Many draw integers share a large UBO snapshot; later writes and frames cannot alter earlier draws.
+void test_separate_draw_uniform(unsigned vao) {
+    std::vector<std::uint8_t> reference_pixels;
+    for (const bool separate : {false, true}) {
+        renderer::render_opt::set(renderer::render_opt::Opt::VkDrawUniform, separate);
+        renderer::Shader shader;
+        std::string error;
+        CHECK(shader.build(
+            "separate vertex draw integer",
+            R"(#version 410 core
+#define OPENRAC_DRAW_INT selected
+uniform int selected;
+uniform vec4 palette[4];
+flat out vec4 colour;
+void main() {
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0, 1);
+    colour = palette[selected & 3];
+}
+)",
+            R"(#version 410 core
+flat in vec4 colour;
+layout(location=0) out vec4 result;
+void main() { result = colour; }
+)",
+            error
+        ));
+        renderer::FrameBuffer target;
+        CHECK(target.create(8, 1, error));
+        glBindVertexArray(vao);
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        const std::array<int, 8> selections = {0, 1, 2, 3, -1, 0, 0x40000002, 1};
+        for (unsigned frame = 0; frame < 2; ++frame) {
+            glBindFramebuffer(GL_FRAMEBUFFER, target.id());
+            shader.use();
+            const std::array<float, 16> palette = {1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1};
+            glUniform4fv(shader.uniform("palette"), 4, palette.data());
+            const auto before = vkgl::submission_counters();
+            for (unsigned i = 0; i < selections.size(); ++i) {
+                if (i == 4) {
+                    glUniform4f(shader.uniform("palette[0]"), 0, 1, 1, 1);
+                }
+                glViewport(static_cast<int>(i), 0, 1, 1);
+                glUniform1i(shader.uniform("selected"), selections[i]);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
+            const auto after = vkgl::submission_counters();
+            CHECK(after.uniform_uploads - before.uniform_uploads == (separate ? 2u : 8u));
+            const auto pixels = target.read_rgba();
+            const std::vector<std::uint8_t> expected = {255, 0,   0,   255, 0,   255, 0,   255,
+                                                        0,   0,   255, 255, 255, 255, 255, 255,
+                                                        255, 255, 255, 255, 0,   255, 255, 255,
+                                                        0,   0,   255, 255, 0,   255, 0,   255};
+            CHECK(pixels == expected);
+            if (!separate) {
+                reference_pixels = pixels;
+            } else {
+                CHECK(pixels == reference_pixels);
+            }
+            vkgl::present();
+        }
+    }
+    renderer::render_opt::reset();
+    CHECK(vkgl::submission_counters().validation_errors == 0);
+}
+
+// No UBO is needed for a lone draw integer; shared-stage integers and arrays keep the old path.
+void test_draw_uniform_layouts(unsigned vao) {
+    for (unsigned kind = 0; kind < 3; ++kind) {
+        std::vector<std::uint8_t> reference;
+        for (const bool separate : {false, true}) {
+            renderer::render_opt::set(renderer::render_opt::Opt::VkDrawUniform, separate);
+            std::string vertex = "#version 410 core\n#define OPENRAC_DRAW_INT selected\n";
+            vertex += kind == 2 ? "uniform int selected[2];\n" : "uniform int selected;\n";
+            vertex += "flat out int value;\nvoid main() {\n"
+                      "vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);\n"
+                      "gl_Position=vec4(p*2.0-1.0,0,1);\nvalue=";
+            vertex += kind == 2 ? "selected[0];}\n" : "selected;}\n";
+            std::string fragment = "#version 410 core\nflat in int value;\n";
+            if (kind == 1) {
+                fragment += "uniform int selected;\n";
+            }
+            fragment += "layout(location=0) out vec4 result;\nvoid main(){result=vec4(float((value";
+            fragment += kind == 1 ? "+selected)&3)/3.0,0,0,1);}" : ")&3)/3.0,0,0,1);}";
+            renderer::Shader shader;
+            std::string error;
+            CHECK(shader.build("draw uniform layouts", vertex, fragment, error));
+            renderer::FrameBuffer target;
+            CHECK(target.create(4, 1, error));
+            glBindFramebuffer(GL_FRAMEBUFFER, target.id());
+            glBindVertexArray(vao);
+            shader.use();
+            const auto before = vkgl::submission_counters();
+            for (int i = 0; i < 4; ++i) {
+                glViewport(i, 0, 1, 1);
+                glUniform1i(shader.uniform("selected"), i);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
+            const auto after = vkgl::submission_counters();
+            CHECK(
+                after.uniform_uploads - before.uniform_uploads == (separate && kind == 0 ? 0u : 4u)
+            );
+            const auto pixels = target.read_rgba();
+            for (unsigned i = 0; i < 4; ++i) {
+                CHECK(pixels[i * 4] == ((kind == 1 ? i * 2 : i) & 3) * 85);
+                CHECK(pixels[i * 4 + 3] == 255);
+            }
+            if (!separate) {
+                reference = pixels;
+            } else {
+                CHECK(pixels == reference);
+            }
+            vkgl::present();
+        }
+    }
+    renderer::render_opt::reset();
+    CHECK(vkgl::submission_counters().validation_errors == 0);
 }
 
 int main() {
@@ -970,11 +1161,13 @@ void main() {
     CHECK(glGetError() == GL_NO_ERROR);
     test_pipeline_state_changes(vao);
     test_bindless_upscaled_colours(vao, reference);
+    test_separate_draw_uniform(vao);
+    test_draw_uniform_layouts(vao);
     glDeleteTextures(2, textures.data());
     glDeleteVertexArrays(1, &vao);
     texel_buffer_fallbacks();
     test_state_bounces();
-    test_cull_and_front_face_toggled_in_one_pass();
+    test_fixed_state_toggled_in_one_pass();
     test_a_deleted_texture_s_set_is_never_drawn_again();
     return test::result();
 }

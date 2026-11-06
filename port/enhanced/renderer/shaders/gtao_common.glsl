@@ -21,10 +21,16 @@ vec3 position_at(ivec2 pixel, float depth) {
 }
 
 ivec2 source_pixel(ivec2 cell, out int selected) {
+#if defined(OPENRAC_GTAO_SCALE) && OPENRAC_GTAO_SCALE == 1
+    selected = 0;
+    return cell;
+#else
+#ifndef OPENRAC_GTAO_SCALE
     if (evaluation_scale == 1) {
         selected = 0;
         return cell;
     }
+#endif
     ivec2 extent = textureSize(tex_T0, 0);
     ivec2 result = min(cell * 2, extent - 1);
     float nearest = -1.0;
@@ -42,18 +48,19 @@ ivec2 source_pixel(ivec2 cell, out int selected) {
         }
     }
     return result;
+#endif
 }
 
-vec2 encode_normal(vec3 n) {
-    n /= abs(n.x) + abs(n.y) + abs(n.z);
-    vec2 folded = (1.0 - abs(n.yx)) * mix(vec2(-1), vec2(1), greaterThanEqual(n.xy, vec2(0)));
-    return (n.z < 0.0 ? folded : n.xy) * 0.5 + 0.5;
+vec2 encode_normal(vec3 value) {
+    mp_vec3 n=mp_vec3(value);
+    n/=abs(n.x)+abs(n.y)+abs(n.z);
+    mp_vec2 folded=(mp_vec2(1)-abs(n.yx))*mix(mp_vec2(-1),mp_vec2(1),greaterThanEqual(n.xy,mp_vec2(0)));
+    return vec2((n.z<mp_float(0)?folded:n.xy)*mp_float(.5)+mp_float(.5));
 }
-
 vec3 decode_normal(vec2 encoded) {
-    vec2 xy = encoded * 2.0 - 1.0;
-    vec3 n = vec3(xy, 1.0 - abs(xy.x) - abs(xy.y));
-    float t = clamp(-n.z, 0.0, 1.0);
-    n.xy += mix(vec2(t), vec2(-t), greaterThanEqual(n.xy, vec2(0)));
-    return normalize(n);
+    mp_vec2 xy=mp_vec2(encoded)*mp_float(2)-mp_float(1);
+    mp_vec3 n=mp_vec3(xy,mp_float(1)-abs(xy.x)-abs(xy.y));
+    mp_float t=clamp(-n.z,mp_float(0),mp_float(1));
+    n.xy+=mix(mp_vec2(t),mp_vec2(-t),greaterThanEqual(n.xy,mp_vec2(0)));
+    return vec3(normalize(n));
 }

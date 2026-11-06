@@ -36,7 +36,15 @@ SCRIPT_API = (1, 1)
 SCRIPT_FILES = re.compile(r"\.(luau|json|md)$", re.IGNORECASE)
 # Folders a script mod's archive never takes (a build, the SDK fetched, a repository's own).
 SKIP_DIRS = {"build", "dist", "node_modules", "__pycache__"}
-PLATFORMS = ("macos-arm64", "macos-x86_64", "linux-x86_64", "linux-aarch64", "windows-x86_64", "windows-arm64")
+PLATFORMS = (
+    "macos-arm64",
+    "macos-x86_64",
+    "linux-x86_64",
+    "linux-aarch64",
+    "windows-x86_64",
+    "windows-arm64",
+    "android-arm64",
+)
 ID = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$")
 API = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -360,6 +368,13 @@ def check_manifest(m, root: Path | None = None, bindings: Path | None = None) ->
             k not in ("after", "before") or not isinstance(v, list) or not all(isinstance(x, str) and ID.match(x) for x in v)
             for k, v in load.items()):
         errors.append("load: {after: [ids], before: [ids]}")
+    assets = m.get("assets")
+    if assets is not None:
+        a = PurePosixPath(assets) if isinstance(assets, str) and assets and "\\" not in assets and ":" not in assets else None
+        if a is None or a.is_absolute() or any(part in ("", ".", "..") for part in assets.split("/")):
+            errors.append("assets: a folder inside the mod, with / (\"assets\")")
+        elif root is not None and not (root / a).is_dir():
+            errors.append(f"assets: {assets} is not a folder in the mod")
     if isinstance(mid, str):
         for name in ("requires", "conflicts"):
             if any(isinstance(r, dict) and r.get("id") == mid for r in m.get(name, []) or []):
@@ -400,14 +415,24 @@ def _script_files(folder: Path, m: dict) -> list[Path]:
     return [folder / MANIFEST] + sorted(out)
 
 
+def _asset_files(folder: Path, m: dict) -> list[Path]:
+    """Every file of the mod's assets folder (MODS.md, section 3), hidden ones left out."""
+    if not m.get("assets"):
+        return []
+    root = folder / PurePosixPath(m["assets"])
+    return sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink()
+                  and not any(part.startswith(".") for part in p.relative_to(root).parts))
+
+
 def _files(folder: Path) -> list[Path]:
-    """What goes in the archive: the manifest, the plugin files, the files for people."""
+    """What goes in the archive: the manifest, the plugin files, the assets, the files for people."""
     m = read_manifest(folder / MANIFEST)
     if m.get("type") == "script":
-        return _script_files(folder, m)
+        return _script_files(folder, m) + _asset_files(folder, m)
     out = [folder / MANIFEST]
     for path in (m.get("plugin") or {}).values():
         out.append(folder / PurePosixPath(path))
+    out += _asset_files(folder, m)
     out += sorted(p for p in folder.iterdir() if p.is_file() and EXTRAS.match(p.name))
     return out
 

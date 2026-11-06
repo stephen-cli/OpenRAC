@@ -20,6 +20,7 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -106,10 +107,46 @@ private:
 
 // ---- String literals ----
 
-std::mutex g_strings_lock;
+std::mutex g_allocations_lock;
 std::unordered_map<std::string, gaddr> g_strings;
 gaddr g_strings_next = GUEST_STRINGS;
+gaddr g_statics_next = GUEST_STATICS;
+constexpr gaddr kStaticSitesBegin = GUEST_STATICS;
+constexpr gaddr kStaticSitesEnd = GUEST_STATICS + GUEST_STATICS_SIZE;
+gaddr g_static_sites_begin = GUEST_STATICS + GUEST_STATICS_SIZE;
+
+struct StaticSite {
+    gaddr address;
+    std::uint32_t size;
+};
+
+std::map<std::uint64_t, StaticSite> g_static_sites;
 std::atomic<std::uint64_t> g_allocation_generation{0};
+std::atomic<std::uint64_t> g_cache_generation{0};
+
+struct AllocationMetadataHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::uint32_t strings_count;
+    std::uint32_t sites_count;
+    std::uint32_t used;
+    openrac_guest_allocation_state allocations;
+};
+
+struct StringMetadata {
+    gaddr address;
+    std::uint32_t size;
+};
+
+struct SiteMetadata {
+    std::uint64_t id;
+    gaddr address;
+    std::uint32_t size;
+};
+
+constexpr char kAllocationMetadataMagic[8] = {'O', 'R', 'A', 'C', 'A', 'L', '1', '\0'};
+constexpr std::uint32_t kAllocationMetadataVersion = 1;
+constexpr std::size_t kAllocationMetadataCapacity = 4 * 1024 * 1024;
 
 // ---- Functions by address ----
 
@@ -161,11 +198,13 @@ std::uint64_t returns_nothing() {
     return 0;
 }
 
+// The calls to code addresses no function has, by address (the reach file reports them).
+std::mutex g_unknown_lock;
+std::map<gaddr, int> g_unknown_calls;
+
 void unknown_function() {
-    static std::mutex lock;
-    static std::map<gaddr, int> seen;
-    std::scoped_lock hold(lock);
-    const int calls = ++seen[g_unknown_target];
+    std::scoped_lock hold(g_unknown_lock);
+    const int calls = ++g_unknown_calls[g_unknown_target];
     // [verbose log] It goes on being called: said again at 10, 100, 1000... calls.
     if (calls >= 10 && openrac::log::verbose_on()) {
         int n = calls;
@@ -234,16 +273,57 @@ gaddr openrac_guest_frame(uint32_t size) {
 }
 
 gaddr openrac_guest_static(uint32_t size) {
-    static std::mutex lock;
-    static gaddr next = GUEST_STATICS;
-    std::scoped_lock hold(lock);
-    const gaddr at = next;
-    if (at + size > GUEST_STATICS + GUEST_STATICS_SIZE) {
+    std::scoped_lock hold(g_allocations_lock);
+    const gaddr at = g_statics_next;
+    if (at + size > g_static_sites_begin) {
         fatalf("the statics region is full");
     }
-    next = (at + size + 15) & ~15u;
+    g_statics_next = (at + size + 15) & ~15u;
     g_allocation_generation.fetch_add(1, std::memory_order_relaxed);
     return at;
+}
+
+void openrac_guest_get_allocation_state(openrac_guest_allocation_state* state) {
+    if (state == nullptr) {
+        return;
+    }
+    std::scoped_lock hold(g_allocations_lock);
+    state->strings_end = g_strings_next;
+    state->statics_end = g_statics_next;
+    state->static_sites_begin = g_static_sites_begin;
+}
+
+gaddr openrac_guest_static_site(uint32_t size, uint64_t site, int* fresh) {
+    if (site == 0 || size == 0 || fresh == nullptr) {
+        fatalf("a translated static has an invalid call-site id or size");
+    }
+    std::scoped_lock hold(g_allocations_lock);
+    const auto found = g_static_sites.find(site);
+    if (found != g_static_sites.end()) {
+        if (found->second.size != size) {
+            fatalf("a translated static call-site changed size");
+        }
+        *fresh = 0;
+        return found->second.address;
+    }
+    const gaddr aligned = (size + 15u) & ~15u;
+    if (g_static_sites_begin > kStaticSitesEnd
+        || aligned > g_static_sites_begin - kStaticSitesBegin) {
+        fatalf("the translated statics region is full");
+    }
+    const gaddr at = (g_static_sites_begin - aligned) & ~15u;
+    if (at < kStaticSitesBegin || at < g_statics_next) {
+        fatalf("the translated statics region overlaps host statics");
+    }
+    g_static_sites_begin = at;
+    g_static_sites.emplace(site, StaticSite{at, size});
+    g_allocation_generation.fetch_add(1, std::memory_order_relaxed);
+    *fresh = 1;
+    return at;
+}
+
+uint64_t openrac_guest_cache_generation(void) {
+    return g_cache_generation.load(std::memory_order_relaxed);
 }
 
 uint64_t openrac_guest_allocation_generation(void) {
@@ -251,7 +331,7 @@ uint64_t openrac_guest_allocation_generation(void) {
 }
 
 gaddr openrac_guest_string(const char* s, size_t size) {
-    std::scoped_lock hold(g_strings_lock);
+    std::scoped_lock hold(g_allocations_lock);
     std::string key(s, size);
     auto it = g_strings.find(key);
     if (it != g_strings.end()) {
@@ -266,6 +346,176 @@ gaddr openrac_guest_string(const char* s, size_t size) {
     g_strings.emplace(std::move(key), at);
     g_allocation_generation.fetch_add(1, std::memory_order_relaxed);
     return at;
+}
+
+size_t openrac_guest_snapshot_metadata_capacity(void) {
+    return kAllocationMetadataCapacity;
+}
+
+size_t openrac_guest_snapshot_metadata_size(void) {
+    std::scoped_lock hold(g_allocations_lock);
+    std::size_t size =
+        sizeof(AllocationMetadataHeader) + g_static_sites.size() * sizeof(SiteMetadata);
+    for (const auto& [text, address] : g_strings) {
+        (void)address;
+        size += sizeof(StringMetadata) + text.size();
+    }
+    return size;
+}
+
+int openrac_guest_snapshot_metadata_save(void* output, size_t capacity, size_t* used) {
+    if (output == nullptr || used == nullptr || capacity < sizeof(AllocationMetadataHeader)) {
+        return -1;
+    }
+    std::scoped_lock hold(g_allocations_lock);
+    std::size_t required =
+        sizeof(AllocationMetadataHeader) + g_static_sites.size() * sizeof(SiteMetadata);
+    for (const auto& [text, address] : g_strings) {
+        (void)address;
+        if (text.size() > UINT32_MAX) {
+            return -1;
+        }
+        required += sizeof(StringMetadata) + text.size();
+    }
+    if (required > capacity || required > kAllocationMetadataCapacity
+        || g_strings.size() > UINT32_MAX || g_static_sites.size() > UINT32_MAX) {
+        return -1;
+    }
+    auto* bytes = static_cast<std::uint8_t*>(output);
+    AllocationMetadataHeader header{};
+    std::memcpy(header.magic, kAllocationMetadataMagic, sizeof(kAllocationMetadataMagic));
+    header.version = kAllocationMetadataVersion;
+    header.strings_count = static_cast<std::uint32_t>(g_strings.size());
+    header.sites_count = static_cast<std::uint32_t>(g_static_sites.size());
+    header.used = static_cast<std::uint32_t>(required);
+    header.allocations = {g_strings_next, g_statics_next, g_static_sites_begin};
+    std::size_t at = sizeof(header);
+    for (const auto& [text, address] : g_strings) {
+        const StringMetadata item{address, static_cast<std::uint32_t>(text.size())};
+        if (at + sizeof(item) + text.size() > capacity) {
+            return -1;
+        }
+        std::memcpy(bytes + at, &item, sizeof(item));
+        at += sizeof(item);
+        std::memcpy(bytes + at, text.data(), text.size());
+        at += text.size();
+    }
+    for (const auto& [id, site] : g_static_sites) {
+        const SiteMetadata item{id, site.address, site.size};
+        if (at + sizeof(item) > capacity) {
+            return -1;
+        }
+        std::memcpy(bytes + at, &item, sizeof(item));
+        at += sizeof(item);
+    }
+    header.used = static_cast<std::uint32_t>(at);
+    std::memcpy(bytes, &header, sizeof(header));
+    *used = at;
+    return 0;
+}
+
+int openrac_guest_snapshot_metadata_load(
+    const void* input, size_t size, const openrac_guest_allocation_state* expected
+) {
+    if (input == nullptr || expected == nullptr || size < sizeof(AllocationMetadataHeader)
+        || size > kAllocationMetadataCapacity) {
+        return -1;
+    }
+    AllocationMetadataHeader header{};
+    std::memcpy(&header, input, sizeof(header));
+    if (std::memcmp(header.magic, kAllocationMetadataMagic, sizeof(kAllocationMetadataMagic)) != 0
+        || header.version != kAllocationMetadataVersion || header.used != size
+        || header.allocations.strings_end < GUEST_STRINGS
+        || header.allocations.strings_end > GUEST_STRINGS + GUEST_STRINGS_SIZE
+        || header.allocations.statics_end > GUEST_STATICS + GUEST_STATICS_SIZE
+        || header.allocations.statics_end < GUEST_STATICS
+        || header.allocations.statics_end > header.allocations.static_sites_begin
+        || header.allocations.static_sites_begin < kStaticSitesBegin
+        || header.allocations.static_sites_begin > kStaticSitesEnd
+        || std::memcmp(&header.allocations, expected, sizeof(*expected)) != 0) {
+        return -1;
+    }
+    std::unordered_map<std::string, gaddr> strings;
+    std::map<std::uint64_t, StaticSite> sites;
+    const auto* bytes = static_cast<const std::uint8_t*>(input);
+    std::size_t at = sizeof(header);
+    for (std::uint32_t i = 0; i < header.strings_count; ++i) {
+        if (at + sizeof(StringMetadata) > size) {
+            return -1;
+        }
+        StringMetadata item{};
+        std::memcpy(&item, bytes + at, sizeof(item));
+        at += sizeof(item);
+        if (item.size == 0 || item.address < GUEST_STRINGS
+            || item.size > GUEST_STRINGS + GUEST_STRINGS_SIZE - item.address
+            || item.address + item.size > header.allocations.strings_end || at + item.size > size) {
+            return -1;
+        }
+        std::string text(reinterpret_cast<const char*>(bytes + at), item.size);
+        at += item.size;
+        if (!strings.emplace(std::move(text), item.address).second) {
+            return -1;
+        }
+    }
+    for (std::uint32_t i = 0; i < header.sites_count; ++i) {
+        if (at + sizeof(SiteMetadata) > size) {
+            return -1;
+        }
+        SiteMetadata item{};
+        std::memcpy(&item, bytes + at, sizeof(item));
+        at += sizeof(item);
+        if (item.id == 0 || item.size == 0 || item.address < header.allocations.static_sites_begin
+            || item.address > kStaticSitesEnd || item.size > kStaticSitesEnd - item.address
+            || item.address + item.size > kStaticSitesEnd
+            || !sites.emplace(item.id, StaticSite{item.address, item.size}).second) {
+            return -1;
+        }
+    }
+    if (at != size) {
+        return -1;
+    }
+    if (sites.size() != header.sites_count || strings.size() != header.strings_count) {
+        return -1;
+    }
+    std::vector<std::pair<gaddr, gaddr>> site_ranges;
+    site_ranges.reserve(sites.size());
+    for (const auto& [id, site] : sites) {
+        (void)id;
+        site_ranges.emplace_back(site.address, site.address + site.size);
+    }
+    std::sort(site_ranges.begin(), site_ranges.end());
+    for (std::size_t i = 1; i < site_ranges.size(); ++i) {
+        if (site_ranges[i - 1].second > site_ranges[i].first) {
+            return -1;
+        }
+    }
+    std::vector<std::pair<gaddr, gaddr>> string_ranges;
+    string_ranges.reserve(strings.size());
+    for (const auto& [text, address] : strings) {
+        string_ranges.emplace_back(address, address + static_cast<gaddr>(text.size()));
+    }
+    std::sort(string_ranges.begin(), string_ranges.end());
+    if (!string_ranges.empty() && string_ranges.back().second > header.allocations.strings_end) {
+        return -1;
+    }
+    for (std::size_t i = 1; i < string_ranges.size(); ++i) {
+        if (string_ranges[i - 1].second > string_ranges[i].first) {
+            return -1;
+        }
+    }
+    // A cold restore may replace a process that has already allocated more
+    // guest statics than the saved process had. The saved address map and
+    // allocator boundary are authoritative; cache generations below make
+    // translated call sites refresh their host-side cached addresses.
+    std::scoped_lock hold(g_allocations_lock);
+    g_strings = std::move(strings);
+    g_static_sites = std::move(sites);
+    g_strings_next = header.allocations.strings_end;
+    g_statics_next = header.allocations.statics_end;
+    g_static_sites_begin = header.allocations.static_sites_begin;
+    g_allocation_generation.fetch_add(1, std::memory_order_relaxed);
+    g_cache_generation.fetch_add(1, std::memory_order_relaxed);
+    return 0;
 }
 
 void openrac_guest_register(int overlay, const openrac_fn_entry* entries, size_t count) {
@@ -691,6 +941,35 @@ int openrac_guest_write_reach(const char* path, const char* game, long frames) {
         json_string(f, name.c_str());
         std::fprintf(f, ", \"kind\": \"missing\", \"calls\": %lu}", count);
     }
+    {
+        std::scoped_lock unknown(g_unknown_lock);
+        for (const auto& [address, calls] : g_unknown_calls) {
+            std::fputs(first ? "\n  {\"name\": " : ",\n  {\"name\": ", f);
+            first = false;
+            std::fprintf(
+                f, "\"0x%08X\", \"kind\": \"unknown-call\", \"calls\": %d}", address, calls
+            );
+        }
+    }
+    // Accesses to memory that is not there (OPENRAC_SOFT_FAULTS).
+    std::fputs("\n], \"faults\": [", f);
+    first = true;
+    for (unsigned i = 0;; ++i) {
+        const openrac::runtime::SoftFault* fault = openrac::runtime::soft_fault_at(i);
+        if (fault == nullptr) {
+            break;
+        }
+        std::fprintf(
+            f,
+            "%s\n  {\"page\": \"0x%08X\", \"write\": %s, \"name\": ",
+            first ? "" : ",",
+            fault->page,
+            fault->write ? "true" : "false"
+        );
+        first = false;
+        json_string(f, fault->function != nullptr ? fault->function : "(unnamed)");
+        std::fprintf(f, ", \"hits\": %lu}", fault->hits);
+    }
     std::fputs("\n]}\n", f);
     const bool ok = std::fclose(f) == 0;
     if (!ok) {
@@ -789,6 +1068,11 @@ struct LevelMap {
 };
 
 gaddr g_relocate_gp = 0;
+bool g_pair_neighbours = false;  // openrac_guest_set_level_range
+// A global formed by an offset from a whole address (a field, a loop's end) gives way to a pair
+// formed from the global's own lui and low half when the two disagree (openrac_guest_set_level_range,
+// Going Commando only: rac1's pairs stay as they were).
+bool g_direct_pairs_win = false;
 std::vector<std::uint8_t> g_exe_code;
 gaddr g_exe_base = 0;
 std::map<int, LevelMap> g_level_maps;
@@ -827,16 +1111,39 @@ std::uint32_t exe_reader(int, gaddr at) {
     return exe_word(at);
 }
 
-void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::uint32_t size,
-               gaddr low, gaddr high, std::map<gaddr, std::int32_t>& out, std::uint32_t own = UINT32_MAX) {
+// `derived` (Going Commando, g_direct_pairs_win): the addresses whose pair in `out` came from an
+// offset added to a whole address in a register (the high half and the low half already joined)
+// rather than from the address's own lui and low half or $gp. Such a pair is right for a field, but
+// not for an address past the end of a block, which another program can follow with other data:
+// Going Commando's executable has the 300 particle records at 0x0022C9A0 and the debris slots right
+// after them at 0x00232760, where Oozla has its fade list (0x002502C0) between the two; the
+// particle loop's end pointer (func_00329488, base + 0x5DC0) paired 0x00232760 with the fade list,
+// so the executable's debris C (func_0032ABC0, the nanotech level-up's sparks) wrote its slots
+// over the fade list, whose update then took a spark's floats for a moby and a callback.
+// A pair formed from the address's own halves replaces a derived one that disagrees.
+using Derived = std::unordered_set<gaddr>;
+
+void pair_code(
+    WordReader reference,
+    int program,
+    gaddr exe,
+    gaddr level,
+    std::uint32_t size,
+    gaddr low,
+    gaddr high,
+    std::map<gaddr, std::int32_t>& out,
+    std::uint32_t own = UINT32_MAX,
+    Derived* derived = nullptr
+) {
     std::uint32_t ve[32] = {}, vl[32] = {};
     bool known[32] = {};
+    bool whole[32] = {};            // a known value is a whole address (an add completed it)
     std::uint32_t origin[32] = {};  // where a known value's high half was formed
     // A branch's target gets the registers as the branch leaves them (after its delay slot), so a
     // value formed in a delay slot (lui in a branch-likely's slot, the addiu at the target) pairs.
     struct Registers {
         std::uint32_t ve[32], vl[32], origin[32];
-        bool known[32];
+        bool known[32], whole[32];
     };
     std::map<std::uint32_t, Registers> at_target;
     std::uint32_t pending_from = 0, pending_target = 0;
@@ -864,6 +1171,7 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
             std::memcpy(r.vl, vl, sizeof(vl));
             std::memcpy(r.origin, origin, sizeof(origin));
             std::memcpy(r.known, known, sizeof(known));
+            std::memcpy(r.whole, whole, sizeof(whole));
             pending = false;
         }
         if (auto t = at_target.find(i); t != at_target.end()) {
@@ -873,6 +1181,7 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
                     vl[r] = t->second.vl[r];
                     origin[r] = t->second.origin[r];
                     known[r] = true;
+                    whole[r] = t->second.whole[r];
                 }
             }
         }
@@ -900,6 +1209,7 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
             vl[rt] = (wl & 0xFFFF) << 16;
             origin[rt] = i;
             known[rt] = true;
+            whole[rt] = false;
             continue;
         }
         const bool load = (op >= 0x20 && op <= 0x27) || op == 0x37 || op == 0x1E;
@@ -907,7 +1217,7 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
         const bool fpu = op == 0x31 || op == 0x39;  // lwc1, swc1: an address, no GPR written
         const bool add = op == 0x09 || op == 0x19 || op == 0x0D;  // addiu, daddiu, ori
         std::uint32_t ae = 0, al = 0, formed = i;
-        bool have = false;
+        bool have = false, offset = false;
         if ((load || store || fpu || add) && rs == 28 && g_relocate_gp != 0) {
             ae = g_relocate_gp + se;
             al = g_relocate_gp + sl;
@@ -917,6 +1227,7 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
             al = op == 0x0D ? (vl[rs] | (wl & 0xFFFF)) : vl[rs] + sl;
             formed = origin[rs];
             have = true;
+            offset = whole[rs];
         }
         // What the instruction writes is no longer a known value (unless it is the address just
         // formed by addiu/ori); a call leaves only the callee-saved registers.
@@ -927,6 +1238,7 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
             vl[rd] = vl[rs];
             origin[rd] = origin[rs];
             known[rd] = known[rs];
+            whole[rd] = whole[rs];
         } else if (op == 0x00 || op == 0x1C) {
             known[rd] = false;
             if (op == 0x00 && funct == 0x09) {  // jalr: as jal
@@ -938,6 +1250,7 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
             call_slot = i + 4;
         } else if (add) {
             known[rt] = have;
+            whole[rt] = have;
             if (have) {
                 ve[rt] = ae;
                 vl[rt] = al;
@@ -950,7 +1263,27 @@ void pair_code(WordReader reference, int program, gaddr exe, gaddr level, std::u
             continue;
         }
         if (ae - low < high - low) {
-            out.emplace(ae, static_cast<std::int32_t>(al - ae));
+            const auto delta = static_cast<std::int32_t>(al - ae);
+            const auto [pair, added] = out.emplace(ae, delta);
+            if (derived != nullptr) {
+                if (added && offset) {
+                    derived->insert(ae);
+                } else if (!added && !offset && pair->second != delta && derived->erase(ae) != 0) {
+                    pair->second = delta;  // its own halves: the derived pair gives way
+                    continue;
+                }
+            }
+            // OPENRAC_TRACE_RELOCATION: two functions the catalogue calls copies disagree on a global.
+            if (!added && pair->second != delta
+                && openrac::env::flag(openrac::env::Var::TraceRelocation)) {
+                warn(
+                    "{:#x} pairs to {:#x} and to {:#x} (at {:#x})",
+                    ae,
+                    ae + pair->second,
+                    al,
+                    level + i
+                );
+            }
         }
     }
 }
@@ -996,6 +1329,72 @@ std::pair<std::uint32_t, std::uint32_t> piece_bytes(WordReader reader, int progr
     return {size, own};
 }
 
+// An instruction with its address fields cleared (the immediates of lui, addiu, ori, the loads and
+// stores; the targets of j and jal), for comparing the same code in two programs.
+std::uint32_t without_addresses(std::uint32_t w) {
+    const std::uint32_t op = w >> 26;
+    if (op == 0x0F || op == 0x09 || op == 0x0D || op == 0x19 || (op >= 0x20 && op <= 0x2F)
+        || op == 0x31 || op == 0x39 || op == 0x37 || op == 0x3F || op == 0x1E || op == 0x1F) {
+        return w & 0xFFFF0000u;
+    }
+    if (op == 0x02 || op == 0x03) {
+        return w & 0xFC000000u;
+    }
+    return w;
+}
+
+// A function of the reference the catalogue has no copy of, where it sits the same distance after a
+// neighbour that has one and its instructions, addresses aside, are that neighbour's copy's next ones:
+// programs are linked from the same objects, so that is its copy. Going Commando's two callback lists
+// (func_0027CE18 and its twin) are in every level and in no row of the catalogue, and search_pair
+// finds each twice. Without this their tables stayed at the executable's address, over level data.
+void pair_neighbours(
+    WordReader reference,
+    int program,
+    const Functions& own,
+    const std::unordered_map<openrac_host_fn, std::vector<gaddr>>& copies,
+    gaddr low,
+    gaddr high,
+    bool skip_same_place,
+    std::unordered_map<gaddr, gaddr>& code,
+    std::map<gaddr, std::int32_t>& out,
+    Derived* derived
+) {
+    gaddr from = 0, to = 0;
+    for (std::size_t k = 0; k < own.size(); ++k) {
+        const gaddr at = own[k].first;
+        if (auto copy = copies.find(own[k].second); copy != copies.end()) {
+            if (copy->second.size() == 1) {
+                from = at;
+                to = copy->second[0];
+            }
+            continue;
+        }
+        if (from == 0) {
+            continue;
+        }
+        const std::uint32_t size = piece_size(own, k);
+        const gaddr place = to + (at - from);
+        if (size < 16 || size >= 0x8000 || !openrac::runtime::Memory::get().mapped(place, size)) {
+            continue;
+        }
+        bool same = true;
+        for (std::uint32_t i = 0; i < size && same; i += 4) {
+            same = without_addresses(reference(program, at + i))
+                   == without_addresses(game_word(place + i));
+        }
+        if (!same) {
+            continue;
+        }
+        if (!(skip_same_place && place == at)) {
+            code.emplace(at, place);
+        }
+        pair_code(reference, program, at, place, size, low, high, out, UINT32_MAX, derived);
+        from = at;
+        to = place;
+    }
+}
+
 // Pairs each function of a reference program (`own`: its places and host functions, in address
 // order) with its copies in the loaded program: code addresses into `code`, globals into `out`
 // (the first pair of an address kept). A function the catalogue folded has several copies in one
@@ -1013,6 +1412,8 @@ void pair_programs(WordReader reference, int program, const Functions& own,
                    std::unordered_map<openrac_host_fn, std::vector<gaddr>> copies, gaddr low, gaddr high,
                    bool skip_same_place, std::unordered_map<gaddr, gaddr>& code,
                    std::map<gaddr, std::int32_t>& out) {
+    Derived derived_pairs;
+    Derived* derived = g_direct_pairs_win ? &derived_pairs : nullptr;
     std::unordered_map<openrac_host_fn, std::size_t> own_count, own_rank;
     for (const auto& [address, fn] : own) {
         ++own_count[fn];
@@ -1027,14 +1428,23 @@ void pair_programs(WordReader reference, int program, const Functions& own,
             continue;
         }
         const std::vector<gaddr>& places = copy->second;
-        const auto [size, first] = piece_bytes(reference, program, own, k);
+        auto [size, first] = piece_bytes(reference, program, own, k);
+        // A piece with no copy here pairs nothing, so its bytes are the function's before it (rac2:
+        // a level's function its C names by address, listed in the middle of an executable one).
+        for (std::size_t j = k + 1; j < own.size() && first < size; ++j) {
+            const auto next = copies.find(own[j].second);
+            if (next != copies.end() && !next->second.empty()) {
+                break;
+            }
+            first = j + 1 < own.size() ? own[j + 1].first - own[k].first : size;
+        }
         const gaddr at = own[k].first;
         if (places.size() == 1 || places.size() == own_count[own[k].second]) {
             const gaddr place = places.size() == 1 ? places[0] : places[rank];
             if (!(skip_same_place && place == at)) {
                 code.emplace(at, place);
             }
-            pair_code(reference, program, at, place, size, low, high, out, first);
+            pair_code(reference, program, at, place, size, low, high, out, first, derived);
             continue;
         }
         if (!(skip_same_place && places[0] == at)) {
@@ -1053,6 +1463,11 @@ void pair_programs(WordReader reference, int program, const Functions& own,
         for (const auto& pair : agreed) {
             out.emplace(pair);
         }
+    }
+    if (g_pair_neighbours) {
+        pair_neighbours(
+            reference, program, own, copies, low, high, skip_same_place, code, out, derived
+        );
     }
 }
 
@@ -1102,7 +1517,8 @@ struct Chunk {
 void (*g_level_program_source)(int level) = nullptr;
 std::map<int, std::vector<Chunk>> g_level_programs;
 std::map<std::pair<int, int>, LevelMap> g_level_pair_maps;  // (from, loaded)
-constexpr gaddr kLevelLow = 0x0015F000u, kLevelHigh = 0x00400000u;
+// The addresses a level's program can name (openrac_guest_set_level_range).
+gaddr g_level_low = 0x0015F000u, g_level_high = 0x00400000u;
 
 const std::vector<Chunk>& level_program(int level) {
     auto found = g_level_programs.find(level);
@@ -1150,7 +1566,17 @@ LevelMap& level_pair_map(int from, int loaded) {
         copies[entry.fn].push_back(address);
     }
     std::map<gaddr, std::int32_t> pairs;
-    pair_programs(level_reader, from, own, std::move(copies), kLevelLow, kLevelHigh, false, map.code, pairs);
+    pair_programs(
+        level_reader,
+        from,
+        own,
+        std::move(copies),
+        g_level_low,
+        g_level_high,
+        false,
+        map.code,
+        pairs
+    );
     map.data.assign(pairs.begin(), pairs.end());
     info("level program {} for level {}'s functions: {} functions and {} global addresses relocated",
          loaded, from, map.code.size(), map.data.size());
@@ -1182,20 +1608,6 @@ gaddr relocate_by(const LevelMap& map, gaddr address) {
     }
     --it;
     return address + static_cast<gaddr>(it->second);
-}
-
-// An instruction with its address fields cleared (the immediates of lui, addiu, ori, the loads and
-// stores; the targets of j and jal), for comparing the same code in two programs.
-std::uint32_t without_addresses(std::uint32_t w) {
-    const std::uint32_t op = w >> 26;
-    if (op == 0x0F || op == 0x09 || op == 0x0D || op == 0x19 || (op >= 0x20 && op <= 0x2F) || op == 0x31
-        || op == 0x39 || op == 0x37 || op == 0x3F || op == 0x1E || op == 0x1F) {
-        return w & 0xFFFF0000u;
-    }
-    if (op == 0x02 || op == 0x03) {
-        return w & 0xFC000000u;
-    }
-    return w;
 }
 
 // An executable address no paired function reaches (code the catalogue does not list in the level,
@@ -1367,9 +1779,47 @@ static gaddr relocate_code(gaddr address) {
     return address;
 }
 
+void openrac_guest_set_level_range(gaddr low, gaddr high) {
+    forget_answers();
+    g_level_low = low;
+    g_level_high = high;
+    g_pair_neighbours = true;
+    g_direct_pairs_win = true;
+}
+
 void openrac_guest_set_level_programs(void (*load)(int level)) {
     forget_answers();
     g_level_program_source = load;
+}
+
+int openrac_guest_prepare_level_program(int level) {
+    return level_program(level).empty() ? 0 : 1;
+}
+
+int openrac_guest_restore_level_program(int level) {
+    if (level < 0) {
+        return -1;
+    }
+    const auto& chunks = level_program(level);
+    if (chunks.empty()) {
+        return -1;
+    }
+    std::scoped_lock hold(g_relocate_lock);
+    for (const Chunk& chunk : chunks) {
+        if (!openrac::runtime::Memory::get().mapped(chunk.base, chunk.bytes.size())) {
+            return -1;
+        }
+        std::memcpy(G(chunk.base), chunk.bytes.data(), chunk.bytes.size());
+    }
+    g_overlay = level;
+    return 0;
+}
+
+void openrac_guest_clear_level_programs(void) {
+    std::scoped_lock hold(g_relocate_lock);
+    g_level_programs.clear();
+    g_level_pair_maps.clear();
+    forget_answers();
 }
 
 void openrac_guest_add_level_program(int level, gaddr base, const uint8_t* bytes, uint32_t size) {
@@ -1379,7 +1829,8 @@ void openrac_guest_add_level_program(int level, gaddr base, const uint8_t* bytes
 
 gaddr openrac_relocate_level_data(int from, gaddr address) {
     const int overlay = current_overlay();
-    if (overlay == from || overlay == OPENRAC_OVERLAY_EXE || address - kLevelLow >= kLevelHigh - kLevelLow) {
+    if (overlay == from || overlay == OPENRAC_OVERLAY_EXE
+        || address - g_level_low >= g_level_high - g_level_low) {
         return address;
     }
     thread_local AnswerCache<int, int, gaddr> answers;

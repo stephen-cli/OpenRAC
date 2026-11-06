@@ -15,6 +15,7 @@
 #include <system_error>
 
 #include "common/env.h"
+#include "common/json.h"
 #include "common/log.h"
 #include "openrac/game_host.h"
 
@@ -27,13 +28,16 @@ namespace {
     log::error("{}", why);
     log::error(
         "usage: {} --data <install>/active/{}/data [--cards DIR] [--frames N] [--stop-on-missing] "
-        "[--level N] [--skip-movies] [--mods DIR] [--map] [--settings FILE] "
+        "[--level N] [--skip-movies] [--mods DIR] [--map] [--ship-map] [--destinations] "
+        "[--check-levels] [--settings FILE] [--controls DIR] "
         "[--plugins FILE] [--probes DIR] [--no-mods] [--debug-overlay] [--debug-dump FILE]",
         program_name(),
         openrac_game.game
     );
     std::exit(64);
 }
+
+}  // namespace
 
 // OpenRAC's folder in the player's data home, as the launcher finds it
 // (launcher/core/src/saves.rs, data_home).
@@ -66,6 +70,8 @@ fs::path data_home() {
 #endif
     return base;
 }
+
+namespace {
 
 #if defined(_WIN32)
 // Moves the cards and settings of the folder Windows used before %LOCALAPPDATA% into `base`, the
@@ -191,6 +197,8 @@ Options parse(int argc, char** argv) {
             o.expect_map = true;
         } else if (a == "--settings") {
             o.settings = value();
+        } else if (a == "--controls") {
+            o.controls = value();
         } else if (a == "--plugins") {
             o.plugins = value();
         } else if (a == "--probes") {
@@ -213,6 +221,10 @@ Options parse(int argc, char** argv) {
             o.debug_dump = value();
         } else if (a == "--debug-overlay") {
             o.debug_overlay = true;
+        } else if (a == "--ship-map") {
+            o.ship_map = true;
+        } else if (a == "--destinations") {
+            o.expect_destinations = true;
         } else if (a == "--check-levels") {
             o.check_levels = true;
         } else if (a == "--help" || a == "-h") {
@@ -248,6 +260,17 @@ Options parse(int argc, char** argv) {
         o.settings = default_settings();
     }
 
+    // The controls are the player's, not a version's: every version of a game reads the same
+    // folder (controls_store.h).
+    if (o.controls.empty()) {
+        o.controls = data_home() / "controls";
+    }
+
+    // The mods' own files, a folder per mod's id, beside the cards (openrac_api.data_dir).
+    if (o.mod_data.empty()) {
+        o.mod_data = data_home() / "mod-data";
+    }
+
     if (o.plugins.empty()) {
         o.plugins = o.data / "plugins" / "plugins.json";
     }
@@ -270,6 +293,42 @@ Options parse(int argc, char** argv) {
 
     if (o.expect_map && !o.custom_map) {
         usage("--map requires an active map pack in --mods (with mods enabled)");
+    }
+    if (!o.no_mods && !o.mods.empty() && fs::exists(o.mods / "destinations.json")) {
+        if (o.custom_map) {
+            usage("Standalone maps cannot be mixed with ship destinations");
+        }
+        std::ifstream file(o.mods / "destinations.json", std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(file)), {});
+        std::string error;
+        if (!file
+            || !parse_destinations(
+                text, openrac_game.game, game_version(), o.destinations, error
+            )) {
+            usage(error.empty() ? "Cannot read destinations.json" : error);
+        }
+        for (const auto& map : o.destinations) {
+            if (!fs::is_regular_file(o.mods / "destinations" / map.id / "patches.tsv")) {
+                usage("Destination mount is missing: " + map.id + "; prepare the mods again");
+            }
+        }
+    }
+    if (o.expect_destinations && o.destinations.empty()) {
+        usage("--destinations requires prepared destination packs with mods enabled");
+    }
+    if (o.ship_map
+        && (!o.custom_map || game_version() != "pal"
+            || std::string_view(openrac_game.game) != "rac1")) {
+        usage("--ship-map requires a RAC1 PAL map pack in --mods");
+    }
+    if (o.ship_map) {
+        json::Value stack;
+        std::string error;
+        if (!json::parse_file((o.mods / "stack.json").string(), stack, error)
+            || !stack["layers"].is_array() || stack["layers"].items().size() != 1
+            || stack["layers"].items()[0]["id"].string() != o.custom_map->id) {
+            usage("--ship-map needs a separate stack containing only the selected map pack");
+        }
     }
 
     return o;

@@ -9,6 +9,12 @@
  * empty string for an id it does not have). The port's own ids, which the table never has, are
  * answered with the port's strings (libraries.tsv, port = wrap). */
 RAC1_TYPE_func_001FE540_result func_001FE540(int id) {
+#ifdef RAC1_DESTINATION_TEXT
+    const gaddr destination = RAC1_DESTINATION_TEXT(id);
+    if (destination != 0) {
+        return (RAC1_TYPE_func_001FE540_result)destination;
+    }
+#endif
     const gaddr own = openrac_game_text(id);
     return own != 0 ? (RAC1_TYPE_func_001FE540_result)own : func_001FE540__game(id);
 }
@@ -65,14 +71,15 @@ void func_0022DBE8(void) {
 }
 
 /* memcard_RestoreGame: a save's state, the options with it; the language and the Sound page stay
- * as they were (the caller gives the mixer the Sound page's values right after). */
+ * as they were (the caller gives the mixer the Sound page's values right after). The mods' hook
+ * point (rac1.save.restore) sits under this, as func_00209CE8__hooked. */
 void func_00209CE8(RAC1_TYPE_func_00209CE8_save save) {
     const int language = GREF(int, LANGUAGE);
     int sound[SOUND_WORDS];
     for (unsigned i = 0; i < SOUND_WORDS; ++i) {
         sound[i] = GREF(int, SOUND_WORD(i));
     }
-    func_00209CE8__game(save);
+    func_00209CE8__hooked(save);
     GREF(int, LANGUAGE) = language;
     for (unsigned i = 0; i < SOUND_WORDS; ++i) {
         GREF(int, SOUND_WORD(i)) = sound[i];
@@ -81,7 +88,8 @@ void func_00209CE8(RAC1_TYPE_func_00209CE8_save save) {
 
 /* Each frame: the options as the player left them, for the next run. The language once InitOnce
  * has set it (it reads what the port remembered), the Sound page once it has the remembered
- * values. */
+ * values. The language is also the console's from then on: Quit Game starts the boot program
+ * again, whose InitOnce reads the console's language once more, and finds the player's. */
 void rac1_options_frame(void) {
     static int language_set;
     const int language = console_language(GREF(int, LANGUAGE));
@@ -92,6 +100,7 @@ void rac1_options_frame(void) {
     /* A language the console has no code for is not remembered. */
     if (language_set && language > 0) {
         openrac_game_set_option("game_language", language);
+        openrac_game_language = language;
     }
     /* Before the sound's start the page holds the game's defaults, not the player's. */
     if (sound_put) {

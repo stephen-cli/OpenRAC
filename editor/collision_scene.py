@@ -361,19 +361,27 @@ def scene_collision(project: Path, level_dir: Path, text: str) -> dict | None:
     """What the scene holds of the collision: None for a project made before this layout, or one
     whose collision is as exported; else {"triangles": {(key, kind)}, "heroes": {name: [tri]},
     "added_heroes": [[tri]], "problems": [...]}, in model units."""
+    import static_assets
+    imported = static_assets.collision_triangles(project, text)
     manifest_file = level_dir / "collision" / "collision.json"
     if not manifest_file.is_file():
+        if imported:
+            raise FormatError('Static collisions need an extracted project with collision metadata')
         return None
     manifest = json.loads(manifest_file.read_text())
     if manifest.get("format") != FORMAT:
+        if imported:
+            raise FormatError('Re-extract the collision metadata before packing static imports')
         return None
     _ext, sub, nodes = read_scene(text)
     layer = next((n for n in nodes if n["name"] == "Collision" and n["parent"] == "Game"), None)
     if layer is None or "metadata/rc1_collision" not in layer["properties"]:
+        if imported:
+            raise FormatError('Keep Game/Collision when packing solid static imports')
         return None
     ours = [n for n in nodes if n["parent"] in PARENTS]
     edits = layer_edits(layer)
-    if not any(edits.values()) and unchanged(project, level_dir, ours, manifest):
+    if not imported and not any(edits.values()) and unchanged(project, level_dir, ours, manifest):
         return None
     result = {"triangles": set(), "heroes": {}, "added_heroes": [], "problems": [], "dropped": 0}
     for node in ours:
@@ -406,6 +414,7 @@ def scene_collision(project: Path, level_dir: Path, text: str) -> dict | None:
         else:
             result["triangles"].update((col.canonical(q), kind) for q, kind in triangles)
     apply_edits(result, edits)
+    result["triangles"].update(imported)
     result["manifest"] = manifest
     return result
 
@@ -453,11 +462,15 @@ def pack_block(block: bytes, scene: dict) -> tuple[bytes | None, list[str], list
             if not tris:
                 changes.append(f"collision: hero wall {n} emptied, so deleted")
                 continue
-            heroes += [col.hero_group(tris[i:i + 255]) for i in range(0, len(tris), 255)]
-            changes.append(f"collision: hero wall {n} edited")
+            groups = col.split_hero_groups(tris)
+            heroes += groups
+            changes.append(f"collision: hero wall {n} edited"
+                           + (f" (split into {len(groups)} game groups)" if len(groups) > 1 else ""))
         for tris in scene["added_heroes"]:
-            heroes += [col.hero_group(tris[i:i + 255]) for i in range(0, len(tris), 255)]
-            changes.append(f"collision: a hero wall added ({len(tris)} triangles)")
+            groups = col.split_hero_groups(tris)
+            heroes += groups
+            changes.append(f"collision: a hero wall added ({len(tris)} triangles)"
+                           + (f" (split into {len(groups)} game groups)" if len(groups) > 1 else ""))
         if len(heroes) != len(model.heroes) or any(a is not b for a, b in zip(heroes, model.heroes)):
             model.heroes = heroes
             edited = True
@@ -467,6 +480,11 @@ def pack_block(block: bytes, scene: dict) -> tuple[bytes | None, list[str], list
         return None, changes, problems
     col.validate(model)
     return col.write(model), changes, problems
+
+
+def requires_expanded_collision(block: bytes) -> bool:
+    """Whether a packed collision block needs expanded-RAM runtime support."""
+    return col.requires_expanded_collision(block)
 
 
 def tile_name(key: tuple) -> str:
@@ -524,3 +542,27 @@ def level_data_patches(data: bytes, core: bytes, index: bytes, original_index: b
         first, last = start // SECTOR, -(-end // SECTOR)
         out.append((first * SECTOR, bytes(new[first * SECTOR:last * SECTOR])))
     return out
+
+
+def expanded_level_data(data: bytes, core: bytes, index: bytes, original_index: bytes, compress,
+                        force: bool = False) -> bytes | None:
+    """Build a virtual level-data container when the compressed core outgrows its slot or force is set.
+
+    Existing sections keep their offsets. The replacement core stream is appended on a 0x40
+    boundary and the container's core range is redirected to it. None means the original slot fits.
+    """
+    index_at, index_size = struct.unpack_from("<ii", data, 2 * 8)
+    core_at, core_size = struct.unpack_from("<ii", data, 10 * 8)
+    stream = compress(core, data[core_at:core_at + 16])
+    if len(stream) <= core_size and not force:
+        return None
+    if len(index) > index_size:
+        raise FormatError("the expanded core index no longer fits its level-data section")
+    out = bytearray(data)
+    out[index_at:index_at + index_size] = index + bytes(index_size - len(index))
+    out[core_at:core_at + core_size] = bytes(core_size)
+    out += bytes(-len(out) % 0x40)
+    new_core_at = len(out)
+    out += stream
+    struct.pack_into("<ii", out, 10 * 8, new_core_at, len(stream))
+    return bytes(out)

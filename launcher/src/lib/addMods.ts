@@ -1,9 +1,10 @@
 // Adding what the player chose or dropped on the Mods tab: a native mod goes to the game's mods
-// (core/src/plugins.rs, plugins_install), a data pack to its overrides packs (editor/overrides.py,
+// (src-tauri/src/lib.rs, plugins_install), a data pack to its overrides packs (editor/overrides.py,
 // the version's overrides-add action). The player never has to know which is which.
 import { api, type VersionView } from "./api";
 import { jobs, runChain } from "./app.svelte";
 import { added, withName } from "./modsText";
+import { toolFailure } from "./toolErrors";
 
 export interface Added {
   /** What happened, in a sentence. */
@@ -15,10 +16,11 @@ export interface Added {
   pack: boolean;
 }
 
-/** The last line the add printed. */
-function lastLine(): string {
+/** Why the last add stopped, in a player's words (lib/toolErrors.ts): never the tool's own. */
+function whyStopped(): string {
   const job = jobs.list.filter((j) => j.scope.kind === "version" && j.actionId === "overrides-add").at(-1);
-  return job?.lines.map((l) => l.line).findLast((l) => l.trim() !== "") ?? "";
+  const failure = toolFailure(job?.lines ?? []);
+  return failure.line.charAt(0).toLowerCase() + failure.line.slice(1);
 }
 
 const nameOf = (path: string) => path.split(/[\\/]/).at(-1) ?? path;
@@ -60,7 +62,7 @@ export async function addMods(v: VersionView, paths: string[]): Promise<Added> {
     }
     const ok = await runChain({ kind: "version", key: v.key }, [adder], { path });
     if (!ok) {
-      const why = lastLine().replace(/^overrides: /, "");
+      const why = whyStopped();
       return { ...result, text: added.packFailed(name, why), failed: true };
     }
     result.pack = true;

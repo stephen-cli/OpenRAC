@@ -16,6 +16,16 @@
 #include "openrac/game_lib.h"
 #include "openrac/guest.h"
 #include "openrac/host_env.h"
+#include "openrac/sound_engine.h"
+
+/* Optional opaque payload callbacks for cold snapshots, implemented by this game's kernel shim. */
+size_t openrac_game_snapshot_extra_size(void);
+int openrac_game_snapshot_extra_save(void* out, size_t capacity);
+int openrac_game_snapshot_extra_load(const void* in, size_t size);
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
 
 #define MAX_HANDLERS 8
 
@@ -264,12 +274,97 @@ unsigned int openrac_lib_sceSifSetDma(gaddr transfers, int count) { /* sceSifSet
     return 1;
 }
 
+/* The IOP's memory from an address on, as sceSifSetDma left it, and how many bytes follow; NULL
+ * past its end. */
+const uint8_t* openrac_iop_bytes(uint32_t address, size_t* available) {
+    if (address >= IOP_BYTES) {
+        return NULL;
+    }
+    *available = IOP_BYTES - address;
+    return iop_memory + address;
+}
+
 /* Which RPC server each bound client is for, by client address. */
 #define RPC_CLIENTS 16
 static gaddr rpc_client[RPC_CLIENTS];
 static unsigned int rpc_server[RPC_CLIENTS];
 static unsigned int sif_bind_calls;
 static unsigned int sif_rpc_calls;
+
+/* Opaque snapshot payload for the state this replacement library keeps outside guest RAM. */
+typedef struct {
+    uint8_t magic[8];
+    uint32_t version;
+    handler intc[MAX_HANDLERS];
+    handler dmac[MAX_HANDLERS];
+    gaddr vsync_callback;
+    uint8_t iop_memory[IOP_BYTES];
+    gaddr rpc_client[RPC_CLIENTS];
+    unsigned int rpc_server[RPC_CLIENTS];
+    unsigned int sif_bind_calls;
+    unsigned int sif_rpc_calls;
+    uint8_t sound[OPENRAC_SOUND_SNAPSHOT_SIZE];
+} openrac_game_snapshot_extra;
+
+size_t openrac_game_snapshot_extra_size(void) {
+    return sizeof(openrac_game_snapshot_extra);
+}
+
+int openrac_game_snapshot_extra_save(void* out, size_t capacity) {
+    if (out == NULL || capacity != sizeof(openrac_game_snapshot_extra)) {
+        return -1;
+    }
+    openrac_game_snapshot_extra* state = calloc(1, sizeof(*state));
+    if (state == NULL) {
+        return -1;
+    }
+    memcpy(state->magic, "ORACXTRA", 8);
+    state->version = 1;
+    memcpy(state->intc, intc, sizeof(intc));
+    memcpy(state->dmac, dmac, sizeof(dmac));
+    state->vsync_callback = vsync_callback;
+    memcpy(state->iop_memory, iop_memory, sizeof(iop_memory));
+    memcpy(state->rpc_client, rpc_client, sizeof(rpc_client));
+    memcpy(state->rpc_server, rpc_server, sizeof(rpc_server));
+    state->sif_bind_calls = sif_bind_calls;
+    state->sif_rpc_calls = sif_rpc_calls;
+    if (openrac_sound_snapshot_save(state->sound, sizeof(state->sound)) != 0) {
+        free(state);
+        return -1;
+    }
+    memcpy(out, state, sizeof(*state));
+    free(state);
+    return 0;
+}
+
+int openrac_game_snapshot_extra_load(const void* in, size_t size) {
+    if (in == NULL || size != sizeof(openrac_game_snapshot_extra)) {
+        return -1;
+    }
+    openrac_game_snapshot_extra* state = malloc(sizeof(*state));
+    if (state == NULL) {
+        return -1;
+    }
+    memcpy(state, in, sizeof(*state));
+    if (memcmp(state->magic, "ORACXTRA", 8) != 0 || state->version != 1) {
+        free(state);
+        return -1;
+    }
+    if (openrac_sound_snapshot_load(state->sound, sizeof(state->sound)) != 0) {
+        free(state);
+        return -1;
+    }
+    memcpy(intc, state->intc, sizeof(intc));
+    memcpy(dmac, state->dmac, sizeof(dmac));
+    vsync_callback = state->vsync_callback;
+    memcpy(iop_memory, state->iop_memory, sizeof(iop_memory));
+    memcpy(rpc_client, state->rpc_client, sizeof(rpc_client));
+    memcpy(rpc_server, state->rpc_server, sizeof(rpc_server));
+    sif_bind_calls = state->sif_bind_calls;
+    sif_rpc_calls = state->sif_rpc_calls;
+    free(state);
+    return 0;
+}
 
 static int trace_sif(void) {
     const char* value = openrac_env_string("OPENRAC_TRACE_SIF");
@@ -547,10 +642,15 @@ int openrac_lib_SuspendThread(int id) {
 } /* SuspendThread */
 
 /* EndOfHeap (0x3E): the top of the area sbrk may grow into. The game's stack
- * is outside its RAM in the port (GUEST_STACK_TOP), so the heap may reach
- * the end of the 32 MB. */
+ * is outside its RAM in the port (GUEST_STACK_TOP), so the heap reaches the
+ * RAM boundary, except for RAC1's expanded target-table and collision-grid reservations. */
 gaddr openrac_lib_EndOfHeap(void) {
-    return GUEST_RAM + GUEST_RAM_SIZE;
+    uint32_t reserve = 0;
+    if (openrac_guest_ram_size > GUEST_RAM_SIZE && openrac_game.game != NULL
+        && strcmp(openrac_game.game, "rac1") == 0) {
+        reserve = OPENRAC_EXPANDED_RAC1_RESERVE;
+    }
+    return GUEST_RAM + openrac_guest_ram_size - reserve;
 } /* EndOfHeap */
 
 /* PollSema (0x45, and iPollSema): WaitSema without the wait: the semaphore's
@@ -606,7 +706,7 @@ void openrac_lib_GetOsdConfigParam2(gaddr config, int size, int offset) { /* Get
  * the start-up code sizes RAM and maps the TLB from it. The port's guest
  * memory is 32 MB and has no TLB. */
 int openrac_lib_GetMemorySize(void) {
-    return (int)GUEST_RAM_SIZE;
+    return (int)openrac_guest_ram_size;
 } /* GetMemorySize */
 
 int openrac_lib__InitTLB(void) {
@@ -641,8 +741,8 @@ gaddr openrac_lib_GetEntryAddress(int number) { /* GetEntryAddress */
 }
 
 int openrac_lib_Copy(gaddr dest, gaddr src, int size) { /* Copy */
-    if (size > 0 && dest < GUEST_RAM_SIZE && (uint32_t)size <= GUEST_RAM_SIZE - dest &&
-        src < GUEST_RAM_SIZE && (uint32_t)size <= GUEST_RAM_SIZE - src) {
+    if (size > 0 && dest < openrac_guest_ram_size && (uint32_t)size <= openrac_guest_ram_size - dest
+        && src < openrac_guest_ram_size && (uint32_t)size <= openrac_guest_ram_size - src) {
         memmove(G(dest), G(src), (size_t)size);
     }
     return 0;
@@ -865,3 +965,7 @@ void openrac_lib__ExecOSD(int argc, gaddr argv) {
     fprintf(stderr, "[game] ExecOSD\n");
     exit(0);
 } /* _ExecOSD */
+
+#if defined(__cplusplus)
+}
+#endif

@@ -79,18 +79,16 @@ GETENV_READERS = (
 # the table. When a package moves a file's reads, it removes the file's entry; an entry whose file
 # reads none any more is reported as stale, a warning, since other work removes reads meanwhile.
 GETENV_EXCEPTIONS = {
-    "port/game/rac1/host/boot.c": "P2-38 reads it through openrac/host_env.h",
-    "port/game/rac1/host/collision.c": "P2-38 reads it through openrac/host_env.h",
-    "port/game/rac1/host/hand.c": "P2-38 reads it through openrac/host_env.h",
-    "port/game/rac1/host/ui2d.c": "P2-38 reads it through openrac/host_env.h",
     "port/tests/vulkan_uniform_test.cpp": "a test that reads the switch to know what to expect",
 }
 
 
 # The files that may allocate raw memory, each with why it has to: a program that counts the heap
 # replaces operator new and delete, which cannot take their memory from the heap they count.
+# Allocation-rejection tests replace those same functions to fail any accidental heap use.
 ALLOCATION_EXCEPTIONS = {
     "port/tests/render_bench.cpp": "replaces operator new and delete to count a frame's allocations",
+    "port/tests/breadcrumbs_no_alloc_test.cpp": "replaces allocation functions to reject all heap use",
 }
 
 

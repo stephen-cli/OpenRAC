@@ -122,9 +122,9 @@ pub fn source(manifest: &str) -> UpdateSource {
 }
 
 /// The builds a launcher updates to, chosen on the Settings page: the repository's releases, or its
-/// development builds (the rolling pre-release `launcher-dev-<branch>` CI keeps current). A switch
-/// takes effect with the first build on the other channel newer than the one installed: neither
-/// Android nor a version number goes back.
+/// development builds (the rolling pre-release `launcher-dev-<branch>` CI keeps current). On its
+/// own channel a launcher only takes a newer build; on the other one it takes that channel's build
+/// whatever its version (`offered`), so a development build can go back to the older release.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(rename = "UpdateChannel")]
 #[serde(rename_all = "lowercase")]
@@ -133,9 +133,10 @@ pub enum Channel {
     Dev,
 }
 
-/// The branch whose builds the development channel follows for a launcher built from no branch
-/// (a release's): the repository's own.
-pub const DEV_BRANCH: &str = "master";
+/// The branch whose builds the development channel follows: OpenRAC's own launcher always (master
+/// is only updated by release PRs, so its builds are the releases'), a fork's when built from no
+/// branch (a release's).
+pub const DEV_BRANCH: &str = "develop";
 
 impl UpdateSource {
     /// The channel this source is: a release's tag (a branch's rolling one) or the latest release.
@@ -147,11 +148,18 @@ impl UpdateSource {
         }
     }
 
-    /// The same repository's `channel`: its latest release, or the development builds of the branch
-    /// this launcher was built from (of DEV_BRANCH when it was built from none). A source that is
-    /// not on GitHub has no other channel and stays as it is.
+    /// The same repository's `channel`: its latest release, or its development builds. OpenRAC's own
+    /// launcher's are always DEV_BRANCH's, so one built from another branch (master's, before
+    /// develop) moves over; a fork's are those of the branch it was built from (DEV_BRANCH when it
+    /// was built from none). A source that is not on GitHub has no other channel and stays as it is.
     pub fn on(&self, channel: Channel) -> UpdateSource {
-        if self.kind() == channel || !self.manifest.starts_with("https://github.com/") {
+        if !self.manifest.starts_with("https://github.com/") {
+            return self.clone();
+        }
+        if channel == Channel::Dev && !self.fork && self.channel.as_deref() != Some(dev_tag(DEV_BRANCH).as_str()) {
+            return self.on_branch(DEV_BRANCH);
+        }
+        if self.kind() == channel {
             return self.clone();
         }
         let repository = &self.repository;
@@ -177,6 +185,13 @@ impl UpdateSource {
     }
 }
 
+/// Whether a launcher on `current` is offered `latest`: a newer build on its own channel, any other
+/// build when the player chose the other channel (`switching`), so a development build goes back to
+/// the release it came after.
+pub fn offered(current: &str, latest: &str, switching: bool) -> bool {
+    is_newer(current, latest) || (switching && is_newer(latest, current))
+}
+
 /// The version updates are compared with: the package's, or for a build of a branch, whose
 /// package carries the release's plain version (Windows' MSI and RPM take no `-dev`), that version
 /// with the build's own `dev.<run>` (`OPENRAC_LAUNCHER_BUILD` when it was compiled).
@@ -187,9 +202,9 @@ pub fn effective_version(version: &str, build: Option<&str>) -> String {
     }
 }
 
-/// The release the manifest offers `platform`, when it is newer than `current`; an error when the
-/// manifest cannot be read.
-pub fn release_for(manifest: &str, platform: &str, current: &str) -> Result<Option<Release>, String> {
+/// The release the manifest offers `platform`, when it is newer than `current` (or, `switching`
+/// channel, any other version: [`offered`]); an error when the manifest cannot be read.
+pub fn release_for(manifest: &str, platform: &str, current: &str, switching: bool) -> Result<Option<Release>, String> {
     let manifest: Value = serde_json::from_str(manifest).map_err(|e| format!("the update manifest: {e}"))?;
     let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let version = text(&manifest, "version");
@@ -197,7 +212,7 @@ pub fn release_for(manifest: &str, platform: &str, current: &str) -> Result<Opti
         return Err("the update manifest names no version".into());
     }
     let Some(entry) = manifest.get("platforms").and_then(|p| p.get(platform)) else { return Ok(None) };
-    if !is_newer(current, &version) {
+    if !offered(current, &version, switching) {
         return Ok(None);
     }
     let (url, signature) = (text(entry, "url"), text(entry, "signature"));
@@ -251,12 +266,18 @@ mod tests {
         let release = source("https://github.com/OpenRAC/OpenRAC/releases/latest/download/latest.json");
         let branch = source("https://github.com/someone/OpenRAC/releases/download/launcher-dev-feature-x/latest.json");
         assert_eq!((release.kind(), branch.kind()), (Channel::Stable, Channel::Dev));
-        // Its own channel is itself; a release's development builds are the default branch's.
+        // Its own channel is itself; a release's development builds are develop's.
         assert_eq!(release.on(Channel::Stable), release);
         assert_eq!(
             release.on(Channel::Dev).manifest,
-            "https://github.com/OpenRAC/OpenRAC/releases/download/launcher-dev-master/latest.json"
+            "https://github.com/OpenRAC/OpenRAC/releases/download/launcher-dev-develop/latest.json"
         );
+        // OpenRAC's own launcher built from master (before develop) moves to develop's builds, and
+        // one built from develop stays.
+        let master = source("https://github.com/OpenRAC/OpenRAC/releases/download/launcher-dev-master/latest.json");
+        assert_eq!(master.on(Channel::Dev).channel.as_deref(), Some("launcher-dev-develop"));
+        let develop = master.on(Channel::Dev);
+        assert_eq!(develop.on(Channel::Dev), develop);
         assert_eq!(branch.on(Channel::Dev), branch);
         let stable = branch.on(Channel::Stable);
         assert_eq!(stable.manifest, "https://github.com/someone/OpenRAC/releases/latest/download/latest.json");
@@ -303,6 +324,15 @@ mod tests {
     }
 
     #[test]
+    fn switches_back_to_an_older_release() {
+        // On its own channel only a newer build; on the other one any other build.
+        assert!(!offered("0.10.1-dev.40", "0.10.0", false));
+        assert!(offered("0.10.1-dev.40", "0.10.0", true));
+        assert!(offered("0.10.1-dev.40", "0.10.1", false));
+        assert!(!offered("0.10.0", "0.10.0", true));
+    }
+
+    #[test]
     fn names_the_source() {
         let latest = source("https://github.com/someone/OpenRAC/releases/latest/download/latest.json");
         assert_eq!(latest.repository, "someone/OpenRAC");
@@ -329,15 +359,17 @@ mod tests {
         let manifest = r#"{"version":"0.8.0","notes":"n","pub_date":"2026-10-18T00:00:00Z","platforms":{
             "linux-x86_64":{"signature":"s","url":"https://x/a.AppImage"},
             "android-aarch64":{"signature":"sig","url":"https://x/a.apk"}}}"#;
-        let release = release_for(manifest, ANDROID, "0.7.4").unwrap().unwrap();
+        let release = release_for(manifest, ANDROID, "0.7.4", false).unwrap().unwrap();
         assert_eq!(release.url, "https://x/a.apk");
         assert_eq!(release.signature, "sig");
         assert_eq!(release.date, "2026-10-18T00:00:00Z");
-        assert_eq!(release_for(manifest, ANDROID, "0.8.0").unwrap(), None);
-        assert_eq!(release_for(manifest, "windows-x86_64", "0.1.0").unwrap(), None);
-        assert!(release_for(r#"{"platforms":{}}"#, ANDROID, "0.1.0").is_err());
+        assert_eq!(release_for(manifest, ANDROID, "0.8.0", false).unwrap(), None);
+        assert_eq!(release_for(manifest, ANDROID, "0.8.1-dev.3", false).unwrap(), None);
+        assert_eq!(release_for(manifest, ANDROID, "0.8.1-dev.3", true).unwrap().unwrap().version, "0.8.0");
+        assert_eq!(release_for(manifest, "windows-x86_64", "0.1.0", false).unwrap(), None);
+        assert!(release_for(r#"{"platforms":{}}"#, ANDROID, "0.1.0", false).is_err());
         let plain = r#"{"version":"0.8.0","platforms":{"android-aarch64":{"signature":"s","url":"http://x/a.apk"}}}"#;
-        assert!(release_for(plain, ANDROID, "0.1.0").is_err());
+        assert!(release_for(plain, ANDROID, "0.1.0", false).is_err());
     }
 
     #[test]

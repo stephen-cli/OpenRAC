@@ -4,9 +4,12 @@
 // LevelScene's velocity draw reuses uploaded geometry and alpha masks, including live joint palettes.
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 #include "common/stats.h"
+#include "renderer/colour_graph.h"
 #include "renderer/gl.h"
+#include "scene/level_lighting.h"
 #include "scene/level_renderer.h"
 
 namespace openrac::scene {
@@ -20,6 +23,9 @@ void LevelScene::draw_motion(
     MotionSubmission submission
 ) {
     shader.use();
+    if (m_lighting) {
+        m_lighting->bind_surface_layer(shader, 0);
+    }
     glUniformMatrix4fv(shader.uniform("raster"), 1, GL_FALSE, view.raster.data());
     glUniformMatrix4fv(shader.uniform("current_view"), 1, GL_FALSE, view.current.data());
     glUniformMatrix4fv(shader.uniform("previous_view"), 1, GL_FALSE, view.previous.data());
@@ -56,6 +62,17 @@ void LevelScene::draw_motion(
 
     m_motion_records.bind(3);
     glActiveTexture(GL_TEXTURE0);
+    // Prime descriptor-safe deformation inputs; each group still selects its own enable flag before
+    // drawing.
+    if (m_lighting) {
+        m_lighting->bind_deformation(shader, false);
+    }
+    // Material alpha textures bind per draw; shared capture must not retain the previous depth sampler.
+    glBindTexture(GL_TEXTURE_2D, 0);
+    const auto reads = renderer::graphics_shader_reads("object motion inputs");
+    if (!reads) {
+        throw std::runtime_error(reads.error().message);
+    }
 
     // Both paths share the same textures, pose history and coverage shader.
     if (batched) {
@@ -93,12 +110,14 @@ void LevelScene::prepare_motion_batches(std::span<const MotionInstance> instance
         }
         // Multiple materials retain instance-major order, including equal-depth alpha coverage.
         if (m_motion_batches.empty() || m_motion_batches.back().model != instance.model
+            || m_motion_batches.back().floats_on_water != instance.floats_on_water
             || m_models[instance.model].primitives.size() != 1) {
             m_motion_batches.push_back(
                 {instance.model,
                  m_motion_groups[instance.model],
                  static_cast<int>(m_motion_words.size() / 36),
-                 0}
+                 0,
+                 instance.floats_on_water}
             );
         }
         ++m_motion_batches.back().count;
@@ -125,7 +144,7 @@ void LevelScene::draw_motion_batches(
     for (const auto& batch : m_motion_batches) {
         glBindVertexArray(groups[batch.group].vao);
         glUniform1i(shader.uniform("motion_first"), batch.first);
-        draw_motion_materials(shader, batch.model, textures, batch.count);
+        draw_motion_materials(shader, batch.model, textures, batch.count, batch.floats_on_water);
     }
 }
 
@@ -153,15 +172,19 @@ void LevelScene::draw_motion_instance(
     glUniform1f(shader.uniform("instance_alpha"), instance.alpha);
     glUniform1f(shader.uniform("reactive"), instance.reactive ? 1.0f : 0.0f);
     glUniform1i(shader.uniform("exclude_glow"), instance.exclude_glow ? 1 : 0);
-    draw_motion_materials(shader, instance.model, textures);
+    draw_motion_materials(shader, instance.model, textures, 1, instance.floats_on_water);
 }
 
 void LevelScene::draw_motion_materials(
     const renderer::Shader& shader,
     std::uint32_t model,
     renderer::TexturePool& textures,
-    int instances
+    int instances,
+    bool floats_on_water
 ) {
+    if (m_lighting) {
+        m_lighting->bind_deformation(shader, floats_on_water);
+    }
     // Material runs use their original alpha texture, matching world depth coverage.
     for (const auto& primitive : m_models[model].primitives) {
         const auto& material = m_materials[static_cast<std::size_t>(primitive.material)];
@@ -177,23 +200,37 @@ void LevelScene::draw_motion_materials(
         glUniform1f(shader.uniform("material_alpha"), material.colour[3]);
         // Indices are byte offsets into the VAO's element buffer, as required by GL.
         // Single-instance submissions keep the original reference command.
-        if (instances == 1) {
-            glDrawElements(
-                GL_TRIANGLES,
-                static_cast<int>(primitive.index_count),
-                GL_UNSIGNED_INT,
-                // NOLINTNEXTLINE(performance-no-int-to-ptr): GL requires pointer-valued buffer offsets.
-                reinterpret_cast<const void*>(primitive.first_index * sizeof(std::uint32_t))
-            );
-        } else {
-            glDrawElementsInstanced(
-                GL_TRIANGLES,
-                static_cast<int>(primitive.index_count),
-                GL_UNSIGNED_INT,
-                // NOLINTNEXTLINE(performance-no-int-to-ptr): GL requires pointer-valued buffer offsets.
-                reinterpret_cast<const void*>(primitive.first_index * sizeof(std::uint32_t)),
-                instances
-            );
+        const auto draw = [&] {
+            if (instances == 1) {
+                glDrawElements(
+                    GL_TRIANGLES,
+                    static_cast<int>(primitive.index_count),
+                    GL_UNSIGNED_INT,
+                    // NOLINTNEXTLINE(performance-no-int-to-ptr): GL requires pointer-valued buffer offsets.
+                    reinterpret_cast<const void*>(primitive.first_index * sizeof(std::uint32_t))
+                );
+            } else {
+                glDrawElementsInstanced(
+                    GL_TRIANGLES,
+                    static_cast<int>(primitive.index_count),
+                    GL_UNSIGNED_INT,
+                    // NOLINTNEXTLINE(performance-no-int-to-ptr): GL requires pointer-valued buffer offsets.
+                    reinterpret_cast<const void*>(primitive.first_index * sizeof(std::uint32_t)),
+                    instances
+                );
+            }
+        };
+        draw();
+        const int layers =
+            m_lighting
+                ? m_lighting->surface_layers(model, primitive.first_index, primitive.index_count)
+                : 0;
+        for (int layer = 1; layer <= layers; ++layer) {
+            m_lighting->bind_surface_layer(shader, layer);
+            draw();
+        }
+        if (layers > 0) {
+            m_lighting->bind_surface_layer(shader, 0);
         }
     }
 }

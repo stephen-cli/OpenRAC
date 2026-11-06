@@ -17,7 +17,6 @@ namespace openrac::frontend::options_menu {
 enum Row {
     kDisplayMode,
     kMonitor,
-    kResolution,
     kAspect,
     kHud,
     kRenderScale,
@@ -25,11 +24,14 @@ enum Row {
     kAnisotropy,
     kSceneryDetail,
     kVSync,
+    kHdr,
     kFrameRate,
     kFrameCap,
+    kLowLatency,
     kShowFps,
     kMuteUnfocused,
     kSkipCutscenes,
+    kResponsiveControls,
     kRows
 };
 
@@ -53,13 +55,36 @@ void step(int row, int by);
 // already; the window applies it at once: none needs the game started again).
 bool update(int loaded_overlay);
 
+// The pause menu's pages of the mods' items (openrac_api.ui_pause_item), made with the Options
+// page's items in each level program, as the Video page: item `index`'s page, its list widget, its
+// kPauseRowsShown rows (0x18 bytes each: the label's text id, the address of an int the widget keeps at
+// 1 and steps on Cross, three value text ids; a 0 label ends them), their ints, its title box (+0x34
+// the title's text id). All 0 before the Options page was seen. mod_ui.cpp fills them.
+struct PauseRows {
+    std::uint32_t page = 0, list = 0, rows = 0, values = 0, title = 0;
+};
+
+constexpr int kPauseRowsShown = 5;
+PauseRows pause_rows(int index);
+// Drops guest-memory addresses cached by the port's Video pages. A restored snapshot can replace
+// the guest allocations and level program those addresses referred to.
+void savestate_restored();
+
 // The items the Options list is given in place of the game's own (with the Video page's added), or 0
 // while it has the game's.
 std::uint32_t options_items();
 
+// The game's language as an index into the port's texts: 0 English, 1 French, 2 German, 3 Spanish,
+// 4 Italian (the PAL disc's five); English for a game without one.
+int language();
+
 // UTF-8 as the game's text: ASCII as it is, the accented letters the game's font has at its own
 // codes, any other letter left out.
 std::string game_text(const std::string& utf8);
+
+// An English text of the port's (a row's name or value, a page's name) as the game shows it: in
+// its language (language() above), as the game's text (game_text above).
+std::string shown(const std::string& english);
 
 // The game's text lookup, asked for an id of the port's own: the string in game memory, or 0 for
 // an id that is the game's.

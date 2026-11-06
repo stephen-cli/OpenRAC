@@ -12,11 +12,13 @@
   import FolderPrompt from "$components/FolderPrompt.svelte";
   import GamesFrame from "$components/GamesFrame.svelte";
   import Icon from "$components/Icon.svelte";
+  import { toolFailure } from "$lib/toolErrors";
   import JobProgress from "$components/JobProgress.svelte";
   import ProgressBar from "$components/ProgressBar.svelte";
   import Menu, { type MenuItem } from "$components/Menu.svelte";
   import ReportsBlock from "$components/ReportsBlock.svelte";
   import SaveManagerBlock from "$components/SaveManagerBlock.svelte";
+  import TexturePacksBlock from "$components/TexturePacksBlock.svelte";
   import { api, ask, onAndroid, pickMemoryCard, type ActionView, type ReportEntry } from "$lib/api";
   import {
     app,
@@ -98,7 +100,14 @@
    *  runs: the page says so under the main button, with the way to what it printed. */
   const stopped = $derived.by(() => {
     if (!v || next?.job) return null;
-    const ids = [`install:${v.game}`, "port-build", "port-rebuild", "port-levels", "port-levels-check"];
+    const ids = [
+      `install:${v.game}`,
+      "port-build",
+      "port-rebuild",
+      "port-levels",
+      "port-levels-check",
+      "overrides-stack",
+    ];
     const mine = jobs.list.filter(
       (j) => ids.includes(j.actionId) && (j.scope.kind === "repository" || j.scope.key === v.key),
     );
@@ -151,7 +160,8 @@
     if (app.config) await saveConfig({ ...app.config, playWithMods: on });
   }
 
-  /** How many mods the Mods tab has switched on for this game: its gameplay mods and its packs.
+  /** How many mods the Mods tab has switched on for this game: its gameplay mods, its packs and
+   *  Enhanced graphics (which the switch turns off as well).
    *  Read again when the game shown changes; null until read (or where they cannot be). */
   let modsOn = $state<number | null>(null);
   $effect(() => {
@@ -162,8 +172,13 @@
     void Promise.all([
       api.pluginsList(shown.game, shown.name).catch(() => []),
       api.overridesList(shown.game).catch(() => []),
-    ]).then(([mods, packs]) => {
-      if (current) modsOn = mods.filter((m) => m.enabled).length + packs.filter((p) => p.enabled).length;
+      api.enhancedView(shown.game, shown.name).catch(() => null),
+    ]).then(([mods, packs, enhanced]) => {
+      if (current)
+        modsOn =
+          mods.filter((m) => m.enabled).length +
+          packs.filter((p) => p.enabled).length +
+          (enhanced?.mod.enabled ? 1 : 0);
     });
     return () => {
       current = false;
@@ -336,7 +351,7 @@
             {#if lastPlayed && next.kind === "play"}<p class="line last">{lastPlayed}</p>{/if}
             {#if stopped}
               <p class="stopped">
-                <Icon name="warn" size={14} />{stopped.title} stopped with an error.
+                <Icon name="warn" size={14} />{stopped.title} stopped: {toolFailure(stopped.lines).title.toLowerCase()}.
                 <button class="link" onclick={() => (app.page = "tasks")}>See what it printed</button>
               </p>
             {/if}
@@ -398,6 +413,10 @@
             <SaveManagerBlock version={v} />
             {#if setUp && !onAndroid}<ReportsBlock game={v.game} program={choice ? programOf(v.key) : null} />{/if}
           </div>
+        {/if}
+        {#if portReady && setUp}
+          <!-- The player's own pictures for the game's (TexturePacksBlock.svelte). -->
+          <div in:fly|global={arrive(100)}><TexturePacksBlock version={v} /></div>
         {/if}
         {#if portReady}
           <!-- What the port does otherwise than the PS2 game; the game fixes switch back. Folded on
@@ -654,7 +673,7 @@
 
   /* The main button lifts towards the pointer, and gives under it. */
   @media (hover: hover) {
-    .big.primary:hover:not(:disabled) {
+    :global(html:where(:not([data-input="pad"]))) .big.primary:hover:not(:disabled) {
       transform: translateY(-2px);
       box-shadow: 0 12px 28px color-mix(in srgb, var(--bar-top) 38%, transparent);
     }

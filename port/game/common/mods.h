@@ -10,7 +10,9 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -31,7 +33,7 @@ struct HookPoint {
     void* original;
 };
 
-// The game's tick and display-list state needed by a warm snapshot. The executable supplies these
+// The game's tick and display-list state needed by a snapshot. The executable supplies these
 // callbacks through Host so the mod loader stays usable without linking the game program (tests,
 // manifest tools). `overlay` is the game's host-side mirror of the guest level.
 struct SavestateRuntime {
@@ -41,6 +43,20 @@ struct SavestateRuntime {
     bool reports_draws = false;
     bool vsync_since_kick = false;
     int overlay = -1;
+};
+
+struct DeveloperMenuItem {
+    std::string label;
+    std::string shortcut;
+    std::string group;
+    std::uint32_t action = 0;
+};
+
+struct DeveloperMenu {
+    openrac_mod* mod = nullptr;
+    std::string title;
+    std::vector<DeveloperMenuItem> items;
+    std::deque<std::uint32_t> actions;
 };
 
 // What the loader needs of the program.
@@ -80,10 +96,30 @@ struct Host {
     // The running game's essential host-side tick state and post-restore audio/renderer rebuild.
     bool (*capture_savestate_runtime)(SavestateRuntime* state) = nullptr;
     void (*restore_savestate_runtime)(const SavestateRuntime* state) = nullptr;
+    std::size_t (*savestate_extra_size)(void) = nullptr;
+    int (*savestate_extra_save)(void* out, std::size_t size) = nullptr;
+    int (*savestate_extra_load)(const void* in, std::size_t size) = nullptr;
+    void (*prepare_cold_savestate)(int overlay) = nullptr;
     // The game's play (interface 1.8, game_host.h; null: none, and the play calls say so) and the
     // memory card's folder its saves are in (openrac_game_card_dir).
     const openrac_game_play* play = nullptr;
     std::filesystem::path cards;
+    // Where each mod's own folder goes (interface 1.11, openrac_api.data_dir): <this>/<mod id>.
+    // Empty: none, and data_dir gives null.
+    std::filesystem::path mod_data;
+    // The mods' sounds (interface 1.12, openrac_api.sound_*): a file decoded and kept (its id, -1
+    // when it cannot be read), a voice of it played (0 for none), changed (0: it has ended; a
+    // volume below 0 changes nothing, only asks whether it still plays) and stopped. Null: no
+    // sound output (a test's, or no window), and the sound calls say so.
+    int (*sound_load)(const std::filesystem::path& file) = nullptr;
+    std::uint32_t (*sound_play)(int sound, float volume, float pitch, bool loop) = nullptr;
+    int (*sound_set)(std::uint32_t voice, float volume, float pitch) = nullptr;
+    void (*sound_stop)(std::uint32_t voice) = nullptr;
+    // The hero's joints turned by a mod (interface 1.12, openrac_api.hero_set_joints): the offsets
+    // put on moby `moby`'s pose wherever it is evaluated (count 0: taken off). Null: no drawing (a
+    // test's), and the call says so.
+    void (*joint_offsets)(std::uint32_t moby, const openrac_joint_offset* joints, int count) =
+        nullptr;
 };
 
 // Loads the mods the list has on. Returns the session header's line: "lock-strafe 1.0.0", "none",
@@ -113,16 +149,77 @@ inline void frame() {
 // callbacks run.
 void tick_boundary(std::uint32_t tick);
 
+// Optional mod-provided top-level menus for the in-window menu bar.
+const std::vector<DeveloperMenu>& developer_menus();
+void queue_developer_menu_action(openrac_mod* mod, std::uint32_t action);
+
 // How many mods are loaded.
 int loaded_count();
 
+// The loaded mods' assets folders (MODS.md, section 3), the last loaded first: a file in one takes
+// the place of the same path in those after it and in the extracted levels.
+const std::vector<std::filesystem::path>& asset_roots();
+
 // A loaded mod's id ("multiplayer"), for the log; "a mod" for none.
 const char* mod_id(const openrac_mod* mod);
+
+// Whether `mod` has taken the hook point `name` (its id or any alias), for the calls only the
+// holder of a hook point may make (interface 1.12, hero_set_pose).
+bool holds_hook(const openrac_mod* mod, const char* name);
+
+// A file inside `mod`'s folder by its path there (relative, with /, no "." or ".." part), when it
+// is a file; empty otherwise (interface 1.12: a prop's mesh, a sound).
+std::filesystem::path mod_file(const openrac_mod* mod, const char* path);
+
+// ---- Props (interface 1.12, mod_play.cpp) ----
+
+// A prop to draw this frame: its mesh (a file of a mod's) and the matrix that places it,
+// column-major, in the game's world.
+struct PropDraw {
+    int id = 0;  // its id (openrac_api.prop_create's)
+    std::filesystem::path mesh;
+    std::array<float, 16> matrix{};
+    std::array<float, 4> tint{1.0f, 1.0f, 1.0f, 1.0f};
+    int blend = 0;  // OPENRAC_PROP_OPAQUE, _ALPHA or _ADD
+};
+
+// The props shown in the level now (posed, not hidden, of this level load). From any thread.
+std::vector<PropDraw> props_drawn();
+
+// Every mesh a prop was made of in this run, in the order first asked for, and a count that grows
+// when one is added: the front end reads them with each level's scenery, and reads the level's
+// again when the count has grown. From any thread.
+std::vector<std::filesystem::path> prop_meshes();
+unsigned prop_meshes_generation();
+
+// ---- Heat haze (interface 1.12, mod_play.cpp) ----
+
+// A patch of heat haze to draw this frame (openrac_haze), in the game's world.
+struct HazeDraw {
+    std::array<float, 3> position{};
+    float radius = 0.0f;
+    float strength = 0.0f;
+};
+
+// The heat haze patches of this level load, every mod's. From any thread.
+std::vector<HazeDraw> haze_drawn();
+
+// The lines of text the mods show in the game's HUD this level load (openrac_hud_text), every
+// mod's, in the order they set them. From any thread.
+std::vector<openrac_hud_text> hud_texts();
 
 // Play (interface 1.8, mod_play.h): the start or travel a mod asked for, done now, on the game's
 // thread after the frame's menus (frontend/frame.cpp, beside the developer menu's start); nothing
 // when none is pending.
 void play_update();
+
+// Whether a mod asked for the scene playing to be skipped (openrac_api.play_skip), for this pad
+// read: the skip is pressed for a while (frontend/input.cpp, skip_after_mods).
+bool play_skipping();
+
+// The line a mod shows over the game's picture (openrac_api.play_notice), empty for none; the
+// debug overlay draws it. From any thread.
+std::string play_notice();
 
 // The front-end menu entries the mods added (interface 1.5), in load order: how many, and an
 // entry's label ("" past the list).
@@ -169,6 +266,13 @@ struct UiMainItem {
     int page = 0;
 };
 
+// An item of the pause menu's Options page (openrac_api.ui_pause_item, since 1.9): its label,
+// its page.
+struct UiPauseItem {
+    std::string label;
+    int page = 0;
+};
+
 // What the mods asked of the screen during their events since the last take, for the front end.
 struct UiRequests {
     bool open = false;  // ui_open: `page`, or OPENRAC_UI_GO_BACK
@@ -185,10 +289,16 @@ int ui_page_count();
 const UiPage* ui_page(int page);
 int ui_main_item_count();
 const UiMainItem* ui_main_item(int index);
+// The pause menu's Options items, in order.
+int ui_pause_item_count();
+const UiPauseItem* ui_pause_item(int index);
 
 // The front end's side: the page on the screen (-1 none; whose mod may then open, ask and play),
 // whether a question is open on it, where a page's cursor is now.
 void ui_set_shown(int page, bool question_open);
+// Whether the title's main menu is on the screen, settled (a mod may open its main-menu item's
+// page from it, since 1.9).
+void ui_set_main_menu(bool up);
 void ui_set_cursor(int page, int item);
 // A choice the player stepped: shown so until the mod sets the page again.
 void ui_set_choice(int page, int item, std::uint32_t choice);

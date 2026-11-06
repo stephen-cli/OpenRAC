@@ -101,7 +101,8 @@ void validate_triangle(
     const BakeTriangle& triangle, const BakeScene& input, const BakeSettings& settings
 ) {
     // Validate authored tints only when the albedo path consumes them.
-    if (settings.terrain_vertex_albedo && triangle.terrain_prelighting) {
+    if (settings.terrain_vertex_albedo && triangle.terrain_prelighting
+        && settings.terrain_vertex_albedo_strength > 0) {
         // Every vertex contributes to interpolation, even outside the probe grid.
         for (auto tint : triangle.authored_colours) {
             validate_colour(tint, false);
@@ -163,8 +164,10 @@ void validate_triangle(
 
 void Scene::check_error() const {
     // Embree errors belong to the worker that performed the query.
-    if (rtcGetDeviceError(device) != RTC_ERROR_NONE) {
-        throw std::runtime_error("Embree probe bake failed");
+    if (const RTCError error = rtcGetDeviceError(device); error != RTC_ERROR_NONE) {
+        throw std::runtime_error(
+            "Embree probe bake failed (error " + std::to_string(static_cast<int>(error)) + ")"
+        );
     }
 }
 
@@ -384,6 +387,8 @@ Scene::Scene(const BakeScene& source, const std::optional<Float3>& sunlight_dire
             }
         }
 
+        prepare_rectangles();
+        build_rectangles();
         rtcCommitScene(handle);
         check_error();
     } catch (...) {
@@ -392,12 +397,22 @@ Scene::Scene(const BakeScene& source, const std::optional<Float3>& sunlight_dire
             rtcReleaseScene(handle);
         }
 
+        // Rectangle acceleration may already exist when geometry preparation fails.
+        if (rectangle_handle) {
+            rtcReleaseScene(rectangle_handle);
+        }
+
         rtcReleaseDevice(device);
         throw;
     }
 }
 
 Scene::~Scene() {
+    // Scenes without synthetic area sources allocate no emitter BVH.
+    if (rectangle_handle) {
+        rtcReleaseScene(rectangle_handle);
+    }
+
     rtcReleaseScene(handle);
     rtcReleaseDevice(device);
 }

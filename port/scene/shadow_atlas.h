@@ -2,8 +2,7 @@
 // Copyright (c) 2026 the OpenRAC contributors
 //
 // The shadow atlas's layout: one depth target holding the four sun cascades and the hero's map,
-// each in a rectangle of its own (level_renderer.cpp, make_shadow_atlas). Restructure package
-// P2-39a moved it from enhanced/viewer/.
+// each in a rectangle of its own (shadow_atlas_renderer.cpp, make_shadow_atlas).
 
 #pragma once
 #include <array>
@@ -35,6 +34,7 @@ constexpr ShadowAtlasLayout shadow_atlas_layout(renderer::ShadowQuality quality)
             coordinate /= divisor;
         }
     }
+    layout.rects[4][2] = layout.rects[4][3] = renderer::hero_shadow_resolution(quality);
     return layout;
 }
 }  // namespace openrac::scene

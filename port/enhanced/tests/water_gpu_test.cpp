@@ -6,11 +6,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "enhanced/renderer/water.h"
+#include "enhanced/renderer/water_float.h"
 #include "enhanced/renderer/water_window.h"
 #include "enhanced/tests/water_gpu_fixture.h"
 #include "enhanced_viewer_shaders.h"
@@ -35,11 +37,17 @@ int main() {
     settings.interaction_radius = 0;
     settings.view = 99;
     settings.fine_normal_strength = 100;
+    settings.projectile_strength = 100;
+    settings.projectile_radius = 0;
+    settings.explosion_strength = std::numeric_limits<float>::quiet_NaN();
+    settings.explosion_radius = std::numeric_limits<float>::infinity();
     enhanced::set_water_debug_settings(settings);
     auto sanitized = enhanced::water_debug_settings();
     CHECK(
         sanitized.current_scale == 2.5f && sanitized.interaction_radius == .1f
-        && sanitized.view == 4 && sanitized.fine_normal_strength == 2
+        && sanitized.view == 17 && sanitized.fine_normal_strength == 2
+        && sanitized.projectile_strength == 4 && sanitized.projectile_radius == .1f
+        && sanitized.explosion_strength == 1 && sanitized.explosion_radius == 1
     );
     enhanced::set_water_debug_settings(enhanced::WaterDebugSettings{});
 
@@ -353,12 +361,17 @@ result=vec4(bits&255u,(bits>>8)&255u,(bits>>16)&255u,bits>>24)/255.;})";
     displacement_vertex += lighting::shaders::water_mesh_glsl;
     displacement_vertex += lighting::shaders::water_window_glsl;
     displacement_vertex += lighting::shaders::water_swell_glsl;
+    displacement_vertex += lighting::shaders::water_displacement_glsl;
     displacement_vertex += lighting::shaders::water_vertex_glsl;
     displacement_vertex += R"(
 flat out float height;
 void main(){
     vec2 q=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
-    height=effect_position(vec3(2.75,2.75,0)).z;
+    vec3 position=vec3(2.75,2.75,0);
+    vec2 uv=vec2(0);
+    vec4 colour=vec4(1);
+    effect_vertex(position,uv,colour);
+    height=position.z;
     gl_Position=vec4(q*2.-1.,0,1);
 })";
     constexpr const char* displacement_fragment = R"(#version 410 core
@@ -384,6 +397,7 @@ result=vec4(bits&255u,(bits>>8)&255u,(bits>>16)&255u,bits>>24)/255.;})";
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     displaced.use();
+    glUniform1i(displaced.uniform("water_mesh"), 0);
     glUniform1i(displaced.uniform("water_coast_map"), 2);
     glUniform1i(displaced.uniform("water_bodies"), 1);
     glUniform1i(displaced.uniform("water_wave_map"), 0);
@@ -427,6 +441,200 @@ result=vec4(bits&255u,(bits>>8)&255u,(bits>>16)&255u,bits>>24)/255.;})";
             std::abs(std::bit_cast<float>(bits) - cpu[5 * width + 5][0] - .045 * std::sin(phase))
             < 2e-6
         );
+    }
+    // The exact liquid evaluator also moves a rigid attachment, preserving its rest offset.
+    renderer::Shader floating;
+    std::string floating_vertex = enhanced::WaterFloat::vertex_source(R"(#version 410 core
+uniform vec3 anchor;
+uniform int attachment_check;
+flat out float height;
+void main(){
+    vec2 q=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
+    mat4 pose=water_float_pose(anchor);
+    mat3 rotation=mat3(pose);
+    vec3 moved=(pose*vec4(anchor,1)).xyz;
+    vec3 a=water_displaced_position(anchor-vec3(.25,0,0),0);
+    vec3 b=water_displaced_position(anchor+vec3(.25,0,0),0);
+    vec3 c=water_displaced_position(anchor-vec3(0,.25,0),0);
+    vec3 d=water_displaced_position(anchor+vec3(0,.25,0),0);
+    vec3 expected_up=normalize(cross(b-a,d-c));
+    height=moved.z-anchor.z;
+    if(attachment_check==1) height=length(rotation[0])-1.;
+    if(attachment_check==2) height=dot(rotation[0],rotation[1]);
+    if(attachment_check==3) height=length(rotation[2]-expected_up);
+    if(attachment_check==4) height=length(rotation*vec3(.8,-.6,.3))-length(vec3(.8,-.6,.3));
+    if(attachment_check==5) height=length(moved.xy-anchor.xy);
+    if(attachment_check==6) height=determinant(rotation)-1.;
+    if(attachment_check==7) height=length(rotation[2].xy);
+    gl_Position=vec4(q*2.-1.,0,1);
+})");
+    CHECK(floating.build(
+        "water attachment displacement", floating_vertex, displacement_fragment, error
+    ));
+    floating.use();
+    glUniform1i(floating.uniform("water_float_poses"), 1);
+    glUniform1i(floating.uniform("water_float_count"), 0);
+    glUniform1i(floating.uniform("water_bodies"), 1);
+    glUniform1i(floating.uniform("water_coast_map"), 2);
+    glUniform1i(floating.uniform("water_wave_map"), 0);
+    glUniform2f(floating.uniform("water_atlas_extent"), width, width);
+    glUniform4fv(floating.uniform("water_atlas[0]"), 64, atlas[0].data());
+    glUniform1f(floating.uniform("water_time"), .43f);
+    for (int scenario = 0; scenario < 7; ++scenario) {
+        // Real water grids have origin Z=0 even when the surface is high above it.
+        if (scenario == 5) {
+            for (auto& cell : wet_coast) {
+                cell[3] = 39.f;
+            }
+            glActiveTexture(GL_TEXTURE0 + 2);
+            glBindTexture(GL_TEXTURE_2D, coast_texture);
+            glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                wgl::GL_RGBA32F,
+                width,
+                width,
+                0,
+                GL_RGBA,
+                GL_FLOAT,
+                wet_coast.data()
+            );
+        }
+        if (scenario == 6) {
+            for (auto& cell : wet_coast) {
+                cell[0] = 0;
+                cell[3] = 0;
+            }
+            glActiveTexture(GL_TEXTURE0 + 2);
+            glBindTexture(GL_TEXTURE_2D, coast_texture);
+            glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                wgl::GL_RGBA32F,
+                width,
+                width,
+                0,
+                GL_RGBA,
+                GL_FLOAT,
+                wet_coast.data()
+            );
+        }
+        glUniform1i(floating.uniform("water_float_enabled"), scenario == 3 ? 0 : 1);
+        glUniform1i(floating.uniform("water_body_count"), scenario == 4 ? 0 : 1);
+        glUniform3f(
+            floating.uniform("anchor"),
+            scenario == 1 ? -100.f : 2.75f,
+            2.75f,
+            scenario == 2   ? 3.f
+            : scenario == 5 ? 39.2f
+                            : .2f
+        );
+        for (int channel = 0; channel < 8; ++channel) {
+            glUniform1i(floating.uniform("attachment_check"), channel);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(0, 0, width, width, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            const auto bits = std::uint32_t(pixels[0]) | (std::uint32_t(pixels[1]) << 8)
+                              | (std::uint32_t(pixels[2]) << 16) | (std::uint32_t(pixels[3]) << 24);
+            const float actual = std::bit_cast<float>(bits);
+            CHECK(std::isfinite(actual));
+            const bool active = scenario == 0 || scenario == 5;
+            if (channel == 7 && active) {
+                CHECK(actual > 1e-5f);
+                continue;
+            }
+            if (channel == 3 && !active) {
+                continue;  // Disabled/dry attachments keep identity rather than the sampled slope.
+            }
+            float expected = 0;
+            if (channel == 0 && active) {
+                const double phase =
+                    (6.28318531 / 2.75) * 2.75 * (.87 + .49) / std::hypot(.87, .49) - .43 * 1.4;
+                expected = cpu[5 * width + 5][0] + float(.045 * std::sin(phase));
+            }
+            CHECK(std::abs(actual - expected) < 8e-6f);
+        }
+    }
+    // Exercise the shipped momentum kernel with a controlled step in height and tilt.
+    // Read the resulting FP32 values through the same bit-exact fragment readback.
+    {
+        renderer::Shader momentum, pose_read;
+        std::string kernel(lighting::shaders::water_float_comp);
+        kernel.insert(kernel.find("void main()"), R"(
+uniform vec4 target_pose;
+vec4 water_float_target(vec3 anchor,out bool matched) { matched=true; return target_pose; }
+)");
+        CHECK(momentum.build_compute("attachment momentum regression", kernel, error));
+        if (!momentum.id()) {
+            std::printf("%s\n", error.c_str());
+            return test::result();
+        }
+        CHECK(pose_read.build(
+            "attachment pose readback",
+            R"(#version 430 core
+uniform samplerBuffer pose_values;
+uniform int component;
+flat out float height;
+void main() {
+    vec2 q=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
+    height=texelFetch(pose_values,1)[component];
+    gl_Position=vec4(q*2.-1.,0,1);
+})",
+            displacement_fragment,
+            error
+        ));
+        unsigned state[3]{}, views[2]{};
+        glGenBuffers(3, state);
+        glGenTextures(2, views);
+        const std::array<Cell, 2> initial_pose{Cell{2, 3, .2f, 1}, Cell{0, 0, 1, .2f}};
+        for (unsigned i = 0; i < 2; ++i) {
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, state[i]);
+            glBufferData(
+                GL_SHADER_STORAGE_BUFFER, sizeof(initial_pose), initial_pose.data(), GL_DYNAMIC_DRAW
+            );
+            glActiveTexture(GL_TEXTURE0 + 22 + i);
+            glBindTexture(wgl::GL_TEXTURE_BUFFER, views[i]);
+            glTexBuffer(wgl::GL_TEXTURE_BUFFER, wgl::GL_RGBA32F, state[i]);
+        }
+        const auto step = [&](float previous, float alpha) {
+            const Cell anchor{2, 3, .2f, previous};
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, state[2]);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(anchor), anchor.data(), GL_STREAM_DRAW);
+            momentum.use();
+            glUniform1i(momentum.uniform("previous_poses"), 22);
+            glUniform1i(momentum.uniform("attachment_count"), 1);
+            glUniform4f(momentum.uniform("target_pose"), .6f, 0, .8f, 1.2f);
+            glUniform2f(momentum.uniform("response"), alpha, alpha);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, state[2]);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, state[1]);
+            glDispatchCompute(1, 1, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+            pose_read.use();
+            glUniform1i(pose_read.uniform("pose_values"), 23);
+            Cell result{};
+            for (int c = 0; c < 4; ++c) {
+                glUniform1i(pose_read.uniform("component"), c);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glReadPixels(0, 0, width, width, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+                const auto bits = std::uint32_t(pixels[0]) | (std::uint32_t(pixels[1]) << 8)
+                                  | (std::uint32_t(pixels[2]) << 16)
+                                  | (std::uint32_t(pixels[3]) << 24);
+                result[c] = std::bit_cast<float>(bits);
+            }
+            return result;
+        };
+        const auto halfway = step(0, .5f);
+        CHECK(std::abs(halfway[3] - .7f) < 1e-6f);
+        CHECK(halfway[0] > 0 && halfway[0] < .6f);
+        CHECK(std::abs(halfway[0] * halfway[0] + halfway[2] * halfway[2] - 1) < 1e-6f);
+        const auto paused = step(0, 0);
+        CHECK(paused == initial_pose[1]);
+        const auto fresh = step(-1, .1f);
+        CHECK(std::abs(fresh[3] - 1.2f) < 1e-6f && std::abs(fresh[0] - .6f) < 1e-6f);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, 0);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, image_buffer);
+        glDeleteTextures(2, views);
+        glDeleteBuffers(3, state);
+        glActiveTexture(GL_TEXTURE0);
     }
     glDeleteTextures(1, &body_texture);
     glDeleteTextures(1, &coast_texture);
@@ -558,7 +766,7 @@ result=vec4(bits&255u,(bits>>8)&255u,(bits>>16)&255u,bits>>24)/255.;})";
         coast.data(),
         GL_DYNAMIC_DRAW
     );
-    for (int scenario = 0; scenario < 5; ++scenario) {
+    for (int scenario = 0; scenario < 7; ++scenario) {
         compute.use();
         glUniform1i(compute.uniform("reset_waves"), 1);
         glUniform1i(compute.uniform("hand_count"), 0);
@@ -805,7 +1013,11 @@ result=vec4(bits&255u,(bits>>8)&255u,(bits>>16)&255u,bits>>24)/255.;})";
         compute, read, error, pixels, buffers, bodies, texture, image_buffer, vertex
     };
     test::water::check_optics(fixture);
+    test::water::check_foam(fixture);
+    test::water::check_transmission(fixture);
+    test::water::check_environment(fixture);
     test::water::check_window(fixture);
+    test::water::check_sampling(fixture);
     glDeleteVertexArrays(1, &vao);
     glDeleteTextures(1, &texture);
     glDeleteBuffers(5, buffers.data());

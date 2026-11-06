@@ -44,11 +44,20 @@ if(OPENRAC_ENHANCED_RENDERING)
   add_compile_definitions(OPENRAC_ENHANCED_RENDERING=1)
 endif()
 
+# The general Object Viewer is ready; additive object-light authoring remains opt-in work in progress.
+option(OPENRAC_LIGHT_AUTHORING "Compile experimental object-light authoring and attached light profiles" OFF)
+if(OPENRAC_LIGHT_AUTHORING)
+  add_compile_definitions(OPENRAC_LIGHT_AUTHORING=1)
+endif()
+
 option(OPENRAC_PORT_WINDOW "Build the programs that open a window (needs SDL3)" ON)
 option(OPENRAC_GPU_MARKERS "Compile opt-in Vulkan GPU profiler labels" OFF)
 option(OPENRAC_PORT_GAMES "Build the games from their decompilations (needs Clang and Python 3)" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+if("$ENV{OPENRAC_CI_DEPENDENCY_SOURCES}" STREQUAL "1")
+  include(CiDependencySources)
+endif()
 include(Warnings)
 include(Tests)
 include(FastBuild)
@@ -71,17 +80,22 @@ add_custom_target(openrac_build_info
   COMMENT "OpenRAC's version and commit"
   VERBATIM)
 add_library(openrac_common STATIC
+  common/breadcrumbs.cpp
+  common/cache_folder.cpp
   common/crash.cpp
+  common/crash_symbols.cpp
   common/env.cpp
   common/json.cpp
   common/log.cpp
   common/parallel.cpp
   common/perf_capture.cpp
+  common/precise_wait.cpp
   common/profiler.cpp
   common/process.cpp
   common/ps2_float.cpp
   common/sampler.cpp
   common/slow_cpu.cpp
+  common/staged_file.cpp
   common/stats.cpp
   common/system_info.cpp
   common/zip_writer.cpp
@@ -102,32 +116,52 @@ endif()
 openrac_warnings(openrac_common)
 
 openrac_add_test(log LIBS openrac_common)
+if(WIN32 AND CMAKE_BUILD_TYPE MATCHES "^(Debug|RelWithDebInfo)$")
+  openrac_add_test(crash_symbols LIBS openrac_common)
+  add_dependencies(crash_symbols_test log_test)
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(openrac_common PUBLIC Threads::Threads)  # common/parallel.cpp
+openrac_add_test(breadcrumbs LIBS openrac_common Threads::Threads)
+openrac_add_test(breadcrumbs_no_alloc LIBS openrac_common)
 openrac_add_test(joining_thread LIBS openrac_common Threads::Threads)
 openrac_add_test(env LIBS openrac_common)
+openrac_add_test(env_at_exit LIBS openrac_common)
 openrac_add_test(stats LIBS openrac_common)
 openrac_add_test(perf_capture LIBS openrac_common)
 openrac_add_test(zip_writer LIBS openrac_common)
 openrac_add_test(parallel LIBS openrac_common Threads::Threads)
 openrac_add_test(slow_cpu LIBS openrac_common)
+openrac_add_test(precise_wait LIBS openrac_common)
 openrac_add_test(sampler LIBS openrac_common)
+openrac_add_test(staged_file LIBS openrac_common)
 openrac_add_test(result INCLUDES .)
 openrac_add_test(c_boundary LIBS openrac_common)
 openrac_add_test(frame_pacing INCLUDES .)
+openrac_add_test(latency_sleep INCLUDES .)
+openrac_add_test(swapchain_images INCLUDES .)
+# HDR output's arithmetic and choices (renderer/hdr.h); no GPU.
+openrac_add_test(hdr INCLUDES .)
 openrac_add_test(frame_counter INCLUDES .)
 openrac_add_test(render_worker SOURCES tests/render_worker_test.cpp
   game/common/frontend/render_worker.cpp INCLUDES . LIBS openrac_common Threads::Threads)
 openrac_add_test(settings SOURCES tests/settings_test.cpp game/common/settings.cpp
                           LIBS openrac_common)
+# Texture packs: names by hash, replacement, the dump (renderer/texture_pack.h).
+openrac_add_test(texture_pack SOURCES tests/texture_pack_test.cpp renderer/texture_pack.cpp
+                              INCLUDES . LIBS openrac_common)
 # The launcher's colours for the options drawer (game/common/ui_colors.h).
 openrac_add_test(ui_colors SOURCES tests/ui_colors_test.cpp game/common/ui_colors.cpp
                            INCLUDES . LIBS openrac_common)
+# The in-game menu's entries, and every option the old menus had (game/common/menu_catalog.h).
+openrac_add_test(menu_catalog SOURCES tests/menu_catalog_test.cpp game/common/menu_catalog.cpp
+                              INCLUDES .)
 # The CPU picture of the developer menu and the mods' menu pages (renderer/ui/canvas.h).
 openrac_add_test(ui_canvas SOURCES tests/ui_canvas_test.cpp renderer/ui/canvas.cpp INCLUDES .)
 openrac_add_test(scripted_moby_colour SOURCES enhanced/tests/scripted_moby_colour_test.cpp
                                       INCLUDES .)
 openrac_add_test(pause_options INCLUDES .)
+openrac_add_test(exit_words INCLUDES .)
 # How wide a mod's page of the game's widgets is drawn (game/common/menu_fit.h).
 openrac_add_test(menu_fit INCLUDES .)
 # Which undrawn ticks keep the window's last picture (game/common/program/undrawn_ticks.h).
@@ -137,6 +171,9 @@ openrac_add_test(moby_passes INCLUDES .)
 # How each tick's frames start: cleared, the last picture, or under the tick's 2D
 # (game/common/frontend/tick_picture.h).
 openrac_add_test(tick_picture INCLUDES .)
+# Where a menu's mobys drawn with a camera of their own go, alone and over a level's world drawn
+# under it (game/common/frontend/menu_layers.h).
+openrac_add_test(menu_layers INCLUDES .)
 
 # The game fixes (game/common/fixes.h): rac1's list of differences, checked as the configure reads it
 # (cmake/Differences.cmake), and its fixes through the settings file. Needs no game.
@@ -165,16 +202,31 @@ add_library(openrac_runtime STATIC
 )
 target_include_directories(openrac_runtime PUBLIC runtime/include)
 target_link_libraries(openrac_runtime PUBLIC openrac_common)
-if(MINGW)
+if(WIN32)
   target_link_libraries(openrac_common PUBLIC dbghelp advapi32)
 endif()
 openrac_warnings(openrac_runtime)
 
 openrac_add_test(runtime SOURCES tests/runtime_test.cpp tests/guest_c.c LIBS openrac_runtime)
+openrac_add_test(expanded_memory SOURCES tests/expanded_memory_test.cpp LIBS openrac_runtime)
 # The C entry point to the OPENRAC_* table (openrac/host_env.h), from C.
 openrac_add_c_test(host_env LIBS openrac_runtime)
 
 # ---- native mods (docs/port/MODS.md): manifests, the list, the loader ----
+openrac_add_c_test(level_descriptor
+  SOURCES tests/level_descriptor_test.c
+  INCLUDES game/common/include runtime/include)
+
+openrac_add_test(ship_destination
+  SOURCES tests/ship_destination_test.cpp game/rac1-pal/host/destinations.c
+  INCLUDES tests/ship_destination_stubs game/common/include
+  LIBS openrac_runtime)
+
+openrac_add_test(cdvd_mount
+  SOURCES tests/cdvd_mount_test.cpp game/common/lib/cdvd.c
+  INCLUDES game/common/include
+  LIBS openrac_runtime)
+
 openrac_add_test(custom_map
   SOURCES tests/custom_map_test.cpp game/common/program/custom_map.cpp
   INCLUDES game/common LIBS openrac_common)
@@ -192,6 +244,8 @@ target_link_libraries(openrac_mods PUBLIC openrac_runtime ${CMAKE_DL_LIBS}
 openrac_warnings(openrac_mods)
 
 openrac_add_test(mod_manifest LIBS openrac_mods)
+# When the mods' pages of the game's menus take the pad (mod_ui.h): only while the title stays.
+openrac_add_test(mod_ui_menus INCLUDES game/common)
 
 # A mod built as a mod is (a shared library against the SDK's header alone), loaded by the real
 # loader with hook points of the test's own; test-old is built for interface 1.5, as a mod made
@@ -233,6 +287,11 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_FOUND)
   add_test(NAME mod_binding COMMAND "${Python3_EXECUTABLE}" -m unittest discover
            -s "${PROJECT_SOURCE_DIR}/../sdk/tools" -p "test_gen_binding.py")
+  if(TARGET crash_symbols_test)
+    add_test(NAME crash_symbols_local COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_crash_symbols.py"
+      "$<TARGET_FILE:crash_symbols_test>" "$<TARGET_FILE:log_test>")
+  endif()
 endif()
 
 openrac_add_c_test(rac4_io
@@ -240,6 +299,7 @@ openrac_add_c_test(rac4_io
           game/common/lib/pad.c
   INCLUDES runtime/include game/common/include)
 openrac_add_c_test(graph_dma INCLUDES runtime/include game/common/include)
+openrac_add_c_test(mc_card INCLUDES runtime/include game/common/include)
 
 # ---- assets, media, audio, the extractor: no window ----
 openrac_add_c_test(crate_init NO_STRICT_ALIASING WRAPV NO_FP_CONTRACT)
@@ -255,11 +315,25 @@ openrac_warnings(openrac_ps2float)
 
 openrac_add_c_test(ps2float NO_FP_CONTRACT LIBS openrac_ps2float)
 
+# Encoders are offline; enhanced builds also decode blocks for asset checks and CPU reference sampling.
+option(OPENRAC_PROBE_BAKER "Build the offline Embree 4 probe baker" OFF)
+if(OPENRAC_ENHANCED_RENDERING OR OPENRAC_PROBE_BAKER)
+  include(ProbeCompression)
+endif()
+
 # Probe assets and CPU sampling need neither a graphics context nor Embree.
-add_library(openrac_lighting STATIC enhanced/lighting/probes.cpp enhanced/lighting/probe_atlas.cpp enhanced/lighting/probe_regions.cpp)
+add_library(openrac_lighting STATIC enhanced/lighting/probes.cpp enhanced/lighting/probe_texture.cpp enhanced/lighting/probe_depth.cpp enhanced/lighting/probe_atlas.cpp enhanced/lighting/probe_regions.cpp
+  enhanced/lighting/environment.cpp enhanced/lighting/environment_filter.cpp)
 target_include_directories(openrac_lighting PUBLIC .)
+if(TARGET openrac_astc_decode)
+  target_link_libraries(openrac_lighting PRIVATE openrac_astc_decode openrac_bc6)
+  target_compile_definitions(openrac_lighting PRIVATE OPENRAC_PROBE_COMPRESSION=1)
+endif()
+# Shared probe-format timings use the same optional profiling backend as the offline baker.
+target_link_libraries(openrac_lighting PRIVATE openrac_common)
 openrac_warnings(openrac_lighting)
-foreach(name IN ITEMS probes probe_atlas probe_regions)
+openrac_add_test(environment SOURCES enhanced/tests/environment_test.cpp LIBS openrac_lighting)
+foreach(name IN ITEMS probes probe_atlas probe_regions probe_decode)
   openrac_add_test(lighting_${name} SOURCES enhanced/tests/lighting/${name}.cpp
                                     LIBS openrac_lighting)
   set_tests_properties(lighting_${name} PROPERTIES SKIP_RETURN_CODE 77)
@@ -291,8 +365,20 @@ openrac_add_c_test(effect_quad NO_STRICT_ALIASING NO_FP_CONTRACT
 openrac_add_c_test(scene_actors NO_STRICT_ALIASING WRAPV
   INCLUDES tests/rac1_host game/common/include runtime/include game/rac1-pal/host)
 
+# The shared rac1 host C's posed mobys' animation (a co-op figure, a moby the host drives).
+openrac_add_c_test(pose_anim MATH)
+
 # The shared rac1 host C's bigger moby pool, with PAL's table and the same stand-in.
 openrac_add_c_test(moby_pool NO_STRICT_ALIASING WRAPV
+  INCLUDES tests/rac1_host game/common/include runtime/include game/rac1-pal/host)
+
+# The mod-only spatial hash: tombstones must keep probe chains intact and recycle emptied cells.
+openrac_add_c_test(expanded_moby_grid NO_STRICT_ALIASING MATH
+  INCLUDES tests/rac1_host game/common/include runtime/include game/rac1-pal/host)
+
+# The shared rac1 host C's level world under the pause menu (the mods' mobys made and deleted
+# among the level's, the level's camera), with PAL's table and the same stand-in.
+openrac_add_c_test(world_menu NO_STRICT_ALIASING WRAPV MATH
   INCLUDES tests/rac1_host game/common/include runtime/include game/rac1-pal/host)
 
 openrac_add_c_test(resource_bank NO_STRICT_ALIASING)
@@ -310,6 +396,10 @@ if(OPENRAC_PORT_WINDOW)
   include(Window)
 endif()
 include(Render)
+include(GpuTests)
+openrac_configure_gpu_tests(${openrac_parallel_gpu_tests})
+add_test(NAME gpu_test_config
+         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/test_gpu_tests.py")
 
 # ---- the games, from their decompilations (port/game/*/hostgen.json) ----
 if(OPENRAC_PORT_GAMES)

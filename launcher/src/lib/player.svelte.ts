@@ -147,6 +147,13 @@ export function playerVersion(game: GameView): VersionView | null {
   });
 }
 
+/** Play waits for the game's program, which is not there, and this launcher has no step that
+ *  builds it (an installer that carries neither, such as Going Commando's in launcher 1.0.0). */
+export function missingProgram(v: VersionView): boolean {
+  const builds = [action(v, "port-rebuild"), action(v, "port-build")].filter((a) => a?.thisPlatform);
+  return !!action(v, "play")?.missingArtifact && builds.length === 0;
+}
+
 /** The game is built for this computer: its program is there (on Android, the APK's), whether or
  *  not its levels are ready yet. */
 export function isBuilt(game: GameView, v: VersionView): boolean {
@@ -155,7 +162,9 @@ export function isBuilt(game: GameView, v: VersionView): boolean {
 
 /**
  * What Rebuild runs: the build from scratch where this platform builds, else (Android, which plays
- * the game its APK carries) the levels read from the disc again and checked. Null when it cannot run.
+ * the game its APK carries) the levels read from the disc again and checked. Null when it cannot run,
+ * and when the game's program is not there with nothing to build it (missingProgram): reading the
+ * levels again would leave Play just as blocked, and Rebuild would be offered again, forever.
  */
 export function rebuildSteps(v: VersionView): ActionView[] | null {
   const builds = [action(v, "port-rebuild"), action(v, "port-build")].filter((a) => a !== null);
@@ -163,6 +172,7 @@ export function rebuildSteps(v: VersionView): ActionView[] | null {
     const build = builds.find((a) => a.runnable);
     return build ? [build] : null;
   }
+  if (missingProgram(v)) return null;
   const levels = action(v, "port-levels");
   const check = action(v, "port-levels-check");
   return levels?.runnable ? [levels, ...(check ? [check] : [])] : null;
@@ -309,7 +319,7 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       kind: "build",
       label: "Build and play",
       icon: "build",
-      hint: "Makes the game for this computer from OpenRAC's code (nothing is downloaded), reads its levels from your disc, then starts it. A few minutes, the first time only.",
+      hint: "Makes the game for this computer from OpenRAC's code and your disc, reads its levels from your disc, then starts it. A few minutes, the first time only.",
       primary: true,
       status: "Needs building",
       tone: "warn",
@@ -324,6 +334,18 @@ export function playerState(game: GameView, v: VersionView): PlayerState {
       hint: "Makes the game again from the start, so it can be played. Your saves are kept.",
       primary: true,
       status: "Needs rebuilding",
+      tone: "warn",
+    };
+  }
+  if (missingProgram(v)) {
+    return {
+      ...base,
+      kind: "blocked",
+      label: "Play",
+      icon: "play",
+      hint: "This launcher has no program for this game and cannot build it. Update the launcher (Settings): a newer one builds it from your disc.",
+      disabled: true,
+      status: "Needs a newer launcher",
       tone: "warn",
     };
   }
@@ -380,8 +402,9 @@ export async function prepare(v: VersionView): Promise<boolean> {
     await refresh();
   }
   const now = freshVersion(v);
-  // Levels only when Play waits for them: a game that reads none yet (Going Commando's) starts as
-  // it is, and is not held up by minutes of reading levels it does not draw.
+  // Levels only when Play waits for them: a game that reads none starts as it is, and is not held
+  // up by minutes of reading levels it does not draw. A game with no level check (Going
+  // Commando's) waits for the export alone, so prepareLevels reads it and no more.
   const waits = !action(now, "play")?.runnable;
   if (
     waits &&
@@ -502,6 +525,11 @@ async function play(v: VersionView): Promise<void> {
   const fresh = freshVersion(v);
   const start = action(fresh, "play");
   if (!start?.runnable) return;
+  // Mods load: they are brought up to date first (lib/modAutoUpdate), never holding Play long.
+  if (app.config?.playWithMods) {
+    const { beforePlay } = await import("./modAutoUpdate.svelte");
+    await beforePlay(v.key);
+  }
   showLaunch(v.game, v.title);
   const modded = app.config?.playWithMods ? action(fresh, "play-edited") : undefined;
   if (modded?.runnable) {

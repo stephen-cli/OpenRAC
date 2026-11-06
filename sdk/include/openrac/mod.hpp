@@ -421,8 +421,8 @@ public:
         }
     }
 
-    // Return whether the port took it: shows this page (from another of the mod's on the screen),
-    // goes back a level, asks `question` on this page (answered by an OPENRAC_UI_ANSWER with
+    // Return whether the port took it: shows this page (from another of the mod's on the screen,
+    // or since 1.9 a main-menu item's page from the title's main menu), goes back a level, asks `question` on this page (answered by an OPENRAC_UI_ANSWER with
     // `tag`), plays a menu sound (OPENRAC_UI_SOUND_*).
     bool open() const { return m_api != nullptr && m_api->ui_open(m_handle, m_id) == OPENRAC_HOOK_OK; }
 
@@ -1126,9 +1126,199 @@ public:
         return bytes;
     }
 
+    // Whether the port has interface 1.11's calls (data_dir, save_slot_current).
+    bool has_api_11() const {
+        return m_api->api_minor >= 11
+               && m_api->size >= offsetof(openrac_api, save_slot_current) + sizeof(void*);
+    }
+
+    // Since 1.11: the mod's own folder for the files it keeps (beside the memory cards, made by the
+    // port), empty for none.
+    std::string data_dir() const {
+        const char* dir = has_api_11() ? m_api->data_dir(m_handle) : nullptr;
+        return dir != nullptr ? dir : "";
+    }
+
+    // Since 1.11: the memory card slot the game in progress saves into (the one it was loaded from
+    // or last saved to), -1 for none.
+    int save_slot_current() const { return has_api_11() ? m_api->save_slot_current() : -1; }
+
+    // Whether the port has interface 1.12's calls: the hero moved by the mod (hero_set_pose), the
+    // collision triangles, props, sounds, the camera, heat haze and HUD text. has_hero_drive(),
+    // has_collision(), has_props(), has_sounds() and has_camera() say the same for each part.
+    bool has_api_12() const {
+        return m_api->api_minor >= 12
+               && m_api->size >= offsetof(openrac_api, hero_hurt) + sizeof(void*);
+    }
+    bool has_hero_drive() const { return has_api_12(); }
+    bool has_collision() const { return has_api_12(); }
+    bool has_props() const { return has_api_12(); }
+    bool has_sounds() const { return has_api_12(); }
+
+    // Since 1.12: puts the hero in `pose` (its size set here), from the mod's replacement of the
+    // hero's update (rac1.player.update), which then does not call the original: his place,
+    // rotation, velocity and animation, and what the update does after his movement to show him.
+    // False outside a level, or for a mod that has not taken that hook point.
+    bool hero_set_pose(const openrac_pose& pose) const {
+        openrac_pose p = pose;
+        p.size = sizeof p;
+        return has_api_12() && m_api->hero_set_pose(m_handle, &p) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: the collision triangles inside the box [lo, hi] (the level's, then the mobys'
+    // with collision, in a stable order), up to `max` of them.
+    std::vector<openrac_collision_triangle> collision_triangles(
+        const float lo[3], const float hi[3], int max = 4096
+    ) const {
+        std::vector<openrac_collision_triangle> out;
+        if (!has_api_12() || max <= 0) {
+            return out;
+        }
+        out.resize(static_cast<std::size_t>(max));
+        const int n = m_api->collision_triangles(lo, hi, out.data(), max);
+        out.resize(static_cast<std::size_t>(std::clamp(n, 0, max)));
+        return out;
+    }
+
+    // Since 1.12: a prop of the mesh `mesh_path` (a .glb in the mod's folder) in the level: its
+    // id, or -1 (no level, no such file, no room).
+    int prop_create(const std::string& mesh_path) const {
+        const int id = has_api_12() ? m_api->prop_create(m_handle, mesh_path.c_str())
+                                    : OPENRAC_HOOK_UNKNOWN;
+        return id >= 0 ? id : -1;
+    }
+
+    // Since 1.12: places prop `id` at `position`, turned by the unit quaternion `rotation` (x, y, z,
+    // w) and scaled by `scale`; false for a prop gone with its level (make another).
+    bool prop_pose(int id, const float position[3], const float rotation[4], float scale = 1.0f) const {
+        openrac_prop_pose p{};
+        p.size = sizeof p;
+        std::copy(position, position + 3, p.position);
+        std::copy(rotation, rotation + 4, p.rotation);
+        p.scale = scale;
+        return has_api_12() && m_api->prop_pose(m_handle, id, &p) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: places prop `id` by a 4 by 4 matrix, column-major.
+    bool prop_pose(int id, const float matrix[16]) const {
+        openrac_prop_pose p{};
+        p.size = sizeof p;
+        p.flags = OPENRAC_PROP_MATRIX;
+        std::copy(matrix, matrix + 16, p.matrix);
+        return has_api_12() && m_api->prop_pose(m_handle, id, &p) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: places prop `id` by a matrix, its colour times `tint` (RGBA) and drawn as `blend`
+    // says (OPENRAC_PROP_OPAQUE, _ALPHA or _ADD): a glow or a spark.
+    bool prop_pose(int id, const float matrix[16], const float tint[4], uint32_t blend) const {
+        openrac_prop_pose p{};
+        p.size = sizeof p;
+        p.flags = OPENRAC_PROP_MATRIX | OPENRAC_PROP_TINT;
+        std::copy(matrix, matrix + 16, p.matrix);
+        std::copy(tint, tint + 4, p.tint);
+        p.blend = blend;
+        return has_api_12() && m_api->prop_pose(m_handle, id, &p) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: hides prop `id` or shows it again; takes it out of the level.
+    bool prop_hide(int id, bool hidden = true) const {
+        return has_api_12() && m_api->prop_hide(m_handle, id, hidden ? 1 : 0) == OPENRAC_HOOK_OK;
+    }
+    bool prop_remove(int id) const {
+        return has_api_12() && m_api->prop_remove(m_handle, id) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: a sound of the mod's (a .wav or .ogg in its folder): its id, or -1.
+    int sound_load(const std::string& path) const {
+        const int id = has_api_12() ? m_api->sound_load(m_handle, path.c_str()) : OPENRAC_HOOK_UNKNOWN;
+        return id >= 0 ? id : -1;
+    }
+
+    // Since 1.12: plays sound `sound` at the game's sound volume: its voice, 0 for none.
+    std::uint32_t sound_play(int sound, float volume = 1.0f, float pitch = 1.0f, bool loop = false) const {
+        return has_api_12() ? m_api->sound_play(m_handle, sound, volume, pitch, loop ? 1 : 0) : 0;
+    }
+
+    // Since 1.12: a voice's volume and pitch (false once it has ended); stops a voice.
+    bool sound_set(std::uint32_t voice, float volume, float pitch) const {
+        return has_api_12() && m_api->sound_set(m_handle, voice, volume, pitch) == OPENRAC_HOOK_OK;
+    }
+    void sound_stop(std::uint32_t voice) const {
+        if (has_api_12()) {
+            m_api->sound_stop(m_handle, voice);
+        }
+    }
+
+    // Since 1.12: turns and moves the hero's joints on top of his animation (openrac_joint_offset)
+    // until the next call; an empty list takes them off. False outside a level, for a mod without
+    // the hero's update hook, or on a port without the call.
+    bool hero_set_joints(const std::vector<openrac_joint_offset>& joints) const {
+        return has_api_12()
+               && m_api->hero_set_joints(m_handle, joints.empty() ? nullptr : joints.data(),
+                                         static_cast<int>(joints.size()))
+                      == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: whether the port offers camera_view(), camera_set() and haze_set().
+    bool has_camera() const { return has_api_12(); }
+
+    // Since 1.12: the camera the game made itself for its last view in the level. False outside a
+    // level or on a port without the call.
+    bool camera_view(openrac_camera& out) const {
+        out.size = sizeof(openrac_camera);
+        return has_camera() && m_api->camera_view(&out) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: the game's camera put where `camera` says until camera_release() or the level
+    // goes. False outside a level, while another mod holds the camera, or on a port without it.
+    bool camera_set(const openrac_camera& camera) const {
+        openrac_camera c = camera;
+        c.size = sizeof(openrac_camera);
+        return has_camera() && m_api->camera_set(m_handle, &c) == OPENRAC_HOOK_OK;
+    }
+    void camera_release() const {
+        if (has_camera()) {
+            m_api->camera_set(m_handle, nullptr);
+        }
+    }
+
+    // Since 1.12: heat haze patches over the picture (openrac_haze) until the next call; an empty
+    // list takes them off.
+    bool haze_set(const std::vector<openrac_haze>& patches) const {
+        return has_camera()
+               && m_api->haze_set(m_handle, patches.empty() ? nullptr : patches.data(),
+                                  static_cast<int>(patches.size()))
+                      == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: lines of text in the game's HUD (openrac_hud_text) until the next call; an empty
+    // list takes them off.
+    bool hud_text_set(const std::vector<openrac_hud_text>& lines) const {
+        return has_api_12()
+               && m_api->hud_text_set(m_handle, lines.empty() ? nullptr : lines.data(),
+                                      static_cast<int>(lines.size()))
+                      == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.12: one of the hero's own sounds, the game's (openrac_api.hero_sound_play): its
+    // voice, or -1.
+    int hero_sound_play(int sound, bool loop = false) const {
+        return has_api_12() ? m_api->hero_sound_play(m_handle, sound, loop ? 1 : 0) : -1;
+    }
+    // Since 1.12: stops a voice hero_sound_play gave, while it still plays on the hero.
+    void hero_sound_stop(int voice) const {
+        if (has_api_12()) {
+            m_api->hero_sound_stop(m_handle, voice);
+        }
+    }
+    // Since 1.12: `damage` hit points taken from the hero as a hit of the game's does (his death is
+    // his own update's): his health after, or -1.
+    int hero_hurt(int damage) const { return has_api_12() ? m_api->hero_hurt(m_handle, damage) : -1; }
+
     // Since 1.9: whether the port offers the world calls (moby_list() ... bolts()).
     bool has_world() const {
-        return m_api->api_minor >= 9 && m_api->size >= offsetof(openrac_api, bolts) + sizeof(void*)
+        return m_api->api_minor >= 9
+               && m_api->size >= offsetof(openrac_api, play_skip) + sizeof(void*)
                && has_play();
     }
 
@@ -1214,6 +1404,158 @@ public:
     }
 
     int bolts(int add = 0) const { return m_api->api_minor >= 9 ? m_api->bolts(add) : 0; }
+
+    // Since 1.9: skips the scene playing as the game's own skip does; false for a game without.
+    bool play_skip() const {
+        return has_world() && m_api->play_skip(m_handle) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: whether the port offers the held pieces and the shots (hero_held() ...
+    // figure_shot()).
+    bool has_held() const {
+        return has_world() && m_api->size >= offsetof(openrac_api, figure_shot) + sizeof(void*);
+    }
+
+    // Since 1.9: what the hero wears and holds into `out`; false when there is no hero now.
+    bool hero_held(openrac_held& out) const {
+        out = openrac_held{};
+        out.size = sizeof out;
+        return has_held() && m_api->hero_held(&out) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: has figure `id` wear and hold `held` (its size set here), each tick it is posed;
+    // false for a figure gone with its level.
+    bool figure_held(int id, const openrac_held& held) const {
+        openrac_held h = held;
+        h.size = sizeof h;
+        return has_held() && m_api->figure_held(m_handle, id, &h) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: the shots the hero fired since the last call, oldest first.
+    std::vector<openrac_shot> hero_shots() const {
+        if (!has_held()) {
+            return {};
+        }
+        std::vector<openrac_shot> shots(OPENRAC_SHOTS_MAX);
+        const int n = m_api->hero_shots(shots.data(), static_cast<int>(shots.size()));
+        shots.resize(static_cast<std::size_t>(n > 0 ? n : 0));
+        return shots;
+    }
+
+    // Since 1.9: has figure `id` fire `shot` (its size set here), hitting nothing in this game;
+    // false for a figure gone or a weapon the port cannot fire for one.
+    bool figure_shot(int id, const openrac_shot& shot) const {
+        openrac_shot s = shot;
+        s.size = sizeof s;
+        return has_held() && m_api->figure_shot(m_handle, id, &s) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: whether the port offers play_notice().
+    bool has_notice() const {
+        return has_world() && m_api->size >= offsetof(openrac_api, play_notice) + sizeof(void*);
+    }
+
+    // Since 1.9: a line at the top of the game's picture until replaced or cleared (""); false for
+    // a port without it.
+    bool play_notice(const std::string& text) const {
+        return has_notice() && m_api->play_notice(m_handle, text.c_str()) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: whether the port offers items of the pause menu's Options page (ui_pause_item()).
+    bool has_pause_items() const {
+        return has_ui() && m_api->api_minor >= 9
+               && m_api->size >= offsetof(openrac_api, ui_pause_item) + sizeof(void*);
+    }
+
+    // Since 1.9: adds an item named `label` to the Options page of the pause menu in a level,
+    // opening `page`. Throws openrac::Error when refused. Only during load.
+    void ui_pause_item(const char* label, const UiPage& page) {
+        if (!has_pause_items()) {
+            throw Error("ui_pause_item: requires interface 1.9");
+        }
+
+        // Refused once load is over, with no label or another mod's page, and past the most.
+        if (const int result = m_api->ui_pause_item(m_handle, label, page.id());
+            result != OPENRAC_HOOK_OK) {
+            throw Error(
+                result == OPENRAC_HOOK_TOO_LATE
+                    ? "ui_pause_item: refused (only during load)"
+                    : "ui_pause_item: refused (no label, not the mod's page, or too many)"
+            );
+        }
+    }
+
+    // Since 1.9: whether the port offers the level's scenes (scene_playing(), play_scene()).
+    bool has_scenes() const {
+        return has_world() && m_api->size >= offsetof(openrac_api, play_scene) + sizeof(void*);
+    }
+
+    // Since 1.9: the in-level scene playing (its number in the level), -1 for none; `frame` (when
+    // not null) gets how many of its frames have played.
+    int scene_playing(int* frame = nullptr) const {
+        int played = 0;
+        const int scene = has_scenes() ? m_api->scene_playing(&played) : -1;
+        if (frame != nullptr) {
+            *frame = scene >= 0 ? played : 0;
+        }
+        return scene;
+    }
+
+    // Since 1.9: starts the level's scene `scene` from its start as the game's own trigger does,
+    // once the player is in control (-1 drops a request still waiting); false outside a level or
+    // for a port without scenes.
+    bool play_scene(int scene) const {
+        return has_scenes() && m_api->play_scene(m_handle, scene) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: whether the port offers moby_hide(), moby_deletion() and camera_position().
+    bool has_moby_detail() const {
+        return has_world() && m_api->size >= offsetof(openrac_api, camera_position) + sizeof(void*);
+    }
+
+    // Since 1.9: hides the moby in `slot` from drawing (`hidden`) or shows it again; false for no
+    // moby there or a port without it.
+    bool moby_hide(int slot, bool hidden) const {
+        return has_moby_detail()
+               && m_api->moby_hide(m_handle, slot, hidden ? 1 : 0) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: the last deletion the game made of the moby in `slot` in this level load into
+    // `out`; false for none seen or a port without it.
+    bool moby_deletion(int slot, openrac_moby_deletion& out) const {
+        out = {};
+        out.size = sizeof out;
+        return has_moby_detail() && m_api->moby_deletion(slot, &out) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: where the game's camera is into `out` (x, y, z); false outside a level or for a
+    // port without it.
+    bool camera_position(float (&out)[3]) const {
+        return has_moby_detail() && m_api->camera_position(out) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: whether the port offers moby_run().
+    bool has_moby_run() const {
+        return has_world() && m_api->size >= offsetof(openrac_api, moby_run) + sizeof(void*);
+    }
+
+    // Since 1.9: how the game ran the level's mobys in the last tick, and the moby in `slot` (-1:
+    // none) in it, into `out`; false outside a level or for a port without it.
+    bool moby_run(int slot, openrac_moby_run& out) const {
+        out = {};
+        out.size = sizeof out;
+        return has_moby_run() && m_api->moby_run(slot, &out) == OPENRAC_HOOK_OK;
+    }
+
+    // Since 1.9: the slot of the moby at game address `moby` (a hook point's argument), -1 none.
+    int moby_slot_of(gaddr moby) const { return has_world() ? m_api->moby_slot_of(moby) : -1; }
+
+    // Since 1.9: the world keeps running under the game's menus while `on`; false for a game
+    // without it.
+    bool play_overlay_pause(bool on) const {
+        return has_world()
+               && m_api->play_overlay_pause(m_handle, on ? 1 : 0) == OPENRAC_HOOK_OK;
+    }
 
     // Returns a view of game memory.
     Memory memory() const { return Memory(m_api->memory); }

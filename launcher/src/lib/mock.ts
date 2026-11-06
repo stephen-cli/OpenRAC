@@ -10,10 +10,31 @@ import summaryFile from "../../../progress/summary.json";
 import packageFile from "../../package.json";
 import { onAndroid } from "./api";
 import { mockEnhanced } from "./mockEnhanced";
+import { mockRac2Extra, mockWriteRac2Extra } from "./mockRac2Extra";
+import {
+  mockApply,
+  mockAutoUpdate,
+  mockIndexView,
+  mockLastUpdate,
+  mockParse,
+  mockResolve,
+  mockUpdates,
+} from "./mockIndex";
+import {
+  mockControlsCopy,
+  mockControlsReset,
+  mockControlsResetPlayer,
+  mockControlsResetPlayers,
+  mockControlsSet,
+  mockControlsView,
+} from "./mockControls";
 import type { ActionView } from "./generated/ActionView";
+import type { TexturePackView } from "./generated/TexturePackView";
 import type { BuildInfo } from "./generated/BuildInfo";
 import type { Check } from "./generated/Check";
 import type { Config } from "./generated/Config";
+import type { ControlsScope } from "./generated/ControlsScope";
+import type { ControlsView } from "./generated/ControlsView";
 import type { Detected } from "./generated/Detected";
 import type { DifferenceView } from "./generated/DifferenceView";
 import type { Differences } from "./generated/Differences";
@@ -22,8 +43,11 @@ import type { InstallState } from "./generated/InstallState";
 import type { JobEvent } from "./generated/JobEvent";
 import type { Library } from "./generated/Library";
 import type { ModSources } from "./generated/ModSources";
+import type { WantedMod } from "./generated/WantedMod";
 import type { ModLoadSummary } from "./generated/ModLoadSummary";
 import type { PackView } from "./generated/PackView";
+import type { ResetDone } from "./generated/ResetDone";
+import type { ResetPreview } from "./generated/ResetPreview";
 import type { Platform } from "./generated/Platform";
 import type { PluginStatus } from "./generated/PluginStatus";
 import type { PluginInstalled } from "./generated/PluginInstalled";
@@ -34,12 +58,23 @@ import type { RemotePreview } from "./generated/RemotePreview";
 import type { ReportEntry } from "./generated/ReportEntry";
 import type { SaveChange } from "./generated/SaveChange";
 import type { SaveFields } from "./generated/SaveFields";
+import type { ExportedSaves } from "./generated/ExportedSaves";
+import type { SaveArchiveSlot } from "./generated/SaveArchiveSlot";
+import type { SaveImportPreview } from "./generated/SaveImportPreview";
 import type { SaveView } from "./generated/SaveView";
 import type { Scope } from "./generated/Scope";
 import type { Started } from "./generated/Started";
 import type { VersionStatus } from "./generated/VersionStatus";
+import type { UpdateChannel } from "./generated/UpdateChannel";
 import type { VersionView } from "./generated/VersionView";
+import type { EditorState } from "./generated/EditorState";
 import type { WriteResult } from "./generated/WriteResult";
+import type { Rac2SaveFields } from "./generated/Rac2SaveFields";
+import type { Rac2SaveView } from "./generated/Rac2SaveView";
+import type { Rac2WriteResult } from "./generated/Rac2WriteResult";
+import type { Rac2ExtraFields } from "./generated/Rac2ExtraFields";
+import type { Rac2ExtraView } from "./generated/Rac2ExtraView";
+import type { Rac2ExtraWriteResult } from "./generated/Rac2ExtraWriteResult";
 import type { AppInfo, DiscScan, GpuDriver, GpuDrivers } from "./api";
 import type { UpdateInfo, UpdateProgressCallback } from "./updates";
 
@@ -165,7 +200,7 @@ let gpu: GpuDrivers = {
   device: { model: "Google Pixel (preview)", api: 35, soc: "Qualcomm SM8650", gpu: "adreno" },
 };
 
-// The launcher's update channels (core/src/update.rs): a release's build, and master's development
+// The launcher's update channels (core/src/update.rs): a release's build, and develop's development
 // builds. ?fork: a fork's launcher (someone/OpenRAC), which may follow any of its branches.
 const REPOSITORY = new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("fork")
   ? "someone/OpenRAC"
@@ -179,13 +214,13 @@ const STABLE = {
 };
 const DEV = {
   ...STABLE,
-  channel: "launcher-dev-master",
-  manifest: `https://github.com/${REPOSITORY}/releases/download/launcher-dev-master/latest.json`,
-  page: `https://github.com/${REPOSITORY}/releases/tag/launcher-dev-master`,
+  channel: "launcher-dev-develop",
+  manifest: `https://github.com/${REPOSITORY}/releases/download/launcher-dev-develop/latest.json`,
+  page: `https://github.com/${REPOSITORY}/releases/tag/launcher-dev-develop`,
 };
 
 /** A fork's branches with development builds, as the preview has them (updates.ts, devBranches). */
-export const MOCK_DEV_BRANCHES = ["master", "feature-launcher-logo", "fix-pad-navigation"];
+export const MOCK_DEV_BRANCHES = ["develop", "feature-launcher-logo", "fix-pad-navigation"];
 
 let config: Config = {
   // ?setup: a first start where no OpenRAC folder was found, so the welcome screen asks for one.
@@ -212,6 +247,9 @@ let config: Config = {
   lastVersion: null,
   discordRpc: true,
   checkUpdates: true,
+  // ?modupdates: the mods are looked at when the launcher starts, and the lock-strafe has an update.
+  // Off otherwise, so its prompt does not cover every page of the preview.
+  checkModUpdates: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("modupdates"),
   updateChannel: null,
   updateBranch: null,
   layout: "compact",
@@ -222,12 +260,34 @@ let config: Config = {
   renderer: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("vulkan")
     ? "vulkan"
     : "opengl",
+  hdr: "",
+  safeRendering: false,
   // ?mods: the Mods switch under Play is on.
   playWithMods: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("mods"),
   crashesSeen: {},
   discChoice: {},
   multiplayerName: "BraveLombax42",
+  modIndexes: [],
+  prereleaseMods: null,
+  pendingDeepLink: null,
+  autoUpdateMods: true,
+  cleanupUnusedDeps: true,
 };
+
+/** A used slot as an exported file names it (Export and Import saves). */
+function mockTransferSlot(serial: string, slotIndex: number, planetId: number, planetName: string, bolts: number) {
+  return {
+    folder: serial === "SCUS_972.68" ? "BASCUS-97268RATCHET" : "BESCES-50916RATCHET",
+    slotIndex,
+    file: `save${slotIndex}.bin`,
+    empty: false,
+    planetId,
+    planetName,
+    bolts,
+    timestamp: "2026-10-09 17:21:44",
+    mods: null,
+  } satisfies SaveArchiveSlot;
+}
 
 const query = new URLSearchParams(typeof location === "undefined" ? "" : location.search);
 
@@ -358,8 +418,11 @@ function status(key: string, v: RawVersion): VersionStatus {
   };
 }
 
-function view(action: RawAction, st: VersionStatus | null): ActionView {
+function view(action: RawAction, st: VersionStatus | null, version?: string): ActionView {
   const state = action.state ?? "planned";
+  // The Android APK carries both RAC1 programs. The disc's levels still need preparing.
+  const bundledPlay = platform === "android" && action.id === "play" && version?.startsWith("rac1/") === true;
+  const artifactMissing = !built && !bundledPlay && (action.requires ?? []).includes("artifact");
   // As core/src/actions.rs (runs_on): Android runs only a play action, unless one names it.
   const thisPlatform = action.platforms?.length
     ? action.platforms.includes(platform)
@@ -381,7 +444,7 @@ function view(action: RawAction, st: VersionStatus | null): ActionView {
         python: !config.python,
         godot: !config.godot,
         docker: !config.docker,
-        artifact: !built,
+        artifact: artifactMissing,
       };
       const words: Record<string, string> = {
         disc: "your disc image (baserom/)",
@@ -394,6 +457,7 @@ function view(action: RawAction, st: VersionStatus | null): ActionView {
       };
       if (missing[need]) blockers.push(`needs ${words[need] ?? need}`);
     }
+    if (bundledPlay && !built) blockers.push("needs a check of the levels (Check the levels)");
   }
   return {
     id: action.id,
@@ -408,10 +472,10 @@ function view(action: RawAction, st: VersionStatus | null): ActionView {
     thisPlatform,
     runnable: blockers.length === 0,
     blockers,
-    // The mock has no files: nothing is built or made, except what ?built says is (the game
-    // built and its levels ready). Only the steps that made those are done; the rest are not,
-    // or a page would say an action that never ran is done.
-    done: built && BUILT_DONE.has(action.id),
+    // The mock tracks the bundled program and the files implied by ?built. Exports and editor
+    // projects still need their own steps.
+    done: bundledPlay || (built && BUILT_DONE.has(action.id)),
+    missingArtifact: state !== "planned" && artifactMissing,
     developer: action.developer ?? false,
     warning: action.warning ?? null,
   };
@@ -471,7 +535,7 @@ function library(): Library {
             : null,
           progress: progress(key),
           status: st,
-          actions: (actions.versions[key] ?? []).filter(shown).map((a) => view(a, st)),
+          actions: (actions.versions[key] ?? []).filter(shown).map((a) => view(a, st, key)),
           portOutdated: false,
         };
       });
@@ -510,6 +574,79 @@ function findAction(scope: Scope, id: string): RawAction | undefined {
 }
 
 /** What a few actions print at the end in the preview, so the pages that read it can be tried. */
+// The level editor's status panel (EditorFlow.svelte): ?editor=none|ready|unpacked|packed|outdated|
+// broken|carried|repack picks where the player is; extracting and packing move it along as the real
+// folders would. ?toolerror=<code> makes the next extract or pack stop with that code and a raw
+// message (that must never show), e.g. ?editor=outdated&toolerror=project-outdated-gameplay.
+// ?editor=reading has no levels yet; with ?progress=<step>:<done>/<total>[:<level>] the next
+// editor job (read, export again, pack, read the game's levels) stops at that count and runs on,
+// e.g. ?editor=reading&progress=read:3/18:4 then "Read the levels and open".
+let mockEditor = query.get("editor") ?? "ready";
+const mockHold = /^([a-z]+):(\d+)\/(\d+)(?::(\d+))?$/.exec(query.get("progress") ?? "");
+
+/** What the editor's tools print as they go (editor/progress_line.py), a few counts of each step. */
+function progressLines(step: string, total: number, levels: (n: number) => number = (n) => n - 1): string[] {
+  const counts = [0, ...[0.25, 0.5, 0.75].map((f) => Math.round(total * f)), total].filter(
+    (n, i, all) => all.indexOf(n) === i,
+  );
+  return counts.map((n) => `openrac-progress: ${step} ${n}/${total}${n ? ` ${levels(n)}` : ""}`);
+}
+
+const EDITOR_JOBS = ["editor-extract", "editor-reexport", "editor-pack", "port-levels", "port-levels-visibility"];
+
+function mockEditorState(): EditorState {
+  const all = Array.from({ length: 19 }, (_, i) => i);
+  const now = Date.now();
+  const state: EditorState = {
+    levels: mockEditor === "none" || mockEditor === "reading" ? [] : all,
+    outdated: [],
+    unpacked: [],
+    broken: [],
+    packedAt: null,
+    packedLevels: 0,
+    packedExpandedLevels: [],
+    packedOtherVersion: false,
+    carried: [],
+    backups: [],
+    gameLevelsFound: true,
+    formatKnown: true,
+  };
+  const backup = {
+    name: "20261028-101500",
+    path: "/home/you/OpenRAC/assets/levels/rac1/pal-backups/20261028-101500",
+    levels: all,
+  };
+  switch (mockEditor) {
+    case "unpacked":
+      return { ...state, unpacked: [0, 3] };
+    case "packed":
+      return { ...state, packedAt: now - 60_000, packedLevels: 2 };
+    case "repack":
+      return { ...state, packedAt: now - 60_000, packedLevels: 2, packedOtherVersion: true };
+    case "outdated":
+      return { ...state, outdated: all.map((level) => ({ level, reason: "gameplay" as const })) };
+    case "broken":
+      return { ...state, broken: [5] };
+    case "carried":
+      return {
+        ...state,
+        unpacked: [0],
+        backups: [backup],
+        carried: [
+          {
+            level: 0,
+            carried: ["Bolt_0002: moved", "Bolt_0003: deleted", "Bolt_0002_copy: added"],
+            notCarried: ["Camera_0001: moved"],
+            failed: false,
+          },
+          { level: 3, carried: [], notCarried: [], failed: false },
+        ],
+      };
+    default:
+      return state;
+  }
+}
+
 function lastLines(id: string, args: Record<string, unknown>): string[] {
   const data = `${config.installDir ?? ""}/active/rac1/data`;
   const level = String(typeof args.level === "number" ? args.level : 0).padStart(2, "0");
@@ -532,9 +669,38 @@ function lastLines(id: string, args: Record<string, unknown>): string[] {
         "refused: level 00 texture tie_0004.png is 300 x 200, but the game's tie_0004 is 64 x 64 (1:1); keep that shape, for example 128 x 128, 256 x 256",
         `Imported 19 model file(s) and 80 texture file(s) into ${data}/overrides as ${name}; 1 refused (see above)`,
       ];
+    case "audio-export":
+    case "audio-export-all":
+      return [
+        ...progressLines("audio", 20),
+        `Exported 290 sounds: ${data}/exports/audio-${id === "audio-export" ? `level_${level}-` : ""}${String(args.option)}-20261101T0900`,
+      ];
+    case "audio-import":
+      mockPacks.push({
+        ...samplePack(name),
+        id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+        textures: 0,
+        models: 0,
+        sounds: 3,
+      });
+      return [`Imported 3 sound(s) into ${data}/overrides as ${name}`];
     case "overrides-add":
       mockPacks.push({ ...samplePack(name), id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-") });
       return [`Added ${name} as ${name.toLowerCase()}, on, last in the order.`];
+    case "editor-extract":
+      return ["openrac-progress: project", ...progressLines("read", 19), "Godot projects, one per level: done"];
+    case "editor-reexport":
+      return [
+        ...progressLines("read", 19),
+        ...progressLines("carry", 19),
+        "Godot projects: 19 written again; the old ones, with any edits, are in the backups folder.",
+      ];
+    case "editor-pack":
+      return [...progressLines("pack", 2, (n) => (n === 1 ? 0 : 3)), "Packed 2 level(s), 3 moby edit(s)"];
+    case "port-levels":
+      return progressLines("read", 19);
+    case "port-levels-visibility":
+      return progressLines("visibility", 19);
     case "overrides-stack":
       return [`Stacked ${mockPacks.filter((p) => p.enabled).length + 1} layer(s), 99 file(s): ${data}/mods/pal`];
     default:
@@ -543,14 +709,14 @@ function lastLines(id: string, args: Record<string, unknown>): string[] {
 }
 
 /** The native mods the preview pretends are installed: ?nomods shows none. */
-/** Where the mock's mods came from (remote.rs's sources.json): the lock-strafe, from rac1-mods. */
+/** Where the mock's mods came from (remote.rs's sources.json): the lock-strafe, from openrac-mods. */
 const mockSources: ModSources = {
   format: 1,
   mods: query.has("nomods")
     ? {}
     : {
         "lock-strafe": {
-          url: "https://github.com/OpenRAC/rac1-mods",
+          url: "https://github.com/OpenRAC/openrac-mods",
           path: "lock-strafe",
           version: "1.0.0",
           tag: "v1.0.0",
@@ -561,11 +727,11 @@ const mockSources: ModSources = {
       },
 };
 
-/** What rac1-mods holds, as remote.rs's preview gives it: the lock-strafe, and a mod for another game. */
+/** What openrac-mods holds, as remote.rs's preview gives it: the lock-strafe, and a mod for another game. */
 function mockPreview(url: string): RemotePreview {
   return {
-    url: "https://github.com/OpenRAC/rac1-mods",
-    label: url.includes("rac1-mods") ? "OpenRAC/rac1-mods" : url.replace(/^https?:\/\/(www\.)?github\.com\//, ""),
+    url: "https://github.com/OpenRAC/openrac-mods",
+    label: url.includes("openrac-mods") ? "OpenRAC/openrac-mods" : url.replace(/^https?:\/\/(www\.)?github\.com\//, ""),
     host: "github",
     owner: "OpenRAC",
     reference: "v1.1.0",
@@ -578,7 +744,7 @@ function mockPreview(url: string): RemotePreview {
         version: "1.1.0",
         author: "OpenRAC contributors",
         description: "Strafe as in the later games: hold L2 or R2, or lock it on with a weapon in hand.",
-        homepage: "https://github.com/OpenRAC/rac1-mods",
+        homepage: "https://github.com/OpenRAC/openrac-mods",
         path: "lock-strafe",
         kind: "native",
         games: { rac1: ["pal", "ntsc"] },
@@ -612,7 +778,7 @@ function mockPreview(url: string): RemotePreview {
         version: "1.0.0",
         author: "OpenRAC contributors",
         description: "Swaps two buttons of the controller: Cross and Square, Circle and Triangle, or L1 and R1.",
-        homepage: "https://github.com/OpenRAC/rac1-mods",
+        homepage: "https://github.com/OpenRAC/openrac-mods",
         path: "button-swap",
         kind: "script",
         games: { rac1: ["pal", "ntsc"] },
@@ -637,7 +803,7 @@ let mockPlugins: PluginView[] = query.has("nomods")
         author: "OpenRAC contributors",
         description:
           "Plays Ratchet & Clank with a keyboard and mouse: WASD moves, the mouse aims the camera, left click fires, holding right click opens the Quick Select and the mouse picks its slot, Space jumps, Escape pauses, the number keys and the wheel change weapons. Every action can be bound to any key, mouse button or wheel direction, two binds each, with Left-handed and Arrow keys presets. A gamepad keeps working beside it.",
-        homepage: "https://github.com/OpenRAC/rac1-mods/tree/master/keyboard-mouse",
+        homepage: "https://github.com/OpenRAC/openrac-mods/tree/master/keyboard-mouse",
         license: "GPL-3.0-or-later",
         enabled: true,
         state: "ready",
@@ -1046,7 +1212,7 @@ let mockPlugins: PluginView[] = query.has("nomods")
         author: "OpenRAC contributors",
         description:
           "Strafe as in the later games: with a weapon that fires ahead the camera stays behind Ratchet, the right stick turns him and the left stick strafes.",
-        homepage: "https://github.com/OpenRAC/rac1-mods",
+        homepage: "https://github.com/OpenRAC/openrac-mods",
         license: "GPL-3.0-or-later",
         enabled: true,
         state: "ready",
@@ -1098,7 +1264,7 @@ let mockPlugins: PluginView[] = query.has("nomods")
         version: "1.0.0",
         author: "OpenRAC contributors",
         description: "Swaps two buttons of the controller.",
-        homepage: "https://github.com/OpenRAC/rac1-mods",
+        homepage: "https://github.com/OpenRAC/openrac-mods",
         license: "GPL-3.0-or-later",
         enabled: false,
         state: "off",
@@ -1124,7 +1290,7 @@ let mockPlugins: PluginView[] = query.has("nomods")
         kind: "script",
         path: "/home/you/OpenRAC/active/rac1/data/plugins/button-swap",
       },
-      // The item randomizer (OpenRAC/rac1-mods), its manifest's settings.
+      // The item randomizer (OpenRAC/openrac-mods), its manifest's settings.
       {
         id: "item-randomizer",
         name: "Item randomizer",
@@ -1132,7 +1298,7 @@ let mockPlugins: PluginView[] = query.has("nomods")
         author: "OpenRAC contributors",
         description:
           "Shuffles what the game gives out: the gadgets and weapons from NPCs and pickups, the vendor's weapons, the gold bolts and the infobots' coordinates, so each seed is a new route through the game. The placement follows what each place needs, so every seed can be finished. Share a seed's code and a friend plays the same game. A spoiler log of each seed is written to the mod's data folder. A save made with a seed belongs to that seed.",
-        homepage: "https://github.com/OpenRAC/rac1-mods/tree/master/item-randomizer",
+        homepage: "https://github.com/OpenRAC/openrac-mods/tree/master/item-randomizer",
         license: "GPL-3.0-or-later",
         enabled: true,
         state: "ready",
@@ -1238,7 +1404,7 @@ let mockPlugins: PluginView[] = query.has("nomods")
         kind: "native",
         path: "/home/you/.local/share/dev.openrac.launcher/active/rac1/data/plugins/item-randomizer",
       },
-      // The difficulty mod (OpenRAC/rac1-mods), its manifest's settings and presets.
+      // The difficulty mod (OpenRAC/openrac-mods), its manifest's settings and presets.
       {
         id: "difficulty",
         name: "Difficulty",
@@ -1246,7 +1412,7 @@ let mockPlugins: PluginView[] = query.has("nomods")
         author: "OpenRAC contributors",
         description:
           "A slider for everything that makes Ratchet & Clank hard or easy: how many enemies there are, the damage Ratchet takes and deals, how fast the enemies and Ratchet move, weapon and ammo prices, ammo per shot and max ammo, bolt drops, max health and health pickups. Presets fill them: Easy, Retail, Hard, Brutal, and Chaos, which rolls new values for each level from a seed (and, if you like, a random event every few minutes). Every slider at 1.0 plays as the original game.",
-        homepage: "https://github.com/OpenRAC/rac1-mods/tree/master/difficulty-mod",
+        homepage: "https://github.com/OpenRAC/openrac-mods/tree/master/difficulty-mod",
         license: "GPL-3.0-or-later",
         enabled: true,
         state: "ready",
@@ -1552,6 +1718,7 @@ function mockPluginStatus(): PluginStatus | null {
   return {
     time: new Date().toISOString(),
     version: "pal",
+    api: "1.12",
     purist: !config.playWithMods,
     mods: mockPlugins
       .filter((p) => p.enabled)
@@ -1574,12 +1741,36 @@ function samplePack(name: string): PackView {
     description: "",
     enabled: true,
     isMap: false,
+    isDestination: false,
     levels: 19,
     textures: 80,
     models: 19,
     levelFiles: 0,
+    sounds: 0,
   };
 }
+
+/** A game's texture pack and saved textures, as the preview pretends (`?notextures`: none yet). */
+const mockTextures: TexturePackView = query.has("notextures")
+  ? { id: "", enabled: true, dumping: false, packCount: 0, packAnimated: 0, pack: [], dumpCount: 0, dump: [] }
+  : {
+      id: "",
+      enabled: true,
+      dumping: false,
+      packCount: 38,
+      packAnimated: 2,
+      pack: [
+        { path: "Interface", label: "Interface", count: 12 },
+        { path: "Planets/Oozla", label: "Oozla", count: 26 },
+      ],
+      dumpCount: 1342,
+      dump: [
+        { path: "Interface", label: "Interface", count: 214 },
+        { path: "Shared", label: "Shared", count: 96 },
+        { path: "Planets/Aranos (tutorial)", label: "Aranos (tutorial)", count: 402 },
+        { path: "Planets/Oozla", label: "Oozla", count: 630 },
+      ],
+    };
 
 /** The overrides packs the preview pretends are added. */
 const mockPacks: PackView[] = [
@@ -1636,6 +1827,47 @@ function start(scope: Scope, id: string, args: Record<string, unknown> = {}): St
       );
     }
   }
+  // ?toolerror=<code>: the editor's extract or pack stops as the tool does, its code first.
+  const toolError = query.get("toolerror");
+  if (toolError && ["editor-pack", "editor-extract", "editor-reexport"].includes(id)) {
+    const raw = [
+      ...lines.slice(0, 3),
+      `openrac-error: ${toolError}`,
+      "extract: level 00: this PAL project predates the 60 Hz gameplay fix. Extract the levels again to back up the old project and create a 60 Hz project, then reapply your intended edits. Do not copy the whole old scene.",
+    ];
+    return fakeJob(action.label, command, raw, () => undefined, 1);
+  }
+  // ?progress=…: an editor job stops at that count and runs on, to see the bar mid-way.
+  if (mockHold && EDITOR_JOBS.includes(id)) {
+    const [, step, done, total, level] = mockHold;
+    const held = [
+      ...lines.slice(0, 3),
+      ...(step === "read" ? [] : ["openrac-progress: read 19/19 18"]),
+      `openrac-progress: ${step} 0/${total}`,
+      `openrac-progress: ${step} ${done}/${total}${level ? ` ${level}` : ""}`,
+    ];
+    return fakeJob(action.label, command, held, () => undefined, 0, [], true);
+  }
+  if (id === "probe-bake" && query.get("fail") === "bake") {
+    const error = {
+      version: 1,
+      code: "input",
+      title: "Lighting data is missing or out of date",
+      explanation: "The exported level data cannot be read by this baker.",
+      suggestion: "Read the levels from your disc again, then retry Prepare enhanced lighting.",
+      detail: "manifest format 3 (this baker reads 4)",
+      level: "level_01",
+      stage: "Read baker profile",
+      log: "/home/you/OpenRAC/lighting/rac1/ntsc/probe-bake.log",
+    };
+    return fakeJob(
+      action.label,
+      command,
+      [...lines.slice(0, 3), "openrac-bake-error: " + JSON.stringify(error)],
+      () => undefined,
+      1,
+    );
+  }
   // ?fail: every job stops with an error, to see how a failure reads.
   if (query.has("fail")) {
     const failed = [...lines.slice(0, 3), "error: the step could not finish (browser preview)"];
@@ -1650,12 +1882,19 @@ function start(scope: Scope, id: string, args: Record<string, unknown> = {}): St
   const outputs =
     id === "editor-pack"
       ? [`/home/you/OpenRAC/assets/packed/${scope.kind === "version" ? scope.key : ""}`]
-      : id === "assets-export"
-        ? [
-            `/home/you/exports/level_${String(Number(args.level ?? 0)).padStart(2, "0")}-${typeof args.option === "string" ? args.option : "mobys"}`,
-          ]
-        : [];
-  return fakeJob(action.label, command, lines, () => undefined, 0, outputs);
+      : id === "audio-export" || id === "audio-export-all"
+        ? [`/home/you/exports/audio-${String(args.option)}-20261101T0900`]
+        : id === "assets-export"
+          ? [
+              `/home/you/exports/level_${String(Number(args.level ?? 0)).padStart(2, "0")}-${typeof args.option === "string" ? args.option : "mobys"}`,
+            ]
+          : [];
+  const moved = () => {
+    if (id === "editor-extract") mockEditor = ["outdated", "broken"].includes(mockEditor) ? "carried" : "ready";
+    if (id === "editor-reexport") mockEditor = "carried";
+    if (id === "editor-pack") mockEditor = "packed";
+  };
+  return fakeJob(action.label, command, lines, moved, 0, outputs);
 }
 
 /** A job that prints LINES one by one, then ends with CODE (0: it worked) and calls DONE. */
@@ -1666,6 +1905,8 @@ function fakeJob(
   done: () => void,
   code = 0,
   outputs: string[] = [],
+  /** It prints its lines and then runs on, never ending (the bar mid-way, ?progress). */
+  hold = false,
 ): Started {
   const job = ++nextJob;
   let i = 0;
@@ -1677,6 +1918,7 @@ function fakeJob(
         emit({ type: "output", id: job, stream: "stdout", line });
         return;
       }
+      if (hold) return;
       clearInterval(timers.get(job));
       timers.delete(job);
       done();
@@ -1764,6 +2006,157 @@ const mockPlanets: [number, string, string, number][] = [
   [18, "Veldin", "Kyzil Plateau", 3],
 ];
 const savedFields: Record<string, SaveFields> = {};
+
+/** Going Commando's items as core/src/save_edit_rac2.rs lists them: id, name, kind, full ammo of
+ *  the first version, upgrade name and experience, and whether it has later versions. */
+const RAC2_ITEMS: [number, string, "weapon" | "gadget", number | null, string | null, number | null, boolean][] = [
+  [2, "Heli-Pack", "gadget", null, null, null, false],
+  [3, "Thruster-Pack", "gadget", null, null, null, false],
+  [4, "Hydro-Pack", "gadget", null, null, null, false],
+  [5, "Mapper", "gadget", null, null, null, false],
+  [7, "Armor Magnetizer", "gadget", null, null, null, false],
+  [8, "Levitator", "gadget", null, null, null, false],
+  [9, "Clank Zapper", "weapon", 30, "Clank Shocker", 80000, true],
+  [12, "Bomb Glove", "weapon", 40, null, null, true],
+  [13, "Swingshot", "gadget", null, null, null, false],
+  [14, "Visibomb Gun", "weapon", 20, null, null, true],
+  [16, "Sheepinator", "weapon", null, "Black Sheepinator", 28800, true],
+  [17, "Decoy Glove", "weapon", 20, null, null, true],
+  [18, "Tesla Claw", "weapon", 300, null, null, true],
+  [19, "Gravity Boots", "gadget", null, null, null, false],
+  [20, "Grindboots", "gadget", null, null, null, false],
+  [21, "Glider", "gadget", null, null, null, false],
+  [22, "Chopper", "weapon", 35, "Multi-Star", 12800, true],
+  [23, "Pulse Rifle", "weapon", 8, "Vaporizer", 4800, true],
+  [24, "Seeker Gun", "weapon", 25, "HK-22", 33600, true],
+  [25, "Hoverbomb Gun", "weapon", 10, "Tetrabomb Gun", 112000, true],
+  [26, "Blitz Gun", "weapon", 40, "Blitz Cannon", 24000, true],
+  [27, "Minirocket Tube", "weapon", 25, "Megarocket Cannon", 128000, true],
+  [28, "Plasma Coil", "weapon", 15, "Plasma Storm", 67200, true],
+  [29, "Lava Gun", "weapon", 200, "Meteor Gun", 44800, true],
+  [30, "Lancer", "weapon", 200, "Heavy Lancer", 8960, true],
+  [31, "Synthenoid", "weapon", 12, "Kilonoid", 38400, true],
+  [32, "Spiderbot Glove", "weapon", 8, "Tankbot Glove", 32000, true],
+  [36, "Dynamo", "gadget", null, null, null, false],
+  [37, "Bouncer", "weapon", 25, "Heavy Bouncer", 54400, true],
+  [38, "Electrolyzer", "gadget", null, null, null, false],
+  [39, "Thermanator", "gadget", null, null, null, false],
+  [41, "Miniturret Glove", "weapon", 20, "Megaturret Glove", 24000, true],
+  [42, "Gravity Bomb", "weapon", 8, "Mini-Nuke", 6400, true],
+  [43, "Zodiac", "weapon", 4, null, null, false],
+  [44, "RYNO II", "weapon", 100, null, null, false],
+  [45, "Shield Charger", "weapon", 5, "Tesla Barrier", 14400, true],
+  [46, "Tractor Beam", "gadget", null, null, null, false],
+  [49, "Qwark Statuette", "gadget", null, null, null, false],
+  [50, "Box Breaker", "gadget", null, null, null, false],
+  [51, "Infiltrator", "gadget", null, null, null, false],
+  [53, "Walloper", "weapon", null, null, null, true],
+  [54, "Charge Boots", "gadget", null, null, null, false],
+  [55, "Hypnomatic", "gadget", null, null, null, false],
+];
+const RAC2_LEVELS: [number, string][] = [
+  [0, "Aranos Tutorial"],
+  [1, "Oozla"],
+  [2, "Maktar Nebula"],
+  [3, "Endako"],
+  [4, "Barlow"],
+  [5, "Feltzin System"],
+  [6, "Notak"],
+  [7, "Siberius"],
+  [8, "Tabora"],
+  [9, "Dobbo"],
+  [10, "Hrugis Cloud"],
+  [11, "Joba"],
+  [12, "Todano"],
+  [13, "Boldan"],
+  [14, "Aranos Prison"],
+  [15, "Gorn"],
+  [16, "Snivelak"],
+  [17, "Smolg"],
+  [18, "Damosel"],
+  [19, "Grelbin"],
+  [20, "Yeedil"],
+  [22, "Dobbo Orbit"],
+  [23, "Damosel Orbit"],
+  [24, "Ship Shack"],
+  [25, "Wupash Nebula"],
+  [26, "Jamming Array"],
+];
+const RAC2_FLAGS: [string, number | null, string, string, "proven" | "fromCode"][] = [
+  [
+    "maktar-arena-entered",
+    2,
+    "Arena entered",
+    "Off, the next visit opens the arena's gate and plays its first-visit scene again.",
+    "proven",
+  ],
+  [
+    "maktar-arena-intro-seen",
+    2,
+    "Arena intro scene seen",
+    "The scene the first visit to the arena plays (cinematic 331).",
+    "proven",
+  ],
+  ["mock-unverified", 2, "A flag read from the code", "Shown with the unverified tag in the preview.", "fromCode"],
+];
+const savedRac2: Record<string, Rac2SaveFields> = {};
+
+/** A Going Commando slot: early in the game, on Oozla, with the Lancer in hand. */
+function mockSaveRac2(serial: string, slot: number): Rac2SaveView {
+  const owned = new Set([24, 30, 42]);
+  const fields: Rac2SaveFields = savedRac2[`${serial}/${String(slot)}`] ?? {
+    bolts: 123456,
+    raritanium: 0,
+    nanotechXp: 4141,
+    boosts: Array<boolean>(10).fill(false),
+    armor: 0,
+    shipPaint: 0,
+    items: RAC2_ITEMS.map(([id, , , ammo, up]) => ({
+      id,
+      owned: owned.has(id),
+      ammo: ammo === null ? null : owned.has(id) ? ammo : 0,
+      xp: up === null ? null : id === 30 ? 1968 : 0,
+    })),
+    planets: RAC2_LEVELS.map(([id]) => ({
+      id,
+      available: id === 1,
+      visited: id <= 1,
+      platinum: [false, false, false, false],
+    })),
+    skillPoints: Array<boolean>(30).fill(false),
+    flags: RAC2_FLAGS.map(([id]) => ({ id, on: false })),
+  };
+  return {
+    serial,
+    slot,
+    fingerprint: "mock",
+    planetName: "Oozla",
+    savedAt: "2026-11-02 21:54:00",
+    maxHealth: 4,
+    fields,
+    items: RAC2_ITEMS.map(([id, name, kind, ammo, up, xp, versions]) => ({
+      id,
+      name,
+      kind,
+      maxAmmo: ammo,
+      upgradeName: up,
+      upgradeXp: xp,
+      maxXp: xp === null ? null : xp - 1,
+      version: versions ? 0 : null,
+      worn: id === 30,
+    })),
+    planets: RAC2_LEVELS.map(([id, name]) => ({ id, name })),
+    maxBolts: 9_999_999,
+    maxXp: 9_999_999,
+    flags: RAC2_FLAGS.map(([id, level, name, description, confidence]) => ({
+      id,
+      level,
+      name,
+      description,
+      confidence,
+    })),
+  };
+}
 const savedRaw: Record<string, Record<string, string>> = {};
 
 /** The chunks as core/src/save_edit.rs lists them: id, size, name, decoded. */
@@ -1923,6 +2316,8 @@ const delay = <T>(value: T) =>
     }, 120),
   );
 
+const steamAsked = () => new URLSearchParams(typeof location === "undefined" ? "" : location.search).get("steam");
+
 export async function mockCall(command: string, args: Record<string, unknown> = {}): Promise<unknown> {
   switch (command) {
     case "app_info":
@@ -1932,10 +2327,14 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
         configFile: "~/.config/dev.openrac.launcher/launcher.json",
         // ?standalone shows an installed launcher's pages: no checkout, nothing to find.
         standalone: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("standalone"),
-        updates: STABLE,
+        // ?devbuild: a development build, whose Stable channel offers the older release.
+        updates: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("devbuild")
+          ? DEV
+          : STABLE,
         updateChannels: { stable: STABLE, dev: DEV },
         // ?nocompositing: a Steam Deck's webview, without page slides.
         noCompositing: new URLSearchParams(typeof location === "undefined" ? "" : location.search).has("nocompositing"),
+        safeRenderingAfterCrash: false,
       });
     case "get_config":
       return delay<Config>({ ...config });
@@ -2031,6 +2430,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
       emit({ type: "exit", id, code: null, cancelled: true, outputs: [] });
       return delay(null);
     }
+    case "open_bake_log":
     case "open_path":
     case "open_url":
       console.info(`[preview] ${command}`, args);
@@ -2039,6 +2439,34 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
       return delay(null);
     case "overrides_list":
       return delay<PackView[]>([...mockPacks]);
+    case "reset_preview": {
+      // ?reset=error: the folders cannot be read; ?reset=empty: nothing is there.
+      if (query.get("reset") === "error") throw new Error("permission denied");
+      const there = query.get("reset") !== "empty";
+      const part = (part: ResetPreview["parts"][number]["part"], theirs: boolean, bytes: number, files: number) => ({
+        part,
+        theirs,
+        bytes: there ? bytes : 0,
+        files: there ? files : 0,
+        folders: there ? [`/home/player/OpenRAC/${part}`] : [],
+      });
+      const parts =
+        args.reset === "levels"
+          ? [part("gameLevels", false, 1_240_000_000, 2_310)]
+          : [
+              part("projects", false, 812_000_000, 9_420),
+              part("exports", false, 46_000_000, 312),
+              part("packed", true, 3_100_000, 4),
+              part("overrides", true, 21_000_000, 88),
+              part("backups", true, 0, 0),
+            ];
+      return delay<ResetPreview>({ reset: args.reset as ResetPreview["reset"], parts });
+    }
+    case "editor_state":
+      return delay<EditorState>(mockEditorState());
+    case "reset_apply":
+      if (query.get("reset") === "fail") throw new Error("cannot remove /home/player/x: Directory not empty");
+      return delay<ResetDone>({ bytes: 858_000_000, files: 9_732, folders: 2 });
     case "overrides_summary": {
       if (query.get("summary") === "error") throw new Error("The preparation record could not be read.");
       const version = String(args.version).split("/")[1];
@@ -2091,6 +2519,46 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
       }
       return delay<PackView[]>([...mockPacks]);
     }
+    case "texture_packs_view":
+      return delay<TexturePackView>({ ...mockTextures, id: `${String(args.game)}-${String(args.version)}` });
+    case "texture_packs_set":
+      if (typeof args.enabled === "boolean") mockTextures.enabled = args.enabled;
+      if (typeof args.dumping === "boolean") mockTextures.dumping = args.dumping;
+      return delay<TexturePackView>({ ...mockTextures, id: `${String(args.game)}-${String(args.version)}` });
+    case "texture_packs_open":
+      return delay(null);
+    case "texture_packs_preview":
+      if (String(args.source).includes("rac1")) {
+        throw new Error(
+          "This pack is for Ratchet & Clank (PAL), not Going Commando (NTSC-U). Add it on that game's page instead.",
+        );
+      }
+      return delay({
+        textures: 120,
+        animated: 1,
+        folders: [
+          { path: "Interface", label: "Interface", count: 40 },
+          { path: "Shared", label: "Shared", count: 80 },
+        ],
+        name: "Crisp HUD",
+        current: mockTextures.packCount,
+        replacing: 12,
+        skipped: 1,
+      });
+    case "texture_packs_import": {
+      const added = args.mode === "replace" ? 120 : mockTextures.packCount + 108;
+      mockTextures.packCount = added;
+      mockTextures.pack = [
+        { path: "Interface", label: "Interface", count: 40 },
+        { path: "Shared", label: "Shared", count: added - 40 },
+      ];
+      return delay({
+        textures: 120,
+        kept: args.mode === "replace" ? "rac2-ntsc (before import 2026-11-03-061500)" : null,
+      });
+    }
+    case "texture_packs_export":
+      return delay({ saved: "~/Downloads/rac2-ntsc-texture-pack.zip", textures: mockTextures.packCount, leftOut: 3 });
     case "enhanced_view":
     case "enhanced_set_enabled":
     case "enhanced_set_setting":
@@ -2150,7 +2618,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
       if (!m) throw new Error(`no mod ${String(args.id)}`);
       if (!m.compatible) throw new Error(m.why ?? "it cannot be installed here");
       mockSources.mods[m.id] = {
-        url: "https://github.com/OpenRAC/rac1-mods",
+        url: "https://github.com/OpenRAC/openrac-mods",
         path: m.path,
         version: m.version,
         tag: m.tag,
@@ -2187,6 +2655,40 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
         enabled: true,
       });
     }
+    case "deeplink_parse":
+      return delay(mockParse(String(args.url)));
+    // `?steam=noSteam`, `noUser`, `added`, `outdated`, or `open` for a Steam that is running.
+    case "steam_state":
+      return delay(steamAsked() === "open" ? "notAdded" : (steamAsked() ?? "notAdded"));
+    case "steam_add":
+      if (steamAsked() === "open") throw new Error("Close Steam, then try again.");
+      return delay("added");
+    case "index_fetch":
+      return delay(mockIndexView());
+    case "index_resolve":
+      return delay(mockResolve(args.wanted as WantedMod[], (args.turnOff as string[] | undefined) ?? []));
+    case "mods_updates":
+      return delay(mockUpdates());
+    case "mods_auto_update":
+      return delay(mockAutoUpdate((args.ids as string[] | null) ?? null, !!args.running));
+    case "mods_last_update":
+      return delay(mockLastUpdate());
+    case "mods_crash_rollback":
+      return delay<PluginView[]>(structuredClone(mockPlugins));
+    case "plugins_turn_on": {
+      const views = mockPlugins.map((p) => (p.id === args.id ? { ...p, enabled: true, state: "ready" as const } : p));
+      mockPlugins = views;
+      return delay({ views: structuredClone(views), alsoOn: [] });
+    }
+    case "plugins_dependents":
+      return delay<[string, string][]>([]);
+    case "plugins_orphans":
+      return delay([]);
+    case "plugins_remove_with":
+      mockPlugins = mockPlugins.filter((p) => p.id !== args.id && !(args.also as string[]).includes(p.id));
+      return delay<PluginView[]>(structuredClone(mockPlugins));
+    case "index_apply":
+      return mockApply(args.wanted as WantedMod[], (args.turnOff as string[] | undefined) ?? []);
     case "plugins_sources":
       return delay<ModSources>(structuredClone(mockSources));
     case "plugins_set_pin": {
@@ -2247,6 +2749,11 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
             planetName: "Veldin",
             timestamp: "2026-10-09 17:01:21",
             modifiedMillis: Date.now() - 3600000,
+            // Played with mods: the mark beside the save (port/game/common/lib/mc.c).
+            mods: [
+              { id: "lock-strafe", version: "1.0.0" },
+              { id: "camera-tweaks", version: "0.3.1" },
+            ],
           },
           {
             slotIndex: 1,
@@ -2261,6 +2768,7 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
             planetName: "Kerwan",
             timestamp: "2026-10-09 17:21:44",
             modifiedMillis: Date.now() - 1800000,
+            mods: null,
           },
           {
             slotIndex: 2,
@@ -2335,6 +2843,51 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
       return delay("/home/you/.config/PCSX2/memcards");
     case "import_pcsx2_saves":
       return delay({ folders: ["BESCES-50916RATCHET"], files: 8, backup: null });
+    // An OpenRAC saves file (core/src/save_transfer.rs). `?saves=other` previews another game's
+    // file, `?saves=damaged` a damaged one.
+    case "export_saves": {
+      const serial = typeof args.serial === "string" ? args.serial : "SCES_509.16";
+      const slots = [
+        mockTransferSlot(serial, 0, 0, "Veldin", 1250),
+        mockTransferSlot(serial, 1, 3, "Kerwan", 4890),
+      ].filter((s) => args.slot == null || s.slotIndex === args.slot);
+      return delay<ExportedSaves>({ saved: `~/Downloads/OpenRAC saves ${serial} 2026-11-02.zip`, slots });
+    }
+    case "preview_save_import": {
+      const serial = typeof args.serial === "string" ? args.serial : "SCES_509.16";
+      if (query.get("saves") === "other")
+        throw new Error(
+          `These saves are from another game or disc (Ratchet & Clank, SCUS_971.99), not this one (${serial}): they can only be imported there.`,
+        );
+      if (query.get("saves") === "damaged")
+        throw new Error("saves.zip is damaged: BESCES-50916RATCHET/save1.bin is not the file that was exported");
+      return delay<SaveImportPreview>({
+        serial,
+        title: "Ratchet & Clank",
+        launcherVersion: packageFile.version,
+        created: "2026-11-02T14:05:00Z",
+        slots: [
+          {
+            slot: mockTransferSlot(serial, 1, 8, "Batalia", 12650),
+            replaces: mockTransferSlot(serial, 1, 3, "Kerwan", 4890),
+          },
+          { slot: mockTransferSlot(serial, 2, 12, "Hoven", 30210), replaces: null },
+        ],
+        cardHasSaves: true,
+      });
+    }
+    case "import_saves":
+      return delay({
+        folders: ["BESCES-50916RATCHET"],
+        files: 3,
+        backup: {
+          name: `.backup_${Math.floor(Date.now() / 1000)}_before_import`,
+          path: "/home/you/.local/share/openrac/memcard/SCES_509.16/.backup_x_before_import",
+          note: "before import",
+          createdMillis: Date.now(),
+          totalSize: 364544,
+        },
+      });
     case "reports_list":
       return delay<ReportEntry[]>(args.game === "rac1" ? mockReports : []);
     case "report_delete":
@@ -2377,10 +2930,72 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
       fixValues.set(key, values);
       return delay<Differences>(mockDifferences(now.game, now.version));
     }
+    case "controls_view":
+      return delay<ControlsView>(
+        mockControlsView(
+          typeof args.game === "string" ? args.game : null,
+          typeof args.player === "number" ? args.player : null,
+        ),
+      );
+    case "controls_reset_player":
+      return delay<ControlsView>(mockControlsResetPlayer(args.scope as ControlsScope, Number(args.player)));
+    case "controls_set":
+      return delay<ControlsView>(
+        mockControlsSet(
+          args.scope as ControlsScope,
+          String(args.key),
+          typeof args.value === "string" ? args.value : null,
+        ),
+      );
+    case "controls_reset":
+      return delay<ControlsView>(mockControlsReset(args.scope as ControlsScope));
+    case "controls_reset_players":
+      return delay<ControlsView>(mockControlsResetPlayers());
+    case "controls_export":
+      return delay<null>(null);
+    case "controls_import": {
+      const scope = args.scope as ControlsScope;
+      return delay<ControlsView>(mockControlsView(scope.kind === "game" ? scope.game : null));
+    }
+    case "controls_copy":
+      return delay<ControlsView>(mockControlsCopy(String(args.from), String(args.to)));
     case "read_save":
       return delay<SaveView>(
         mockSave(typeof args.serial === "string" ? args.serial : "SCES_509.16", Number(args.slot ?? 0)),
       );
+    case "read_save_rac2":
+      return delay<Rac2SaveView>(mockSaveRac2(String(args.serial), Number(args.slot ?? 0)));
+    case "read_save_rac2_extra":
+      return delay<Rac2ExtraView>(mockRac2Extra(String(args.serial), Number(args.slot ?? 0)));
+    case "write_save_rac2_extra": {
+      const name = `.backup_${String(Math.floor(Date.now() / 1000))}_before_edit_slot${String(Number(args.slot) + 1)}`;
+      return delay<Rac2ExtraWriteResult>({
+        backup: {
+          name,
+          path: `/home/you/.local/share/openrac/memcard/${String(args.serial)}/${name}`,
+          note: `Before editing slot ${String(Number(args.slot) + 1)}`,
+          createdMillis: Date.now(),
+          totalSize: 456192,
+        },
+        view: mockWriteRac2Extra(String(args.serial), Number(args.slot), args.fields as Rac2ExtraFields),
+      });
+    }
+    case "write_save_rac2": {
+      const fields = args.fields as Rac2SaveFields;
+      if (fields.bolts > 9_999_999) throw new Error("bolts go up to 9999999");
+      savedRac2[`${String(args.serial)}/${String(args.slot)}`] = structuredClone(fields);
+      const name = `.backup_${Math.floor(Date.now() / 1000)}_before_edit_slot${Number(args.slot) + 1}`;
+      return delay<Rac2WriteResult>({
+        backup: {
+          name,
+          path: `/home/you/.local/share/openrac/memcard/${String(args.serial)}/${name}`,
+          note: `Before editing slot ${Number(args.slot) + 1}`,
+          createdMillis: Date.now(),
+          totalSize: 456192,
+        },
+        view: mockSaveRac2(String(args.serial), Number(args.slot)),
+      });
+    }
     case "write_save": {
       const key = `${String(args.serial)}/${String(args.slot)}`;
       const change = args.change as SaveChange;
@@ -2451,17 +3066,21 @@ export async function mockCall(command: string, args: Record<string, unknown> = 
 // ---- launcher updates ----------------------------------------------------------------
 
 /** The preview's answer to "is a newer launcher out?": ?update (one is, and installs itself;
- *  with ?download only from GitHub), ?latest (none), ?offline (GitHub cannot be reached).
+ *  with ?download only from GitHub), ?latest (none), ?offline (GitHub cannot be reached); on the
+ *  other channel (SWITCHTO; ?devbuild with Stable chosen) the older release.
  *  Undefined: no switch, so the real check runs. */
-export function mockUpdate(current: string): UpdateInfo | null | Error | undefined {
+export function mockUpdate(
+  current: string,
+  switchTo: UpdateChannel | null = null,
+): UpdateInfo | null | Error | undefined {
   if (query.has("offline")) return new Error("no connection to GitHub");
   if (query.has("latest")) return null;
-  if (!query.has("update")) return undefined;
+  if (!query.has("update") && !switchTo) return undefined;
   const [major = 0, minor = 0] = current
     .replace(/^[^0-9]*/, "")
     .split(".")
     .map((n) => parseInt(n, 10) || 0);
-  const version = `${major}.${minor + 1}.0`;
+  const version = switchTo === "stable" ? `${major}.${Math.max(0, minor - 1)}.0` : `${major}.${minor + 1}.0`;
   return {
     version,
     tag: `v${version}`,
@@ -2475,6 +3094,7 @@ export function mockUpdate(current: string): UpdateInfo | null | Error | undefin
     ].join("\n"),
     publishedAt: new Date(Date.now() - 86400000).toISOString(),
     canInstallDirectly: !query.has("download"),
+    switchTo,
   };
 }
 

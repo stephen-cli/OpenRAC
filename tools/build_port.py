@@ -30,8 +30,8 @@ build folder keeps it too.
 launcher's "Rebuild the game", and what it runs after an update); the
 --source and --disc choices the folder kept are kept.
 
---probe-baker also builds openrac-probe-bake, the offline baker of the
-enhanced rendering's probe lighting (port/enhanced/tools/probes), which the
+--probe-baker also builds openrac-enhanced-baker, the offline baker of the
+enhanced rendering's probe lighting (port/enhanced/tools/baker), which the
 launcher runs on the player's own extracted levels. It needs Embree 4
 (Apache-2.0): a pinned release's source is downloaded once, checked against
 its SHA-256 and built as a static library in port/build/embree/, so the
@@ -111,7 +111,8 @@ EMBREE_OPTIONS = {
     "EMBREE_GEOMETRY_QUAD": "OFF",
     "EMBREE_GEOMETRY_CURVE": "OFF",
     "EMBREE_GEOMETRY_SUBDIVISION": "OFF",
-    "EMBREE_GEOMETRY_USER": "OFF",
+    # The bake traces its interior area lights as user geometry (bake_emitters.cpp).
+    "EMBREE_GEOMETRY_USER": "ON",
     "EMBREE_GEOMETRY_INSTANCE": "OFF",
     "EMBREE_GEOMETRY_INSTANCE_ARRAY": "OFF",
     "EMBREE_GEOMETRY_GRID": "OFF",
@@ -133,7 +134,7 @@ EMBREE_X86_ISAS = {
     "EMBREE_ISA_AVX512": "OFF",
 }
 EMBREE_DIR = PORT / "build" / "embree"
-BAKER = "openrac-probe-bake"
+BAKER = "openrac-enhanced-baker"
 # Intel Macs ship without the baker (the maintainers' decision): AppleClang builds Embree's static
 # library for one ISA only, and x86-64 needs several (EMBREE_X86_ISAS), so it cannot be built there.
 # A level without a bake keeps the original lighting (port/enhanced/viewer/probe_lighting.cpp), and
@@ -453,6 +454,11 @@ def commands(
     name new ones. `defines`: more cache entries to set (the probe baker's)."""
     wanted = dict(kept or {})
     wanted.update(defines or {})
+    # A folder that a launcher before 1.0.2 configured holds its Python with Windows' `\\?\` prefix,
+    # which stops the hostgen step (plain_path): such a folder is given the plain one again.
+    stale_python = cache.get("Python3_EXECUTABLE", "").replace("/", "\\").startswith("\\\\?\\")
+    if stale_python:
+        cache = {key: value for key, value in cache.items() if key != "Python3_EXECUTABLE"}
     if source is not None:
         wanted[source_variable(names[0])] = Path(source).as_posix()
     if disc is not None:
@@ -479,6 +485,8 @@ def commands(
         out = [configure]
     else:
         changed = [f"-D{key}={value}" for key, value in wanted.items() if not same_path(cache.get(key, ""), value)]
+        if stale_python and python:
+            changed.append(f"-DPython3_EXECUTABLE={python}")
         out = [[cmake, "-S", str(PORT), "-B", str(build), *changed]] if changed else []
     # All but a few of the CPU's threads (Ninja's own default is every one, and two more): the
     # computer stays usable while the port builds (build_jobs).
@@ -600,6 +608,16 @@ def prepare(cache: dict[str, str]) -> tuple[dict[str, str], Path, tuple[str, str
     return env, find_cmake(cache, user_path, env.get("PATH")), compilers
 
 
+def plain_path(path: str) -> Path:
+    """`path` without Windows' `\\\\?\\` verbatim prefix. CMake bakes the Python it is given into
+    `cmd /C` lines (the hostgen step), and cmd cannot start a program named that way."""
+    if path.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + path[8:])
+    if path.startswith("\\\\?\\"):
+        return Path(path[4:])
+    return Path(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     known = games()
     parser = argparse.ArgumentParser(description="Builds the native port (port/) for this computer.")
@@ -612,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", action="append", default=[], metavar="NAME",
                         help="also build this target of the port (a test program such as runtime_test)")
     parser.add_argument("--probe-baker", action="store_true",
-                        help="also build openrac-probe-bake, the enhanced lighting's baker, with a pinned Embree "
+                        help="also build openrac-enhanced-baker, the enhanced lighting's baker, with a pinned Embree "
                              "built from source (kept for later builds; left out with a warning if it fails)")
     parser.add_argument("--tracy", action="store_true", help="build optional Tracy CPU and Vulkan GPU profiling")
     parser.add_argument("--tracy-system", action="store_true", help="enable Tracy system tracing (implies --tracy)")
@@ -660,7 +678,7 @@ def main(argv: list[str] | None = None) -> int:
         decompilation = (source if name == names[0] and source
                          else cache.get(source_variable(name)) or kept.get(source_variable(name)) or default_source(name))
         say(f"{name}: from {decompilation}")
-    python = Path(sys.executable).as_posix()
+    python = plain_path(sys.executable).as_posix()
     more = list(args.target)
     defines: dict[str, str] = {}
     if args.probe_baker or cache.get("OPENRAC_PROBE_BAKER") == "ON" or kept.get("OPENRAC_PROBE_BAKER") == "ON":

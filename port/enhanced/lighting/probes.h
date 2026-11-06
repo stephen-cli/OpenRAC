@@ -8,15 +8,25 @@
 #include <string>
 #include <vector>
 
+#include "enhanced/lighting/probe_texture.h"
+
 namespace openrac::lighting {
 
 using Float2 = std::array<float, 2>;
 using Float3 = std::array<float, 3>;
 
-// Only the current GPU-ready layout is accepted. Older assets must be rebaked.
-inline constexpr std::uint32_t kProbeFormatVersion = 4;
-inline constexpr std::uint32_t kProbeBakeVersion = 3;
+// Version six raw-depth assets remain readable; new files carry independent depth and colour tags.
+inline constexpr std::uint32_t kProbeFormatVersion = 8;
+inline constexpr std::uint32_t kProbeBakeVersion = 5;
 inline constexpr unsigned kProbeAtlasTilesX = 64;
+
+// Upright orthonormal frame, shared by GI grids and reflection influence/projection boxes.
+struct ProbeFrame {
+    Float2 axis{1, 0};  // Cosine/sine of the local X axis in world XY; Z remains vertical.
+    Float3 to_local(Float3 world) const;
+    Float3 to_world(Float3 local) const;
+    bool valid() const;
+};
 
 // Baking and CPU reference sampling use linear E; files store fifth-root E.
 inline constexpr float kProbeIrradianceGamma = 5.0f;
@@ -27,6 +37,7 @@ float encode_probe_irradiance(float linear);
 struct ProbeGrid {
     std::uint32_t bake_version = kProbeBakeVersion;
     Float3 origin{};
+    ProbeFrame frame;
     Float3 spacing{16, 16, 16};
     std::array<std::uint32_t, 3> dimensions{2, 2, 2};
     std::uint32_t map_resolution = 6;  // interior; one gutter texel on every side
@@ -47,6 +58,14 @@ struct Probe {
     bool relocated = false;  // Individual relocation changed the shared aligned starting position.
 };
 
+// Stored depth layout; legacy assets retain their exact RG32F moments.
+enum class ProbeDepthFormat : std::uint32_t {
+    Moments = 0,
+    Astc4x4 = 1,
+    Rg8 = 2,  // Legacy normalized mean/spread bytes with per-probe FP32 decoding ranges.
+    Rg16 = 3  // Curved 16-bit UNORM mean/spread channels with per-probe FP32 decoding ranges.
+};
+
 struct ProbeVolume {
     ProbeGrid grid;
     std::vector<Probe> probes;
@@ -57,6 +76,12 @@ struct ProbeVolume {
     // Linear maps are only expanded by offline tools/reference tests.
     std::vector<std::uint8_t> gpu_bytes;
     std::size_t gpu_offset = 0;
+    ProbeTextureFormat colour_format =
+        ProbeTextureFormat::R11G11B10;  // Stored colour plane format.
+    // Encoded depth retains local mean/spread with FP32 per-probe decoding ranges.
+    ProbeDepthFormat depth_format = ProbeDepthFormat::Moments;
+    // Returns the bounded byte sizes of colour, depth, relocation, spread and ranges.
+    std::array<std::size_t, 5> plane_sizes() const;
     std::size_t atlas_rows() const;
     std::size_t atlas_capacity() const;
     std::span<const std::uint8_t> gpu_plane(unsigned plane) const;
@@ -78,6 +103,9 @@ struct ProbeSample {
     float confidence = 0;
     // Available normal-weighted support before visibility rejection.
     float coverage = 0;
+    // Local CPU sampler diagnostic: moment visibility after validity/receiver-plane weighting, before the
+    // low-support fade. Unlike confidence, this does not treat empty-space wrap as occlusion.
+    float visibility = 0;
 };
 
 // Empty means use original lighting. Biases are world-space offsets; view_offset

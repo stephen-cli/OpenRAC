@@ -9,9 +9,14 @@ name: checks
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop]
   pull_request:
   workflow_dispatch:
+    inputs:
+      time-vulkan-shards:
+        description: Compare one, two and four Vulkan equivalence shards on one runner
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,13 +24,36 @@ permissions:
 env:
   # tools/build_port.py compiles on every thread of the runner (build_jobs), not all but two.
   OPENRAC_BUILD_JOBS: all
+  # Reinstalling identical compiler bytes must not invalidate all cached objects.
+  CCACHE_COMPILERCHECK: content
 
-# A newer push to a pull request stops the older run; master's runs all finish.
+# New PR pushes and develop merges supersede old runs; master's release checks all finish.
 concurrency:
   group: checks-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/develop' }}
 
 jobs:
+  scope:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: scope
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Use the base branch's policy so a PR changing the gate gets full checks.
+          script="$RUNNER_TEMP/openrac-ci-scope.py"
+          if git show HEAD^1:tools/ci_scope.py > "$script"; then
+            python3 "$script"
+          fi
+
   checks:
     runs-on: ubuntu-26.04
     timeout-minutes: 30
@@ -53,11 +81,17 @@ jobs:
       - name: OpenRAC tools
         run: python -m unittest discover -s tools -v
 
+      - name: PAL and NTSC rendering host-hook parity
+        run: python -m unittest discover -s port/tools/hostgen -p test_host_hook_parity.py -v
+
       - name: Level editor (synthetic data only)
         run: python -m unittest discover -s editor -v
 
       - name: Probe bake planning (synthetic data only)
-        run: python -m unittest discover -s port/enhanced/tools/probes -v
+        run: python -m unittest discover -s port/enhanced/tools/baker -v
+
+      - name: Water bake preparation (synthetic data only)
+        run: python -m unittest discover -s port/enhanced/tools/water -v
 
       # The port's countable conventions (port/docs/CODING_CONVENTIONS.md): the rules for every
       # file, and the new-code rules on what this push or pull request adds. A line it changes that
@@ -85,7 +119,7 @@ jobs:
           fi
 
       # The layout of the C++ under port/ and sdk/ (port/docs/CODING_CONVENTIONS.md, section 5.6):
-      # clang-format and the blank lines around control blocks. Report only for now: the step
+      # clang-format and the blank lines around control blocks. Report only: the step
       # lists what would change and never fails the build. clang-format comes from the step above.
       - name: C++ layout (report only)
         run: python tools/cpp_style.py --report-only
@@ -126,6 +160,8 @@ jobs:
       - name: rac2 tools, layout and progress report
         working-directory: games/rac2/ntsc
         run: |
+          # tools/check.py disassembles with it, at the version the decomp pins.
+          python -m pip install "$(grep '^rabbitizer==' requirements.txt)"
           python -m unittest discover -s tests -v
           python tests/check_repository.py
           python tools/progress.py --check
@@ -146,6 +182,8 @@ jobs:
   # launcher/actions.json against games/*/game.json. On Windows too, where paths join with
   # backslashes, files are checked out with CRLF and the Unix-only tests are left out.
   launcher:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     name: launcher (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -208,6 +246,8 @@ jobs:
   # screens, the update's window, the themes) does not regress. About a minute: no Rust, one
   # browser, one Vite server. On 24.04, which Playwright's install-deps knows.
   launcher-android:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
@@ -223,6 +263,7 @@ jobs:
           node-version: "22"
           package-manager-cache: false
       - run: corepack enable
+      - uses: ./.github/actions/yarn-cache
       - name: The launcher's packages and a headless Chromium
         run: |
           yarn install --immutable
@@ -231,11 +272,16 @@ jobs:
         run: yarn test:android
 
   # The native port (port/): hostgen's tests, then the whole port built with
-  # Clang (SDL3 fetched by CMake) and its tests, the OpenGL ones on Mesa's
-  # software renderer. The rac1 program is built from games/rac1's C.
+  # Clang and system SDL3, with enhanced rendering compiled out. Exercise
+  # the compatibility OpenGL/ES and core Vulkan paths on Mesa's software renderer.
   port:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
+    env:
+      MESA_SHADER_CACHE_DIR: /tmp/openrac-mesa
+      MESA_SHADER_CACHE_MAX_SIZE: 1G
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -245,37 +291,66 @@ jobs:
           python-version: "3.12"
       # Each key's prefix is no other job's: "checks-port" was the start of every other port
       # job's key, and restored their objects, built with other options, when it had none.
-      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      - uses: ./.github/actions/compiler-cache
         with:
           key: checks-port-release
           max-size: 1G
-      - name: Compilers and SDL's system libraries
+      - uses: ./.github/actions/mesa-cache
+        with:
+          variant: ubuntu-release
+      - name: Compilers, SDL3 and software Vulkan
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang ninja-build libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev \
-            libwayland-dev libxkbcommon-dev libasound2-dev libpulse-dev \
-            mesa-vulkan-drivers vulkan-validationlayers
+          sudo apt-get install -y --no-install-recommends clang lld ninja-build libsdl3-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri mesa-vulkan-drivers vulkan-validationlayers
 
-      - name: hostgen
-        run: python -m unittest discover -s port/tools/hostgen -v
+      - uses: ./.github/actions/port-build-cache
+        with:
+          variant: ubuntu-compatibility
+          preset: release
+
+      - name: hostgen and build cache regressions
+        run: |
+          python -m unittest discover -s port/tools/hostgen -v
+          # This job installs both Clang and ccache, so the real cache fixture runs here.
+          python -m unittest discover -s tools -p test_ci_cache.py -v
+          python -m unittest discover -s tools -p test_hostgen_cache.py -v
 
       - name: Build
         working-directory: port
         run: |
-          cmake --preset release
+          cmake --preset release -DOPENRAC_ENHANCED_RENDERING=OFF -DOPENRAC_PROBE_BAKER=OFF
           cmake --build --preset release
+
+      - name: Verify compatibility build configuration
+        working-directory: port
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, subprocess
+          cache = pathlib.Path('build/release/CMakeCache.txt').read_text().splitlines()
+          assert 'OPENRAC_ENHANCED_RENDERING:BOOL=OFF' in cache
+          assert 'OPENRAC_PROBE_BAKER:BOOL=OFF' in cache
+          tests = json.loads(subprocess.check_output(
+              ['ctest', '--preset', 'release', '--show-only=json-v1']))['tests']
+          names = {test['name'] for test in tests}
+          enhanced = {'gtao_vulkan', 'probe_gpu_vulkan', 'early_lighting_vulkan',
+                      'hero_shadow_vulkan', 'sun_shadow_vulkan', 'shadow_scroll_vulkan',
+                      'fsr3_frame', 'probe_bake'}
+          assert not names & enhanced, names & enhanced
+          PY
 
       - name: Tests
         working-directory: port
         env:
           SDL_VIDEO_DRIVER: offscreen
-        run: ctest --preset release
+        run: ctest --preset release --parallel 2 --stop-on-failure
 
   # The port without a window (the headless preset, no SDL3): the runtime, the
   # games and their tests. Built here so code that only the window build can
   # compile (outside the frontend's #ifdef) cannot creep back in unseen.
   port-headless:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
@@ -285,7 +360,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      - uses: ./.github/actions/compiler-cache
         with:
           key: checks-port-headless
           max-size: 1G
@@ -293,6 +368,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang ninja-build
+
+      - uses: ./.github/actions/port-build-cache
+        with:
+          variant: ubuntu-headless
+          preset: headless
 
       - name: Build
         working-directory: port
@@ -304,54 +384,138 @@ jobs:
         working-directory: port
         run: ctest --preset headless
 
-  # Experimental Vulkan lighting and the offline Embree baker. Keep the normal
-  # build above so compatibility and enhanced rendering are both exercised.
-  port-enhanced:
+  # Full enhanced Vulkan coverage and the offline Embree baker, separately from
+  # the compatibility build above. The preset explicitly compiles enhanced code in.
+  port-vulkan-enhanced-build:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      - uses: ./.github/actions/compiler-cache
         with:
           key: checks-port-enhanced
           max-size: 1G
+      - name: Restore enhanced Vulkan packages
+        id: enhanced-apt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openrac-enhanced-apt/*.deb
+          key: enhanced-apt-v1-ubuntu-26.04-${{ runner.arch }}-${{ hashFiles('.github/workflows/checks.yml') }}
+          restore-keys: enhanced-apt-v1-ubuntu-26.04-${{ runner.arch }}-
       - name: Compilers, software Vulkan and Embree 4
         run: |
+          archives="$RUNNER_TEMP/openrac-enhanced-apt"
+          mkdir -p "$archives"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang ninja-build libembree-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri mesa-vulkan-drivers vulkan-validationlayers \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev \
-            libwayland-dev libxkbcommon-dev libasound2-dev libpulse-dev xvfb xauth
+          sudo apt-get -o Dir::Cache::archives="$archives" install -y --no-install-recommends \
+            clang lld ninja-build libembree-dev libsdl3-dev \
+            libgl1-mesa-dev libegl1-mesa-dev
+      - name: Save enhanced Vulkan packages
+        if: steps.enhanced-apt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openrac-enhanced-apt/*.deb
+          key: ${{ steps.enhanced-apt.outputs.cache-primary-key }}
+      - uses: ./.github/actions/port-build-cache
+        with:
+          variant: ubuntu-enhanced-baker
+          preset: enhanced
+          hostgen: "false"
+
       - name: Build enhanced lighting and baker
         working-directory: port
         run: |
-          cmake --preset enhanced -DOPENRAC_PORT_GAMES=OFF -DOPENRAC_PROBE_BAKER=ON
+          # Keep the preset's compiler flags so PRs can reuse develop's cached objects.
+          cmake --preset enhanced -DOPENRAC_PORT_GAMES=OFF -DOPENRAC_PROBE_BAKER=ON \
+            -DOPENRAC_LIGHT_AUTHORING=ON -DOPENRAC_RENDER_EQUIVALENCE_FOUR_SHARDS=ON \
+            -DOPENRAC_VULKAN_TEST_SEED_CACHE=ON
           cmake --build --preset enhanced
-      - name: CPU, Vulkan and Embree tests
-        working-directory: port
-        env:
-          SDL_VIDEO_DRIVER: x11
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: xvfb-run -a ctest --preset enhanced --output-junit "$PWD/build/enhanced/enhanced-tests.xml"
-      - name: Enhanced GPU and bake checks must run, not skip
-        working-directory: port
+      - name: Package the enhanced test build
         run: |
-          python3 - <<'PY'
-          import xml.etree.ElementTree as ET
-          required = {'probe_gpu_vulkan', 'early_lighting_vulkan', 'hero_shadow_vulkan',
-                      'sun_shadow_vulkan', 'gtao_vulkan', 'probe_bake', 'bake_liquids'}
-          cases = {case.attrib['name']: case for case in ET.parse('build/enhanced/enhanced-tests.xml').iter('testcase')}
-          missing = required - cases.keys()
-          skipped = {name for name in required & cases.keys() if cases[name].find('skipped') is not None}
-          assert not missing and not skipped, (missing, skipped)
-          PY
+          python3 tools/ci_port_tests.py port/build/enhanced plan
+          # CTest and some fixtures embed absolute paths. Consumers use the same checkout layout.
+          pwd -P > port/build/enhanced/ci-workspace.txt
+          tar -C port/build --exclude=CMakeFiles --exclude='*-src' --exclude='*-subbuild' \
+            --exclude='*.a' --exclude='*.o' --exclude='*.ninja' --exclude='.ninja_*' \
+            --exclude=Testing --exclude=CMakeCache.txt \
+            -cf - enhanced | gzip -1 > "$RUNNER_TEMP/openrac-enhanced-tests.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openrac-enhanced-tests
+          path: ${{ runner.temp }}/openrac-enhanced-tests.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  port-vulkan-enhanced-tests:
+    needs: port-vulkan-enhanced-build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [vulkan, equivalence, cpu, baker]
+    env:
+      SDL_VIDEO_DRIVER: x11
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      # Fedora retains default LLVM optimisation coverage.
+      GALLIVM_PERF: nopt
+      MESA_SHADER_CACHE_DIR: /tmp/openrac-mesa
+      MESA_SHADER_CACHE_MAX_SIZE: 1G
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/mesa-cache
+        if: matrix.group == 'vulkan' || matrix.group == 'equivalence'
+        with:
+          variant: ubuntu-enhanced-nopt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: openrac-enhanced-tests
+          path: ${{ runner.temp }}
+      - name: Install test runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libembree-dev libsdl3-dev \
+            libgl1 libegl1 libgles2 libglx-mesa0 libegl-mesa0 libgl1-mesa-dri \
+            mesa-vulkan-drivers vulkan-validationlayers xvfb xauth
+      - name: Run the restored test group
+        env:
+          TEST_GROUP: ${{ matrix.group }}
+        run: |
+          mkdir -p port/build
+          tar -C port/build -xzf "$RUNNER_TEMP/openrac-enhanced-tests.tar.gz"
+          test "$(cat port/build/enhanced/ci-workspace.txt)" = "$(pwd -P)"
+          xvfb-run -a python3 tools/ci_port_tests.py port/build/enhanced "$TEST_GROUP"
+      - name: Measure Vulkan shard contention
+        if: github.event_name == 'workflow_dispatch' && inputs.time-vulkan-shards && matrix.group == 'vulkan'
+        run: xvfb-run -a python3 tools/ci_port_tests.py port/build/enhanced timing
+
+  # Keep the existing check name for branch protection.
+  port-vulkan-enhanced:
+    needs: [scope, port-vulkan-enhanced-build, port-vulkan-enhanced-tests]
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the build and all test groups
+        env:
+          BUILD_RESULT: ${{ needs.port-vulkan-enhanced-build.result }}
+          TEST_RESULT: ${{ needs.port-vulkan-enhanced-tests.result }}
+        run: test "$BUILD_RESULT" = success && test "$TEST_RESULT" = success
 
   # The native port on Fedora (the release players run): the program built as the launcher's
   # "Build the game" builds it (tools/build_port.py), against the system's SDL3, Clang and CMake,
-  # then hostgen's tests and every test of the port on Mesa's software renderer.
+  # then hostgen, all non-Vulkan tests and a small Vulkan smoke set. The full Vulkan
+  # suite runs in port-vulkan-enhanced; this set retains Fedora's optimised Mesa coverage.
   port-fedora:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: ubuntu-26.04
     container: registry.fedoraproject.org/fedora:44
     timeout-minutes: 60
@@ -359,6 +523,8 @@ jobs:
       # Every compile through ccache, kept between runs as the other port jobs keep theirs.
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      MESA_SHADER_CACHE_DIR: /tmp/openrac-mesa
+      MESA_SHADER_CACHE_MAX_SIZE: 1G
     steps:
       - name: Compilers and SDL3
         run: |
@@ -370,10 +536,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      - uses: ./.github/actions/compiler-cache
         with:
           key: checks-port-fedora
           max-size: 500M
+      - uses: ./.github/actions/mesa-cache
+        with:
+          variant: fedora-release
+
+      - uses: ./.github/actions/port-build-cache
+        with:
+          variant: fedora44-release
+          preset: release
 
       - name: Build openrac-rac1-pal as the launcher builds it
         run: python3 tools/build_port.py rac1-pal
@@ -389,11 +563,17 @@ jobs:
           targets=$(ninja -C build/release -t targets all | sed -n 's/^\([A-Za-z0-9_]*_test\): .*/\1/p' | sort -u)
           cmake --build --preset release --target $targets
 
-      - name: Tests
+      - name: Non-Vulkan tests and Vulkan smoke coverage
         working-directory: port
         env:
           SDL_VIDEO_DRIVER: offscreen
-        run: ctest --preset release
+        run: |
+          # GPU labels include Vulkan tests whose names do not mention Vulkan.
+          ctest --preset release --parallel 2 --stop-on-failure --no-tests=error -LE '^gpu$'
+          # Keep backend, shader, scene and enhanced-lighting smoke coverage, without
+          # repeating the expensive equivalence, probe, GTAO and shadow matrices.
+          vulkan_smoke='^(vulkan_(buffer|failure|uniform|present|present_timing|prewarm)|renderer_(direct|shader)_vulkan|world_gl_smoke_vulkan|enhanced_rendering(_off)?_vulkan|early_lighting_vulkan|hero_shadow_vulkan)$'
+          ctest --preset release --parallel 2 --stop-on-failure --no-tests=error -R "$vulkan_smoke"
 
   # The native port on Windows: rac1/pal's program built as the launcher's
   # "Build the game" builds it (tools/build_port.py: Visual Studio's C++
@@ -401,6 +581,8 @@ jobs:
   # those of hostgen's that need no POSIX host. The port is written on Linux
   # and macOS, and what only builds there (execinfo.h, fseeko) stops here.
   port-windows:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -414,17 +596,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      - uses: ./.github/actions/compiler-cache
         with:
           key: checks-port-windows
           max-size: 1G
       - uses: ./.github/actions/clang-windows
 
-      - name: Build openrac-rac1-pal and the runtime's tests
-        run: python tools/build_port.py rac1-pal --target runtime_test
+      - uses: ./.github/actions/port-build-cache
+        with:
+          variant: windows-release
+          preset: release
 
-      - name: The runtime's tests
-        run: port\build\release\runtime_test.exe
+      - name: Build openrac-rac1-pal and the runtime and diagnostic tests
+        run: python tools/build_port.py rac1-pal --target runtime_test --target log_test --target crash_symbols_test --target breadcrumbs_test --target breadcrumbs_no_alloc_test --target render_worker_test
+
+      - name: The runtime and Windows diagnostic tests
+        run: ctest --test-dir port/build/release -R "^(runtime|log|crash_symbols|crash_symbols_local|breadcrumbs|breadcrumbs_no_alloc|render_worker)$" --output-on-failure
 
       - name: hostgen's tests
         run: python -m unittest discover -s port/tools/hostgen -v

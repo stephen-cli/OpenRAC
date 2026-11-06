@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 the OpenRAC contributors
+//
+// Probe storage, runtime sampling and versioned GPU-format serialisation.
 #include "enhanced/lighting/probes.h"
 
 #include <algorithm>
@@ -6,7 +9,9 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
+#include "common/profiler.h"
 #include "enhanced/lighting/probe_atlas.h"
 
 namespace openrac::lighting {
@@ -130,7 +135,115 @@ struct Reader {
 
     float f32() { return std::bit_cast<float>(u32()); }
 };
+
+// Reads grid geometry and identity once, before packed or expanded payload validation.
+ProbeGrid read_probe_grid(Reader& reader) {
+    ProbeGrid grid;
+    grid.bake_version = reader.u32();
+    const auto size = reader.u32();
+    // The portable format bounds game identity strings to 64 bytes.
+    constexpr std::uint32_t kMaximumIdentityBytes = 64;
+
+    // The identity is bounded independently of the payload size.
+    if (!size || size > kMaximumIdentityBytes || size > reader.bytes.size() - reader.offset) {
+        invalid("invalid probe identity");
+    }
+
+    grid.game_version
+        .assign(reinterpret_cast<const char*>(reader.bytes.data() + reader.offset), size);
+    reader.offset += size;
+    grid.level = reader.u32();
+    grid.scene_hash = reader.u64();
+    grid.settings_hash = reader.u64();
+
+    // Serialized axes retain their original read and arithmetic order.
+    for (float& value : grid.origin) {
+        value = reader.f32();
+    }
+
+    // The upright frame is stored as its two horizontal axis components.
+    for (float& value : grid.frame.axis) {
+        value = reader.f32();
+    }
+
+    // Spacing and dimensions determine the payload size validated by the caller.
+    for (float& value : grid.spacing) {
+        value = reader.f32();
+    }
+
+    // Read each dimension before validating the complete extent.
+    for (auto& value : grid.dimensions) {
+        value = reader.u32();
+    }
+
+    grid.map_resolution = reader.u32();
+    grid.max_distance = reader.f32();
+    grid.validate();
+
+    return grid;
+}
+
+// Reads only the format contract; callers validate every packed texel before returning a field.
+ProbeVolume read_probe_header(std::vector<std::uint8_t> bytes) {
+    const profiling::Zone timing("Read probe header");
+    Reader reader{bytes};
+
+    // Files from another asset family cannot be interpreted as probes.
+    if (reader.u32() != kMagic) {
+        invalid("unknown probe asset format");
+    }
+
+    const auto format = reader.u32();
+
+    // Version six retains its raw depth layout; older assets require a rebake.
+    if (format != kProbeFormatVersion && format != 6 && format != 7) {
+        invalid("unsupported probe file version; rebake with this version of the baker");
+    }
+
+    const ProbeGrid grid = read_probe_grid(reader);
+    ProbeVolume volume;
+    volume.grid = grid;
+
+    // Canonical atlas dimensions must agree with the decoded grid.
+    if (reader.u32() != kProbeAtlasTilesX || reader.u32() != volume.atlas_rows()) {
+        invalid("unsupported probe atlas layout; rebake this level");
+    }
+
+    // Version six predates the optional ASTC depth layout.
+    if (format >= 7) {
+        volume.depth_format = static_cast<ProbeDepthFormat>(reader.u32());
+    }
+    volume.colour_format = static_cast<ProbeTextureFormat>(reader.u32());
+    const auto sizes = volume.plane_sizes();
+    std::size_t expected = 0;
+    for (const auto size : sizes) {
+        expected += size;
+    }
+
+    // Reject truncation and trailing bytes before accessing any packed texel.
+    if (bytes.size() - reader.offset != expected) {
+        invalid("probe payload size mismatch");
+    }
+
+    volume.gpu_offset = reader.offset;
+    volume.gpu_bytes = std::move(bytes);
+
+    return volume;
+}
 }  // namespace
+
+Float3 ProbeFrame::to_local(Float3 p) const {
+    return {axis[0] * p[0] + axis[1] * p[1], -axis[1] * p[0] + axis[0] * p[1], p[2]};
+}
+
+Float3 ProbeFrame::to_world(Float3 p) const {
+    return {axis[0] * p[0] - axis[1] * p[1], axis[1] * p[0] + axis[0] * p[1], p[2]};
+}
+
+bool ProbeFrame::valid() const {
+    return std::isfinite(axis[0]) && std::isfinite(axis[1])
+           && std::abs(axis[0] * axis[0] + axis[1] * axis[1] - 1) < .0001f;
+}
 
 float encode_probe_irradiance(float linear) {
     return std::pow(std::max(linear, 0.0f), 1.0f / kProbeIrradianceGamma);
@@ -149,7 +262,8 @@ void ProbeGrid::validate() const {
         invalid("unsupported probe bake revision; rebake with this version of the baker");
     }
 
-    if (!finite(origin) || !finite(spacing) || !std::isfinite(max_distance) || max_distance <= 0
+    if (!frame.valid() || !finite(origin) || !finite(spacing) || !std::isfinite(max_distance)
+        || max_distance <= 0
         || max_distance > std::sqrt(std::numeric_limits<float>::max()) * 0.5f) {
         invalid("invalid probe world units or distance");
     }
@@ -193,16 +307,27 @@ Float3 ProbeVolume::position(std::size_t probe) const {
     Float3 out{};
 
     for (std::size_t i = 0; i < 3; ++i) {
-        out[i] = grid.origin[i] + grid.spacing[i] * static_cast<float>(index[i])
-                 + probes.at(probe).offset[i];
+        out[i] = grid.spacing[i] * static_cast<float>(index[i]);
+    }
+
+    out = grid.frame.to_world(out);
+
+    for (unsigned a = 0; a < 3; ++a) {
+        out[a] += grid.origin[a] + probes.at(probe).offset[a];
     }
 
     return out;
 }
 
 void ProbeVolume::validate() const {
+    const profiling::Zone timing("Validate probe volume");
+
     grid.validate();
     const auto count = product(grid.probe_count(), grid.texels_per_probe());
+    // A decoded field cannot advertise physical ASTC planes that it does not own.
+    if (gpu_bytes.empty() && depth_format != ProbeDepthFormat::Moments) {
+        invalid("decoded probe field has a compressed depth tag");
+    }
 
     if (probes.size() != grid.probe_count()
         || (gpu_bytes.empty() ? (irradiance.size() != count || distance_moments.size() != count)
@@ -216,7 +341,7 @@ void ProbeVolume::validate() const {
         }
 
         for (std::size_t i = 0; i < 3; ++i) {
-            if (std::abs(p.offset[i]) > grid.spacing[i] * 0.45f) {
+            if (std::abs(grid.frame.to_local(p.offset)[i]) > grid.spacing[i] * 0.45f) {
                 invalid("probe relocation exceeds cell limit");
             }
         }
@@ -312,16 +437,22 @@ static std::optional<ProbeSample> sample_probe_grid(
     std::array<std::size_t, 3> cell{};
     Float3 fraction{}, receiver = p;
 
+    for (unsigned a = 0; a < 3; ++a) {
+        receiver[a] += n[a] * bias + view_offset[a];
+    }
+
+    const auto local = v.grid.frame.to_local(subtract(p, v.grid.origin));
+    const auto local_receiver = v.grid.frame.to_local(subtract(receiver, v.grid.origin));
+
     for (std::size_t axis = 0; axis < 3; ++axis) {
-        const float coordinate = (p[axis] - v.grid.origin[axis]) / v.grid.spacing[axis];
+        const float coordinate = local[axis] / v.grid.spacing[axis];
 
         if (coordinate < 0 || coordinate > static_cast<float>(v.grid.dimensions[axis] - 1)) {
             return {};
         }
 
-        receiver[axis] += n[axis] * bias + view_offset[axis];
         const float biased_coordinate = std::clamp(
-            (receiver[axis] - v.grid.origin[axis]) / v.grid.spacing[axis],
+            local_receiver[axis] / v.grid.spacing[axis],
             0.0f,
             static_cast<float>(v.grid.dimensions[axis] - 1)
         );
@@ -406,6 +537,7 @@ static std::optional<ProbeSample> sample_probe_grid(
 
     out.coverage = std::clamp(valid_support / support, 0.0f, 1.0f);
     out.confidence = std::clamp(out.weight / support, 0.0f, 1.0f);
+    out.visibility = facing_support > 0 ? std::clamp(out.weight / facing_support, 0.f, 1.f) : 0;
 
     if (!(out.weight > 1e-8f)) {
         out.irradiance = {};
@@ -446,14 +578,32 @@ void validate_probe_pair(const ProbeVolume& coarse, const ProbeVolume& dense) {
     }
 
     for (unsigned axis = 0; axis < 3; ++axis) {
-        const float a_end =
-            a.origin[axis] + a.spacing[axis] * static_cast<float>(a.dimensions[axis] - 1);
-        const float b_end =
-            b.origin[axis] + b.spacing[axis] * static_cast<float>(b.dimensions[axis] - 1);
+        if (b.spacing[axis] >= a.spacing[axis]) {
+            invalid("local probe volume must be finer");
+        }
+    }
 
-        if (b.spacing[axis] >= a.spacing[axis] || b.origin[axis] < a.origin[axis]
-            || b_end > a_end) {
-            invalid("local probe volume must be finer and contained in level volume");
+    for (unsigned corner = 0; corner < 8; ++corner) {
+        Float3 local{};
+
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            local[axis] =
+                (corner & (1u << axis)) ? b.spacing[axis] * float(b.dimensions[axis] - 1) : 0;
+        }
+
+        auto point = b.frame.to_world(local);
+
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            point[axis] += b.origin[axis] - a.origin[axis];
+        }
+
+        point = a.frame.to_local(point);
+
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            if (point[axis] < -.001f
+                || point[axis] > a.spacing[axis] * float(a.dimensions[axis] - 1) + .001f) {
+                invalid("local probe volume must be contained in level volume");
+            }
         }
     }
 }
@@ -466,9 +616,10 @@ std::optional<ProbeSample> sample_local_probes(
 
 float probe_boundary_weight(const ProbeGrid& grid, Float3 p) {
     float edge = 1;
+    p = grid.frame.to_local(subtract(p, grid.origin));
 
     for (unsigned axis = 0; axis < 3; ++axis) {
-        const float coordinate = (p[axis] - grid.origin[axis]) / grid.spacing[axis];
+        const float coordinate = p[axis] / grid.spacing[axis];
         edge = std::min(
             edge, std::min(coordinate, static_cast<float>(grid.dimensions[axis] - 1) - coordinate)
         );
@@ -520,7 +671,9 @@ std::optional<ProbeSample> sample_probe_volumes(
     return result;
 }
 
-std::vector<std::uint8_t> encode_probes(const ProbeVolume& v) {
+std::vector<std::uint8_t> encode_probe_header(
+    const ProbeVolume& v, ProbeTextureFormat colour, ProbeDepthFormat depth
+) {
     v.validate();
     std::vector<std::uint8_t> out;
     write_u32(out, kMagic);
@@ -536,7 +689,12 @@ std::vector<std::uint8_t> encode_probes(const ProbeVolume& v) {
     write_u64(out, v.grid.scene_hash);
     write_u64(out, v.grid.settings_hash);
 
+    // Supported asset revisions store origin before the upright frame and spacing.
     for (float x : v.grid.origin) {
+        write_float(out, x);
+    }
+
+    for (float x : v.grid.frame.axis) {
         write_float(out, x);
     }
 
@@ -544,20 +702,29 @@ std::vector<std::uint8_t> encode_probes(const ProbeVolume& v) {
         write_float(out, x);
     }
 
-    for (auto x : v.grid.dimensions) {
-        write_u32(out, x);
+    for (std::uint32_t dimension : v.grid.dimensions) {
+        write_u32(out, dimension);
     }
 
     write_u32(out, v.grid.map_resolution);
     write_float(out, v.grid.max_distance);
     write_u32(out, kProbeAtlasTilesX);
     write_u32(out, static_cast<std::uint32_t>(v.atlas_rows()));
+    write_u32(out, static_cast<std::uint32_t>(depth));
+    write_u32(out, static_cast<std::uint32_t>(colour));
+
+    return out;
+}
+
+std::vector<std::uint8_t> encode_probes(const ProbeVolume& v) {
+    const profiling::Zone timing("Encode probe asset");
+    auto out = encode_probe_header(v, v.colour_format, v.depth_format);
 
     if (v.gpu_bytes.empty()) {
         const auto planes = pack_probe_planes(v);
         out.insert(out.end(), planes.begin(), planes.end());
     } else {
-        for (unsigned i = 0; i < 3; ++i) {
+        for (unsigned i = 0; i < v.plane_sizes().size(); ++i) {
             const auto plane = v.gpu_plane(i);
             out.insert(out.end(), plane.begin(), plane.end());
         }
@@ -567,74 +734,27 @@ std::vector<std::uint8_t> encode_probes(const ProbeVolume& v) {
 }
 
 ProbeVolume decode_gpu_probes(std::vector<std::uint8_t> bytes) {
-    Reader r{bytes};
+    const profiling::Zone timing("Decode GPU probe asset");
+    auto volume = read_probe_header(std::move(bytes));
+    read_probe_planes(volume, false);
+    volume.validate();
 
-    if (r.u32() != kMagic) {
-        invalid("unknown probe asset format");
-    }
-
-    const auto format = r.u32();
-
-    if (format != kProbeFormatVersion) {
-        invalid("unsupported probe file version; rebake with this version of the baker");
-    }
-
-    ProbeGrid grid;
-    grid.bake_version = r.u32();
-    const auto size = r.u32();
-
-    if (!size || size > 64 || size > bytes.size() - r.offset) {
-        invalid("invalid probe identity");
-    }
-
-    grid.game_version.assign(reinterpret_cast<const char*>(bytes.data() + r.offset), size);
-    r.offset += size;
-    grid.level = r.u32();
-    grid.scene_hash = r.u64();
-    grid.settings_hash = r.u64();
-
-    for (float& x : grid.origin) {
-        x = r.f32();
-    }
-
-    for (float& x : grid.spacing) {
-        x = r.f32();
-    }
-
-    for (auto& x : grid.dimensions) {
-        x = r.u32();
-    }
-
-    grid.map_resolution = r.u32();
-    grid.max_distance = r.f32();
-    grid.validate();
-    ProbeVolume v;
-    v.grid = grid;
-
-    if (r.u32() != kProbeAtlasTilesX || r.u32() != v.atlas_rows()) {
-        invalid("unsupported probe atlas layout; rebake this level");
-    }
-
-    const auto expected = product(v.atlas_capacity(), product(grid.texels_per_probe(), 12) + 8);
-
-    if (bytes.size() - r.offset != expected) {
-        invalid("probe payload size mismatch");
-    }
-
-    v.gpu_offset = r.offset;
-    v.gpu_bytes = std::move(bytes);
-    read_probe_planes(v, false);
-    v.validate();
-    return v;
+    return volume;
 }
 
 ProbeVolume decode_probes(std::span<const std::uint8_t> bytes) {
-    auto v = decode_gpu_probes({bytes.begin(), bytes.end()});
-    read_probe_planes(v, true);
-    v.gpu_bytes.clear();
-    v.gpu_offset = 0;
-    v.validate();
-    return v;
+    const profiling::Zone timing("Expand CPU probe asset");
+    auto volume = read_probe_header({bytes.begin(), bytes.end()});
+
+    // Expansion validates the same packed channels without an earlier duplicate plane scan.
+    read_probe_planes(volume, true);
+    volume.gpu_bytes = std::vector<std::uint8_t>{};
+    volume.gpu_offset = 0;
+    volume.colour_format = ProbeTextureFormat::R11G11B10;
+    volume.depth_format = ProbeDepthFormat::Moments;
+    volume.validate();
+
+    return volume;
 }
 
 bool probe_identity_matches(

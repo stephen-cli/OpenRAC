@@ -7,11 +7,11 @@
 #include <numbers>
 
 #include "common/json.h"
-#include "enhanced/tools/probes/activation.h"
-#include "enhanced/tools/probes/level_scene.h"
-#include "enhanced/tools/probes/probe_fingerprint.h"
-#include "enhanced/tools/probes/probe_grid.h"
-#include "enhanced/tools/probes/report.h"
+#include "enhanced/tools/baker/output/report.h"
+#include "enhanced/tools/baker/sources/activation.h"
+#include "enhanced/tools/baker/sources/level_scene.h"
+#include "enhanced/tools/baker/sources/probe_fingerprint.h"
+#include "enhanced/tools/baker/sources/probe_grid.h"
 #include "tests/check.h"
 
 using namespace openrac;
@@ -32,6 +32,9 @@ void test_profile_report_includes_local_emission() {
     CHECK(regions[0]["maximum"][2].number() == 6);
     CHECK(regions[0]["scale"].number() == 8);
     CHECK(report["bake_version"].number() == kProbeBakeVersion);
+    CHECK(report["playable_space"]["jump_distance"].number() == 12);
+    CHECK(report["playable_space"]["jump_rise"].number() == 4);
+    CHECK(report["playable_space"]["player_height"].number() == 2.5);
 }
 
 // Inspection reports the same padded payload size as all three GPU-ready texture planes.
@@ -422,6 +425,25 @@ int main() {
     CHECK(!load_level_bake_profile(root).activation.bake.sunlight_direction);
     profile_source(R"({"version":1,"terrain_vertex_albedo":false})");
     CHECK(!load_level_bake_profile(root).activation.bake.terrain_vertex_albedo);
+    profile_source(
+        R"({"version":1,"environment_probes":{"enabled":true,"resolution":64,"maximum_probes":8,"normal_bias":0.25}})"
+    );
+    const auto reflection_profile = load_level_bake_profile(root);
+    CHECK(reflection_profile.environment.enabled);
+    CHECK(reflection_profile.environment.resolution == 64);
+    CHECK(reflection_profile.environment.maximum_probes == 8);
+    profile_source(
+        R"({"version":1,"environment_probes":{"merge_enabled":false,"merge_overlap":0.97,"merge_loss_fraction":0,"merge_max_misses":0,"minimum_space_area":8,"merge_brightness_ratio":3,"merge_colour_distance":0.08}})"
+    );
+    const auto merging = load_level_bake_profile(root).environment;
+    CHECK(
+        !merging.merge_enabled && merging.merge_overlap == .97f && merging.merge_loss_fraction == 0
+        && merging.merge_max_misses == 0 && merging.minimum_space_area == 8
+        && merging.merge_brightness_ratio == 3 && merging.merge_colour_distance == .08f
+    );
+    profile_source(R"({"version":1,"environment_probes":{"enabled":true,"maximum_probes":256}})");
+    CHECK(load_level_bake_profile(root).environment.maximum_probes == 256);
+    CHECK(reflection_profile.environment.normal_bias == .25f);
     profile_source(R"({"version":1,"sky_intensity":0.75,"sky_weight":0.3,"rays":32,"bounces":2,
         "environment":[0.1,0.2,0.3],"sparse_spacing":[64,64,64],
         "dense_spacing":[4,4,2],"resolution":6,"light_set":2,"sunlight_scale":[0.4,0.7,1.2],
@@ -517,6 +539,8 @@ int main() {
     };
     geometry_source("first geometry fixture");
     volume.grid.scene_hash = export_probe_scene(level, 0, expected.environment).scene_hash;
+    // Activation fingerprints the same files without building the transport scene.
+    CHECK(probe_activation_hash(level, 0, expected.environment) == volume.grid.scene_hash);
     {
         std::ofstream(root / "pvs.json") << "camera-only visibility metadata";
         std::ofstream(root / "pvs.bin", std::ios::binary) << "camera grid fixture";
@@ -525,6 +549,14 @@ int main() {
         );
         std::filesystem::remove(root / "pvs.json");
         std::filesystem::remove(root / "pvs.bin");
+    }
+    {
+        const auto profile = root / "ocean-profile.json";
+        std::ofstream(profile) << R"({"wind_heading":90})";
+        CHECK(
+            export_probe_scene(level, 0, expected.environment).scene_hash == volume.grid.scene_hash
+        );
+        std::filesystem::remove(profile);
     }
     const auto bytes = encode_probes(volume);
     {

@@ -20,6 +20,7 @@ levels ([README.md](README.md#the-later-games-early-access)).
 
 Moving objects, editing their values, volumes, paths, cameras and the
 collision is level editing, in Godot: [LEVEL_MODDING.md](LEVEL_MODDING.md).
+Changing the music, speech and effects is [AUDIO_MODDING.md](AUDIO_MODDING.md).
 
 Nothing here changes your disc image or the extracted levels, and nothing
 you export may be shared: it is your disc's data. A pack holds only what you
@@ -46,6 +47,11 @@ Everything below is on the **Mods** page, under **Models and textures**:
    game page's Play plays the levels as they are on the disc. If a pack has
    anything that does not fit your disc's levels, the activity log lists
    what was left out.
+6. **Your levels**, under the **Level editor** tab's status: **Delete the
+   level project** deletes the exported folders along with the level projects;
+   its tick box, off at first, deletes your imported edits and packs too.
+   **Read the game's levels again** reads the levels the exports are made from
+   again and keeps all of these (README.md, "Your levels").
 
 ## Editing textures
 
@@ -230,6 +236,7 @@ level_NN/ties/tie_<class>.glb, level_NN/shrubs/shrub_<class>.glb
 level_NN/terrain.glb              the level's terrain, as the port reads it
 level_NN/placements.json          ties and shrubs placed again (the level packer's)
 level_NN/gameplay_<version>.wad, patches.tsv   a packed level (the level packer's)
+audio/<key>.wav                   a sound of the game, replaced (AUDIO_MODDING.md)
 README*, LICENSE*, *.txt, *.md    for people; other files are ignored
 ```
 
@@ -248,7 +255,7 @@ originals.
 The files mirror the extracted levels (`editor/extract.py port`): the port
 reads each level's files from the stacked mods folder (`--mods`,
 `<mods>/level_NN/`) where they are there and from the levels otherwise
-([port/viewer/level.cpp](../port/viewer/level.cpp)), and the disc sectors
+([port/scene/level.cpp](../port/scene/level.cpp)), and the disc sectors
 `patches.tsv` lists from the files beside it. A model GLB names textures
 as `../textures/<name>.png` (the terrain as `textures/<name>.png`): the
 pack's own where it carries them, the level's otherwise. Joints are
@@ -264,9 +271,10 @@ mods, with `stack.json` saying what it holds and what was left out).
 
 ## Limits
 
-- Sky textures the sky's sprites use and the game's 2D pictures (the HUD,
-  menus, fonts) cannot be replaced yet; terrain, tie and shrub textures
-  can, and the terrain's geometry.
+- The game's 2D pictures (the HUD, menus, fonts) cannot be replaced yet;
+  terrain, tie, shrub and sky textures (sky_NNNN.png, the sky's shells and
+  its sprites alike) can, and the terrain's geometry. The sky's model
+  itself (its shells and their colours) cannot be edited yet.
 - A replacement model or terrain draws in the port only; the game's
   collision, bone points (where Ratchet holds things) and bounds stay the
   original's. The game's own terrain data (what it culls and lights at

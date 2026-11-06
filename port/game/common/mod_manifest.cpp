@@ -325,7 +325,11 @@ bool parse_binds(std::string_view text, int most, std::string& normalized) {
 }
 
 bool script_path(std::string_view p) {
-    if (p.size() < 6 || !p.ends_with(".luau") || p.front() == '/' || p.find('\\') != std::string_view::npos
+    return p.size() >= 6 && p.ends_with(".luau") && folder_path(p);
+}
+
+bool folder_path(std::string_view p) {
+    if (p.empty() || p.front() == '/' || p.find('\\') != std::string_view::npos
         || p.find(':') != std::string_view::npos) {
         return false;
     }
@@ -456,8 +460,14 @@ bool parse_manifest(std::string_view source, Manifest& m, std::string& error) {
             error = "\"plugin\" must map platforms to libraries";
             return false;
         }
-        static const std::set<std::string, std::less<>> kPlatforms = {
-            "macos-arm64", "macos-x86_64", "linux-x86_64", "linux-aarch64", "windows-x86_64", "windows-arm64"};
+        static const std::set<std::string, std::less<>> kPlatforms =
+            {"macos-arm64",
+             "macos-x86_64",
+             "linux-x86_64",
+             "linux-aarch64",
+             "windows-x86_64",
+             "windows-arm64",
+             "android-arm64"};
         for (const auto& [platform, path] : plugin.members()) {
             if (!kPlatforms.contains(platform)) {
                 error = std::format("\"plugin\": unknown platform \"{}\"", platform);
@@ -531,6 +541,14 @@ bool parse_manifest(std::string_view source, Manifest& m, std::string& error) {
     }
     if (!id_list(v["hooks"], "hooks", m.hooks, error)) {
         return false;
+    }
+    const json::Value& assets = v["assets"];
+    if (!assets.is_null()) {
+        if (!assets.is_string() || !folder_path(assets.string())) {
+            error = "\"assets\" must be a folder inside the mod, with / (\"assets\")";
+            return false;
+        }
+        m.assets = assets.string();
     }
     // Interface 1.4: only moves the loading before the window, so it is read and never refused (the
     // packager's and the launcher's checks know nothing of it): true on a native mod of 1.4 or later.
@@ -663,7 +681,9 @@ std::map<std::string, SettingValue> resolve_settings(const Manifest& manifest,
 
 const char* platform_key() {
 #if defined(__aarch64__) || defined(_M_ARM64)
-#if defined(__APPLE__)
+#if defined(__ANDROID__)
+    return "android-arm64";  // bionic: a Linux build of a mod does not load here
+#elif defined(__APPLE__)
     return "macos-arm64";
 #elif defined(_WIN32)
     return "windows-arm64";

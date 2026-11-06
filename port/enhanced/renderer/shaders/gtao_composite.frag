@@ -44,12 +44,15 @@ void main() {
             if (abs(delta.z) > max(0.05, -centre.z * 0.01) && plane > 0.0025) {
                 continue;
             }
-            float weight =
-                exp(-float(x * x + y * y) * 0.6 - plane * plane / 0.0025) * pow(agreement, 8.0);
+            // Keep the filter in FP32: FP16 coefficients round differently between
+            // specialised and uniform-scale programs on some Vulkan drivers.
+            float weight = exp(-float(x * x + y * y) * 0.6 - plane * plane / 0.0025)
+                * pow(agreement, 8.0);
             visibility += guide.r * weight;
             total += weight;
         }
     }
     float ao = total > 1e-5 ? visibility / total : 1.0;
-    result = vec4(vec3(clamp(1.0 - (1.0 - ao) * strength, 0.0, 1.0)), 1);
+    float visibility_result = clamp(1.0 - (1.0 - ao) * strength, 0.0, 1.0);
+    result = vec4(vec3(visibility_result), 1);
 }

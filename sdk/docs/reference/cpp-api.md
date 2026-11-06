@@ -150,7 +150,7 @@ One of the mod's pages of the game's own menus (Mod::ui_page): set what it shows
 | `UiPage(const openrac_api* api, openrac_mod* handle, int id)` | The page `id` of the mod `handle`, through `api`. |
 | `int id() const` | Returns the page's id. |
 | `void set(const UiContent& content) const` | Puts `content` on the page. Throws openrac::Error when refused (no such page). |
-| `bool open() const` | Return whether the port took it: shows this page (from another of the mod's on the screen), goes back a level, asks `question` on this page (answered by an OPENRAC_UI_ANSWER with `tag`), plays a menu sound (OPENRAC_UI_SOUND_*). |
+| `bool open() const` | Return whether the port took it: shows this page (from another of the mod's on the screen, or since 1.9 a main-menu item's page from the title's main menu), goes back a level, asks `question` on this page (answered by an OPENRAC_UI_ANSWER with `tag`), plays a menu sound (OPENRAC_UI_SOUND_*). |
 | `bool back() const` |  |
 | `bool confirm(const std::string& question, std::uint32_t tag = 0) const` |  |
 | `bool sound(int sound) const` |  |
@@ -216,6 +216,36 @@ One of the mod's pages of the game's own menus (Mod::ui_page): set what it shows
 | `std::vector<std::uint8_t> save_capture() const` | Since 1.8: the game's progress now as a save, empty for none. |
 | `int save_slot(int slot, openrac_save_info& out) const` | Since 1.8: what the memory card's save `slot` holds, into `out`: 1 a save, 0 an empty slot, -1 past the last. |
 | `std::vector<std::uint8_t> save_read(int slot) const` | Since 1.8: the bytes of the memory card's save `slot`, for play_start; empty for none. |
+| `bool has_api_11() const` | Whether the port has interface 1.11's calls (data_dir, save_slot_current). |
+| `std::string data_dir() const` | Since 1.11: the mod's own folder for the files it keeps (beside the memory cards, made by the port), empty for none. |
+| `int save_slot_current() const` | Since 1.11: the memory card slot the game in progress saves into (the one it was loaded from or last saved to), -1 for none. |
+| `bool has_api_12() const` | Whether the port has interface 1.12's calls: the hero moved by the mod (hero_set_pose), the collision triangles, props, sounds, the camera, heat haze and HUD text. has_hero_drive(), has_collision(), has_props(), has_sounds() and has_camera() say the same for each part. |
+| `bool has_hero_drive() const` |  |
+| `bool has_collision() const` |  |
+| `bool has_props() const` |  |
+| `bool has_sounds() const` |  |
+| `bool hero_set_pose(const openrac_pose& pose) const` | Since 1.12: puts the hero in `pose` (its size set here), from the mod's replacement of the hero's update (rac1.player.update), which then does not call the original: his place, rotation, velocity and animation, and what the update does after his movement to show him. False outside a level, or for a mod that has not taken that hook point. |
+| `std::vector<openrac_collision_triangle> collision_triangles( const float lo[3], const float hi[3], int max = 4096 ) const` | Since 1.12: the collision triangles inside the box [lo, hi] (the level's, then the mobys' with collision, in a stable order), up to `max` of them. |
+| `int prop_create(const std::string& mesh_path) const` | Since 1.12: a prop of the mesh `mesh_path` (a .glb in the mod's folder) in the level: its id, or -1 (no level, no such file, no room). |
+| `bool prop_pose(int id, const float position[3], const float rotation[4], float scale = 1.0f) const` | Since 1.12: places prop `id` at `position`, turned by the unit quaternion `rotation` (x, y, z, w) and scaled by `scale`; false for a prop gone with its level (make another). |
+| `bool prop_pose(int id, const float matrix[16]) const` | Since 1.12: places prop `id` by a 4 by 4 matrix, column-major. |
+| `bool prop_pose(int id, const float matrix[16], const float tint[4], uint32_t blend) const` | Since 1.12: places prop `id` by a matrix, its colour times `tint` (RGBA) and drawn as `blend` says (OPENRAC_PROP_OPAQUE, _ALPHA or _ADD): a glow or a spark. |
+| `bool prop_hide(int id, bool hidden = true) const` | Since 1.12: hides prop `id` or shows it again; takes it out of the level. |
+| `bool prop_remove(int id) const` |  |
+| `int sound_load(const std::string& path) const` | Since 1.12: a sound of the mod's (a .wav or .ogg in its folder): its id, or -1. |
+| `std::uint32_t sound_play(int sound, float volume = 1.0f, float pitch = 1.0f, bool loop = false) const` | Since 1.12: plays sound `sound` at the game's sound volume: its voice, 0 for none. |
+| `bool sound_set(std::uint32_t voice, float volume, float pitch) const` | Since 1.12: a voice's volume and pitch (false once it has ended); stops a voice. |
+| `void sound_stop(std::uint32_t voice) const` |  |
+| `bool hero_set_joints(const std::vector<openrac_joint_offset>& joints) const` | Since 1.12: turns and moves the hero's joints on top of his animation (openrac_joint_offset) until the next call; an empty list takes them off. False outside a level, for a mod without the hero's update hook, or on a port without the call. |
+| `bool has_camera() const` | Since 1.12: whether the port offers camera_view(), camera_set() and haze_set(). |
+| `bool camera_view(openrac_camera& out) const` | Since 1.12: the camera the game made itself for its last view in the level. False outside a level or on a port without the call. |
+| `bool camera_set(const openrac_camera& camera) const` | Since 1.12: the game's camera put where `camera` says until camera_release() or the level goes. False outside a level, while another mod holds the camera, or on a port without it. |
+| `void camera_release() const` |  |
+| `bool haze_set(const std::vector<openrac_haze>& patches) const` | Since 1.12: heat haze patches over the picture (openrac_haze) until the next call; an empty list takes them off. |
+| `bool hud_text_set(const std::vector<openrac_hud_text>& lines) const` | Since 1.12: lines of text in the game's HUD (openrac_hud_text) until the next call; an empty list takes them off. |
+| `int hero_sound_play(int sound, bool loop = false) const` | Since 1.12: one of the hero's own sounds, the game's (openrac_api.hero_sound_play): its voice, or -1. |
+| `void hero_sound_stop(int voice) const` | Since 1.12: stops a voice hero_sound_play gave, while it still plays on the hero. |
+| `int hero_hurt(int damage) const` | Since 1.12: `damage` hit points taken from the hero as a hit of the game's does (his death is his own update's): his health after, or -1. |
 | `bool has_world() const` | Since 1.9: whether the port offers the world calls (moby_list() ... bolts()). |
 | `std::vector<openrac_moby> moby_list() const` | Since 1.9: the level's live mobys (each's size set), all of them. |
 | `int moby_slot(int key) const` | Since 1.9: the slot of placed moby `key`, -1 for none. |
@@ -230,6 +260,27 @@ One of the mod's pages of the game's own menus (Mod::ui_page): set what it shows
 | `bool moby_hit(const openrac_hit& hit) const` | Since 1.9: posts `hit` (its size set here); false for no victim. |
 | `void play_eyes(const std::vector<float>& xyz) const` | Since 1.9: the eyes besides the camera (x, y, z each), and the bolts after adding `add`. |
 | `int bolts(int add = 0) const` |  |
+| `bool play_skip() const` | Since 1.9: skips the scene playing as the game's own skip does; false for a game without. |
+| `bool has_held() const` | Since 1.9: whether the port offers the held pieces and the shots (hero_held() ... figure_shot()). |
+| `bool hero_held(openrac_held& out) const` | Since 1.9: what the hero wears and holds into `out`; false when there is no hero now. |
+| `bool figure_held(int id, const openrac_held& held) const` | Since 1.9: has figure `id` wear and hold `held` (its size set here), each tick it is posed; false for a figure gone with its level. |
+| `std::vector<openrac_shot> hero_shots() const` | Since 1.9: the shots the hero fired since the last call, oldest first. |
+| `bool figure_shot(int id, const openrac_shot& shot) const` | Since 1.9: has figure `id` fire `shot` (its size set here), hitting nothing in this game; false for a figure gone or a weapon the port cannot fire for one. |
+| `bool has_notice() const` | Since 1.9: whether the port offers play_notice(). |
+| `bool play_notice(const std::string& text) const` | Since 1.9: a line at the top of the game's picture until replaced or cleared (""); false for a port without it. |
+| `bool has_pause_items() const` | Since 1.9: whether the port offers items of the pause menu's Options page (ui_pause_item()). |
+| `void ui_pause_item(const char* label, const UiPage& page)` | Since 1.9: adds an item named `label` to the Options page of the pause menu in a level, opening `page`. Throws openrac::Error when refused. Only during load. |
+| `bool has_scenes() const` | Since 1.9: whether the port offers the level's scenes (scene_playing(), play_scene()). |
+| `int scene_playing(int* frame = nullptr) const` | Since 1.9: the in-level scene playing (its number in the level), -1 for none; `frame` (when not null) gets how many of its frames have played. |
+| `bool play_scene(int scene) const` | Since 1.9: starts the level's scene `scene` from its start as the game's own trigger does, once the player is in control (-1 drops a request still waiting); false outside a level or for a port without scenes. |
+| `bool has_moby_detail() const` | Since 1.9: whether the port offers moby_hide(), moby_deletion() and camera_position(). |
+| `bool moby_hide(int slot, bool hidden) const` | Since 1.9: hides the moby in `slot` from drawing (`hidden`) or shows it again; false for no moby there or a port without it. |
+| `bool moby_deletion(int slot, openrac_moby_deletion& out) const` | Since 1.9: the last deletion the game made of the moby in `slot` in this level load into `out`; false for none seen or a port without it. |
+| `bool camera_position(float (&out)[3]) const` | Since 1.9: where the game's camera is into `out` (x, y, z); false outside a level or for a port without it. |
+| `bool has_moby_run() const` | Since 1.9: whether the port offers moby_run(). |
+| `bool moby_run(int slot, openrac_moby_run& out) const` | Since 1.9: how the game ran the level's mobys in the last tick, and the moby in `slot` (-1: none) in it, into `out`; false outside a level or for a port without it. |
+| `int moby_slot_of(gaddr moby) const` | Since 1.9: the slot of the moby at game address `moby` (a hook point's argument), -1 none. |
+| `bool play_overlay_pause(bool on) const` | Since 1.9: the world keeps running under the game's menus while `on`; false for a game without it. |
 | `Memory memory() const` | Returns a view of game memory. |
 | `gaddr relocate(gaddr address) const` | Return a global's address for the code loaded now: the executable's (`relocate`) or level `level`'s program's (`relocate_level`). Ask each time, because a level moves its globals. |
 | `gaddr relocate_level(int level, gaddr address) const` |  |

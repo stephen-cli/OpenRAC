@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "common/log.h"
 
@@ -32,6 +33,7 @@
 
 extern "C" {
 std::uint8_t* openrac_guest_base = nullptr;
+std::uint32_t openrac_guest_ram_size = GUEST_RAM_SIZE;
 }
 
 namespace openrac::runtime {
@@ -85,7 +87,7 @@ using MapViewOfFile3Fn = PVOID(WINAPI*)(
     HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG
 );
 
-bool map_with_placeholders(std::uint8_t** base_out) {
+bool map_with_placeholders(std::uint8_t** base_out, std::uint32_t ram_size) {
     HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
     if (kernelbase == nullptr) {
         return false;
@@ -114,20 +116,19 @@ bool map_with_placeholders(std::uint8_t** base_out) {
     auto carve = [&](gaddr address, std::uint32_t size) {
         return VirtualFree(base + address, size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) != 0;
     };
-    HANDLE ram = CreateFileMappingW(
-        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, GUEST_RAM_SIZE, nullptr
-    );
+    HANDLE ram =
+        CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, ram_size, nullptr);
     if (ram == nullptr) {
         return false;
     }
     for (gaddr view : kRamViews) {
-        if (!carve(view, GUEST_RAM_SIZE)
+        if (!carve(view, ram_size)
             || map_view3(
                    ram,
                    GetCurrentProcess(),
                    base + view,
                    0,
-                   GUEST_RAM_SIZE,
+                   ram_size,
                    MEM_REPLACE_PLACEHOLDER,
                    PAGE_READWRITE,
                    nullptr,
@@ -158,7 +159,7 @@ bool map_with_placeholders(std::uint8_t** base_out) {
 }  // namespace
 
 void Memory::map_all() {
-    if (map_with_placeholders(&base_)) {
+    if (map_with_placeholders(&base_, ram_size_)) {
         aliases_ = true;
         return;
     }
@@ -169,7 +170,7 @@ void Memory::map_all() {
         log::fatal("could not reserve 4 GB of address space for game memory");
     }
     const std::uint32_t page = page_size();
-    if (VirtualAlloc(base_ + GUEST_RAM, GUEST_RAM_SIZE, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+    if (VirtualAlloc(base_ + GUEST_RAM, ram_size_, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
         log::fatal("could not commit game RAM");
     }
     for (const Region& r : kPlainRegions) {
@@ -223,10 +224,10 @@ void Memory::map_all() {
 
     aliases_ = false;
     int fd = ram_object();
-    if (fd >= 0 && ftruncate(fd, GUEST_RAM_SIZE) == 0) {
+    if (fd >= 0 && ftruncate(fd, ram_size_) == 0) {
         aliases_ = true;
         for (gaddr view : kRamViews) {
-            if (!map_fixed(base_ + view, GUEST_RAM_SIZE, fd)) {
+            if (!map_fixed(base_ + view, ram_size_, fd)) {
                 aliases_ = false;
                 break;
             }
@@ -236,7 +237,7 @@ void Memory::map_all() {
         close(fd);
     }
     if (!aliases_) {
-        if (!map_fixed(base_ + GUEST_RAM, GUEST_RAM_SIZE, -1)) {
+        if (!map_fixed(base_ + GUEST_RAM, ram_size_, -1)) {
             log::fatal("could not map game RAM");
         }
         log::warn("main RAM could not be aliased: uncached RAM addresses are not mapped");
@@ -251,13 +252,21 @@ void Memory::map_all() {
 
 #endif
 
-Memory& Memory::create() {
+Memory& Memory::create(std::uint32_t ram_size) {
+    if (ram_size != GUEST_RAM_SIZE && ram_size != GUEST_RAM_EXPANDED_SIZE) {
+        log::fatalf("game RAM size {:#x} is outside the supported range", ram_size);
+    }
     if (g_memory != nullptr) {
+        if (g_memory->ram_size_ != ram_size) {
+            log::fatal("game memory was already created with a different RAM size");
+        }
         return *g_memory;
     }
     g_memory = new Memory();
+    g_memory->ram_size_ = ram_size;
     g_memory->map_all();
     openrac_guest_base = g_memory->base_;
+    openrac_guest_ram_size = ram_size;
     g_memory->clear();
     return *g_memory;
 }
@@ -275,12 +284,11 @@ bool Memory::mapped(gaddr address, std::size_t size) const {
     auto inside = [&](gaddr at, std::uint32_t length) {
         return begin >= at && end <= static_cast<std::uint64_t>(at) + length;
     };
-    if (inside(GUEST_RAM, GUEST_RAM_SIZE)) {
+    if (inside(GUEST_RAM, ram_size_)) {
         return true;
     }
     if (aliases_
-        && (inside(GUEST_RAM_UNCACHED, GUEST_RAM_SIZE)
-            || inside(GUEST_RAM_UNCACHED_ACCEL, GUEST_RAM_SIZE))) {
+        && (inside(GUEST_RAM_UNCACHED, ram_size_) || inside(GUEST_RAM_UNCACHED_ACCEL, ram_size_))) {
         return true;
     }
     for (const Region& r : kPlainRegions) {
@@ -299,7 +307,7 @@ std::span<std::uint8_t> Memory::bytes(gaddr address, std::size_t size) {
 }
 
 void Memory::clear() {
-    std::memset(base_ + GUEST_RAM, 0, GUEST_RAM_SIZE);
+    std::memset(base_ + GUEST_RAM, 0, ram_size_);
     for (const Region& r : kPlainRegions) {
         std::memset(base_ + r.address, 0, r.size);
     }
@@ -307,7 +315,7 @@ void Memory::clear() {
 }
 
 std::size_t Memory::snapshot_size() {
-    std::size_t size = GUEST_RAM_SIZE;
+    std::size_t size = openrac_guest_ram_size;
     for (const Region& r : kPlainRegions) {
         size += r.size;
     }
@@ -319,8 +327,8 @@ bool Memory::save_snapshot(std::span<std::uint8_t> out) const {
         return false;
     }
     std::size_t at = 0;
-    std::memcpy(out.data() + at, base_ + GUEST_RAM, GUEST_RAM_SIZE);
-    at += GUEST_RAM_SIZE;
+    std::memcpy(out.data() + at, base_ + GUEST_RAM, ram_size_);
+    at += ram_size_;
     for (const Region& r : kPlainRegions) {
         std::memcpy(out.data() + at, base_ + r.address, r.size);
         at += r.size;
@@ -328,18 +336,101 @@ bool Memory::save_snapshot(std::span<std::uint8_t> out) const {
     return true;
 }
 
-bool Memory::restore_snapshot(std::span<const std::uint8_t> in) {
-    if (in.size() != snapshot_size()) {
+bool Memory::restore_snapshot(
+    std::span<const std::uint8_t> in, const openrac_guest_allocation_state& allocations
+) {
+    try {
+        if (in.size() != snapshot_size()) {
+            return false;
+        }
+        openrac_guest_allocation_state current{};
+        openrac_guest_get_allocation_state(&current);
+        if (allocations.strings_end < GUEST_STRINGS
+            || allocations.strings_end > GUEST_STRINGS + GUEST_STRINGS_SIZE
+            || current.strings_end > GUEST_STRINGS + GUEST_STRINGS_SIZE
+            || allocations.statics_end < GUEST_STATICS
+            || current.statics_end > GUEST_STATICS + GUEST_STATICS_SIZE
+            || allocations.statics_end > allocations.static_sites_begin
+            || current.statics_end > current.static_sites_begin
+            || current.static_sites_begin < GUEST_STATICS
+            || current.static_sites_begin > GUEST_STATICS + GUEST_STATICS_SIZE
+            || allocations.static_sites_begin > GUEST_STATICS + GUEST_STATICS_SIZE) {
+            return false;
+        }
+        const std::size_t strings_tail_size = allocations.strings_end <= current.strings_end
+                                                  ? current.strings_end - allocations.strings_end
+                                                  : 0;
+        const std::size_t statics_tail_size = allocations.statics_end <= current.statics_end
+                                                  ? current.statics_end - allocations.statics_end
+                                                  : 0;
+        const std::size_t static_sites_tail_size =
+            current.static_sites_begin <= allocations.static_sites_begin
+                ? allocations.static_sites_begin - current.static_sites_begin
+                : 0;
+        std::vector<std::uint8_t> strings_tail(strings_tail_size);
+        std::vector<std::uint8_t> statics_tail(statics_tail_size);
+        std::vector<std::uint8_t> static_sites_tail(static_sites_tail_size);
+        if (!strings_tail.empty()) {
+            std::memcpy(strings_tail.data(), base_ + allocations.strings_end, strings_tail.size());
+        }
+        if (!statics_tail.empty()) {
+            std::memcpy(statics_tail.data(), base_ + allocations.statics_end, statics_tail.size());
+        }
+        if (!static_sites_tail.empty()) {
+            std::memcpy(
+                static_sites_tail.data(),
+                base_ + current.static_sites_begin,
+                static_sites_tail.size()
+            );
+        }
+        if (allocations.strings_end > current.strings_end) {
+            std::memset(
+                base_ + current.strings_end, 0, allocations.strings_end - current.strings_end
+            );
+        }
+        if (allocations.statics_end > current.statics_end) {
+            std::memset(
+                base_ + current.statics_end, 0, allocations.statics_end - current.statics_end
+            );
+        }
+        if (allocations.static_sites_begin < current.static_sites_begin) {
+            std::memset(
+                base_ + allocations.static_sites_begin,
+                0,
+                current.static_sites_begin - allocations.static_sites_begin
+            );
+        }
+        std::size_t at = 0;
+        std::memcpy(base_ + GUEST_RAM, in.data() + at, ram_size_);
+        at += ram_size_;
+        for (const Region& r : kPlainRegions) {
+            std::memcpy(base_ + r.address, in.data() + at, r.size);
+            at += r.size;
+        }
+        if (!strings_tail.empty()) {
+            std::memcpy(base_ + allocations.strings_end, strings_tail.data(), strings_tail.size());
+        }
+        if (!statics_tail.empty()) {
+            std::memcpy(base_ + allocations.statics_end, statics_tail.data(), statics_tail.size());
+        }
+        if (!static_sites_tail.empty()) {
+            std::memcpy(
+                base_ + current.static_sites_begin,
+                static_sites_tail.data(),
+                static_sites_tail.size()
+            );
+        }
+        if (allocations.static_sites_begin > current.static_sites_begin) {
+            std::memset(
+                base_ + current.static_sites_begin,
+                0,
+                allocations.static_sites_begin - current.static_sites_begin
+            );
+        }
+        return true;
+    } catch (const std::bad_alloc&) {
         return false;
     }
-    std::size_t at = 0;
-    std::memcpy(base_ + GUEST_RAM, in.data() + at, GUEST_RAM_SIZE);
-    at += GUEST_RAM_SIZE;
-    for (const Region& r : kPlainRegions) {
-        std::memcpy(base_ + r.address, in.data() + at, r.size);
-        at += r.size;
-    }
-    return true;
 }
 
 bool Memory::contains(const void* host, gaddr* address) const {

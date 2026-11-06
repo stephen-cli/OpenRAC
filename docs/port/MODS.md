@@ -6,14 +6,14 @@ packs; a map session uses a fresh game with campaign saves disabled.
 
 How a mod changes what the native port does without being built into it: a
 **native mod** is a shared library the port loads at start, through a small
-versioned C interface; a **data mod** is a pack of textures, models or level
-edits, which the level editor and the overrides packs already cover
-([editor/MODDING.md](../../editor/MODDING.md)). The launcher installs both,
+versioned C interface; a **data mod** is a pack of textures, models, level
+edits or sound, which the level editor and the overrides packs already cover ([editor/MODDING.md](../../editor/MODDING.md),
+[editor/AUDIO_MODDING.md](../../editor/AUDIO_MODDING.md)). The launcher installs both,
 switches them on and off, orders them and shows why one was not loaded. A
 player who wants the game as the console plays it leaves the **Mods** switch
 under Play off (the default) and nothing is loaded (Purist mode).
 
-Mods live outside OpenRAC: [OpenRAC/rac1-mods](https://github.com/OpenRAC/rac1-mods)
+Mods live outside OpenRAC: [OpenRAC/openrac-mods](https://github.com/OpenRAC/openrac-mods)
 holds Ratchet & Clank's, starting with the lock-strafe that was an option of
 the port's own until 2026-10-21. The SDK to write one is [sdk/](../../sdk/README.md).
 
@@ -71,7 +71,8 @@ Status words as in [DESIGN.md](DESIGN.md): **decided**, **proposed**, **open**.
    loaded, and a crash report lists them and names the one whose code was
    running where the address lets the port tell (section 7).
 8. **Purist mode loads no mods**: `--no-mods`, which the launcher passes while
-   the Mods switch under Play is off.
+   the Mods switch under Play is off. Enhanced graphics, listed in the Mods
+   tab, stays off too (its `enhanced_rendering` setting is kept).
 
 ## 2. Where things are
 
@@ -131,11 +132,12 @@ those name and writes `status.json` beside the list. Run by hand without
 `--plugins`, the port reads `<data>/plugins/plugins.json`. Nothing of a
 source tree is read at run time.
 
-**Android** carries the game inside the app and runs it there; the system
-does not let an app load code from the files it writes (since Android 10), so
-native mods are not loaded on Android: the Mods tab shows them as not for
-this platform (no `plugin` entry for it). Data packs work there as
-elsewhere.
+**Android** carries the game inside the app and runs it there. A native mod
+loads there when its release has an `android-arm64` build (the SDK's
+workflow makes one with the NDK); one built before that shows in the Mods tab
+as not built for this platform until its next release. The game opens the
+library read-only, as Android 14 asks of code an app loads from its own
+files. Script mods and data packs work there as elsewhere.
 
 ## 3. The manifest: `openrac-mod.json`
 
@@ -148,7 +150,7 @@ elsewhere.
   "author": "OpenRAC contributors",
   "description": "Strafe as in the later games: ...",
   "license": "GPL-3.0-or-later",
-  "homepage": "https://github.com/OpenRAC/rac1-mods",
+  "homepage": "https://github.com/OpenRAC/openrac-mods",
   "api": "1.0",                          // the interface it was built for (section 6)
   "games": { "rac1": ["pal", "ntsc"] },  // game id: the discs (game.json versions)
   "plugin": {                            // the library for each platform it was built for
@@ -178,7 +180,7 @@ elsewhere.
 | `author`, `description`, `license`, `homepage` | no | shown in the launcher; `homepage` only if `https://` |
 | `api` | yes, with `plugin` | `MAJOR.MINOR`: the interface's version the mod was built against |
 | `games` | yes | at least one game, each with at least one version |
-| `plugin` | no | platform → path inside the mod. Platforms: `macos-arm64`, `macos-x86_64`, `linux-x86_64`, `linux-aarch64`, `windows-x86_64`, `windows-arm64`. Without it the mod is data only (not used yet: section 10) |
+| `plugin` | no | platform → path inside the mod. Platforms: `macos-arm64`, `macos-x86_64`, `linux-x86_64`, `linux-aarch64`, `windows-x86_64`, `windows-arm64`, `android-arm64`. Without it the mod is data only (not used yet: section 10) |
 | `hooks` | no | the hook points the mod takes, each by its id (`rac1.player.take_damage`) or an alias (`Hero_TakeDamage`; section 4). The launcher shows which mods share one; the port warns about a hook a mod takes but does not list; `package_mod.py` refuses one the SDK's table (`bindings/<game>.ids.lock`) does not have |
 | `settings` | no | the mod's settings (below) |
 | `requires` | no | mods that must be on and load before it; `version` is `>=X.Y.Z`, `=X.Y.Z` or absent |
@@ -221,6 +223,23 @@ The launcher adds a Default button of its own, unless a preset's id is
 
 A value that is missing, of the wrong type or out of range is the default
 (the port logs it). Settings count from the game's next start.
+
+### Assets
+
+`"assets": "assets"` names a folder inside the mod (relative, with `/`) that
+carries its own data. While the mod is loaded, the game reads each level from
+its `assets/level_NN/` before the extracted level, by the same relative path: a
+texture or a mesh there takes the place of the level's own, and a model there
+names the level's textures it does not carry by their usual paths. The mods
+loaded last come first, and every mod comes before the data packs (`--mods`).
+
+`assets/level_NN/classes.json` adds render classes, or replaces the level's
+of the same id, in the form of the level manifest's `"classes"`:
+`{"moby": {"1234": {"mesh": "mobys/my_weapon.glb", "scale": 1}}}` (also `"tie"`
+and `"shrub"`). Every class needs a `mesh`, read from the mod's folder; a
+broken `classes.json` stops the level from loading, with the reason in the log.
+The original manifests are never changed. `package_mod.py` checks the folder
+and packs it whole (hidden files left out).
 
 ## 4. Hook points
 
@@ -278,6 +297,17 @@ names will change (the port's C++ refactor renames functions); ids do not:
 A new hook point (a hand-written `hook` row, for the item randomizer's item
 grants for example) is a row in each disc's `libraries.tsv` and an entry in
 the table with its id, as the six are; the generator adds it to the lock.
+
+**One hook point over a function's level copies.** Some jobs are a function
+of their own in each family of levels: the hero's whole update is
+`coordinate_hero_frame_update` in levels 0, 4, 7, 9, 10, 13 and 17,
+`update_hero_frame` in 1, 2, 5, 11, 12 and 15 and `HeroL03_FrameUpdate` in 3, 6,
+8, 14, 16 and 18 (the same steps, each family's own calls). Each copy has a
+`hook` row of the same name (`Hero_Update`), and the table's entry lists the
+others under `"copies"` (per disc; their symbols are aliases, the anchor the
+first's). hostgen writes them one slot: a mod's replacement runs whichever copy
+the game calls, and its `original` runs that copy (hooks.c notes the copy for
+the call). The copies must share a signature.
 
 **Signatures** are written the same way on both sides: the return type, then
 the parameters, from `void`, `i32`, `u32` (a game address too), `i64`,
@@ -437,16 +467,17 @@ OPENRAC_MOD_EXPORT void openrac_mod_unload(void);                        /* opti
 | `menu_entry(mod, label, fn, user)` (1.5) | during load: an entry in the game's front-end menu (at most `OPENRAC_MENU_ENTRIES_MAX`, 4, for all mods together) that opens a page of the mod's own. `fn(user, &frame)` runs once a frame while it is open, with pad 0's buttons held and pressed (`OPENRAC_PAD_*`) and whether the page just opened; it returns `OPENRAC_MENU_STAY` or `OPENRAC_MENU_CLOSE`, and closing goes back to the menu it came from, as the game's back button does. While the page is open the game sees no button of pad 0. In Ratchet & Clank the entry is in the title's Options list (main menu, Options), after the port's own Video and Planets |
 | `menu_rect(mod, x, y, w, h, rgba)`, `menu_text(mod, x, y, size, rgba, text)` (1.5) | only inside the mod's own page callback: a filled rectangle, blended by its alpha, and ASCII text in the port's 5 by 7 font (each character 6 by 8 pixels times `size`, 1 to 8; letters as capitals; `\n` starts a line) on the page, `OPENRAC_MENU_WIDTH` by `OPENRAC_MENU_HEIGHT` (512 by 448) pixels from its top left, stretched over the whole window. Colours are `OPENRAC_RGBA(r, g, b, a)`; the page starts each frame black. The page is drawn as the developer level menu is (a picture made on the CPU, `port/renderer/ui/canvas.h`), so it needs no renderer work of the mod's |
 | `on_tick_boundary(mod, fn, user)` (1.6) | `fn(user, tick)` after vertical-blank handlers have run, for a safe snapshot boundary |
-| `savestate_size()` (1.6) | the byte size of this running RAC1 PAL/NTSC build's private warm snapshot |
-| `savestate_save(out, size)` / `savestate_load(data, size)` (1.6) | copy guest memory and essential in-process runtime state; only accepted from `on_tick_boundary`, for the same running process and build |
+| `savestate_size()` (1.6) | the byte size of this build's private RAC1 PAL/NTSC snapshot |
+| `savestate_save(out, size)` / `savestate_load(data, size)` (1.6) | copy guest memory and port runtime state; only accepted from `on_tick_boundary`, and portable across launches of the same exact OpenRAC build and disc |
 | `ui_page(mod, flags, fn, user)` (1.7) | during load: a page of the game's own menus (at most `OPENRAC_UI_PAGES_MAX`, 16, for all mods), empty until `ui_set`; returns its id. `fn(user, page, &event)` hears it: `OPENRAC_UI_SHOW` and `_HIDE` as it comes and goes, `_FRAME` each tick it is shown, `_CHOOSE` (Cross on a button), `_CHANGE` (a choice stepped), `_ANSWER` (a question answered, `value` 1 yes), and `_BACK` (Triangle) for a page made with `OPENRAC_UI_OWN_BACK`, which then goes back itself. The game draws it: in Ratchet & Clank a page the main menu opens has the Options page's frames, title and footer of hints, its list is the game's text list in the game's font, and a page opened from it has the Language page's, a level down (a third takes the second's place); a page's frames are widened, each about its centre, to its widest title, item and footer line as the game measures them, up to the screen's safe area (90% of its width), and grow while it is shown when its texts do. Up and Down move the cursor over buttons and choices (not lines of text), with the game's sounds |
-| `ui_main_item(mod, after, label, page)` (1.7) | during load: an item of the title's main menu (at most `OPENRAC_UI_MAIN_ITEMS_MAX`, 2: the rows below the game's three) after `OPENRAC_UI_NEW_GAME`, `_LOAD_GAME` or `_OPTIONS`, opening the mod's `page`. Ratchet & Clank: the game's own frames and its row animations, the cursor going round the four (or five) |
+| `ui_main_item(mod, after, label, page)` (1.7) | during load: an item of the title's main menu (at most `OPENRAC_UI_MAIN_ITEMS_MAX`, 2: the rows below the game's three) after `OPENRAC_UI_NEW_GAME`, `_LOAD_GAME` or `_OPTIONS`, opening the mod's `page`. Ratchet & Clank: the game's own frames and its row animations, the cursor going round the four (or five); the port's Exit row goes last while one of the two rows is free, and two mods' items leave it out |
+| `ui_pause_item(mod, label, page)` (1.9) | during load: an item of the pause menu's Options page in a level (at most `OPENRAC_UI_PAUSE_ITEMS_MAX`, 2), after the game's items and the port's Video, opening the mod's `page`. Ratchet & Clank: the page is a copy of the game's Camera options page (the Sound page's taller frames), made with the Options items of each level program as the port's Video page is (port/game/common/options_menu.cpp); its title box shows the page's title and its list a row per item, five at a time moving with the game's cursor: the label on the left and a choice's value on the right (none for a button or a line of text). The game moves the cursor and plays its sounds; Cross chooses a button and steps a choice on, Left and Right step a choice; Triangle goes back to Options, but on a page made with `OPENRAC_UI_OWN_BACK` and while a question is open, where the port keeps it from the game. A question (`ui_confirm`) is the title box with two rows, Yes and No. There `ui_open` swaps another of the mod's pages into its place (`OPENRAC_UI_GO_BACK` back to Options), `ui_cursor` only reads the cursor, and `ui_sound` plays nothing (port/game/common/mod_ui.cpp, namespace pause) |
 | `ui_set(mod, page, &content)` (1.7) | any time: the page's title, items (`OPENRAC_UI_BUTTON`, `_CHOICE` with its values, `_TEXT`; `OPENRAC_UI_DISABLED` dims one, refuses it and keeps the cursor off it) and footer lines (none: the game's own hints, in its language), at most `OPENRAC_UI_ITEMS_MAX` (12) items and `OPENRAC_UI_FOOTER_MAX` (3) lines of `OPENRAC_UI_TEXT_MAX` (47) bytes; UTF-8 with the game's accented letters, and `OPENRAC_UI_CROSS`, `_CIRCLE`, `_TRIANGLE`, `_SQUARE` for the pad's glyphs |
 | `ui_open(mod, page)`, `ui_confirm(mod, page, question, tag)`, `ui_cursor(mod, page, item)`, `ui_sound(mod, sound)` (1.7) | while one of the mod's pages is shown: show another (`OPENRAC_UI_GO_BACK` goes back a level); ask a yes/no question in the game's prompt box in place of the list (Cross yes, Triangle no); read or move the cursor; play one of the game's menu sounds (`OPENRAC_UI_SOUND_SELECT`, `_CURSOR`, `_DENIED`, `_OPEN`, `_PAGE`). What is asked happens after the event |
 | `play_status(&status)`, `level_name(level)` (1.8) | what the game is doing: its phase (`OPENRAC_PLAY_FRONT_END`, `_LOADING`, `_PLAYING`, `_SCENE` a cutscene, movie or the ship's landing, `_MENU` paused or a vendor; `_NONE` for a game the port knows no play of), the level played or loading, the levels, and `loads` (the level programs loaded so far: a new count, a new level, whose figures are gone); a level's name ("Veldin") |
 | `hero_pose(&pose)` (1.8) | the hero as he is drawn: position, rotation (z the yaw), scale, velocity (units a second), state, health, held item, and his animation (`seq`, `frame`, `next_frame`, `anim_time`, `anim_speed`, `OPENRAC_POSE_BLENDING`) |
 | `figure_create(mod)`, `figure_pose(mod, id, &pose)`, `figure_remove(mod, id)` (1.8) | a figure: a moby of the hero's class in the level (at most `OPENRAC_FIGURES_MAX`, 8, for all mods) that never runs his logic, collides with nothing and is no target; `figure_pose` puts it where the pose says and gives it the pose's animation (a new `seq` blends in; the figure animates by itself and is put back on the pose's key when it drifts). A figure goes with its level: `figure_pose` then says so (`OPENRAC_HOOK_UNKNOWN`) and the mod makes another |
-| `play_start(mod, level, save, size)`, `play_travel(mod, level)` (1.8) | after the frame: from the title, a new game in `level`, or a save (the memory card file's bytes) continued, nothing written to the card; in a level with the player in control, the travel to `level` (the flight between planets, then the level; -1, since 1.9, back to the title as Quit Game). One at a time (`OPENRAC_HOOK_TAKEN` while one waits) |
+| `play_start(mod, level, save, size)`, `play_travel(mod, level)` (1.8) | after the frame: from the title, a new game in `level`, or a save (the memory card file's bytes) continued, nothing written to the card; in a level with the player in control (since 1.9 also in a scene or a menu: the pause menu, a vendor), the travel to `level` (the flight between planets, then the level; -1, since 1.9, back to the title as Quit Game). One at a time (`OPENRAC_HOOK_TAKEN` while one waits) |
 | `save_capture(out, size)`, `save_slot(slot, &info)`, `save_read(slot, out, size)` (1.8) | the progress now as a save (the card file's bytes); what the card's save `slot` holds (level, bolts, gold bolts, time played; 1 a save, 0 empty, -1 past the last); its bytes, for `play_start` |
 | `moby_list(out, max)`, `moby_slot(key)` (1.9) | the level's live mobys in slot order (the index in its moby array, this game's own), each with its slot, `key` (the record the level placed it from, -1 for none: the same moby has the same key in every game that loads the level), class, state, pose and `OPENRAC_MOBY_*` flags (`_UPDATES`, `_DRIVEN`, `_PLACED`, `_CREATURE`); how many there are (more than `max`: the rest left out), 0 outside a level; the slot of a placed moby by its key, -1 for none (killed) |
 | `moby_drive(mod, slot, on)`, `moby_pose(mod, slot, &moby)`, `moby_kill(mod, slot)`, `moby_spawn(mod, oclass, &moby)` (1.9) | drive a moby (its own update no longer runs, its animation still plays and its collision follows it) or let it go; a drive ends with its level, and another mod's is `OPENRAC_HOOK_TAKEN`; put it in a pose; delete it as the game does (a placed one stays dead until its level loads again); make one of a class the level has, driven, and get its slot. A slot with no moby answers `OPENRAC_HOOK_UNKNOWN` |
@@ -454,6 +485,27 @@ OPENRAC_MOD_EXPORT void openrac_mod_unload(void);                        /* opti
 | `on_moby_update(mod, fn, user)`, `hero_stand_in(mod, position, figure)` (1.9) | the gate: `fn(user, slot, phase)` around each update the game runs (`OPENRAC_MOBY_BEFORE`, `_AFTER`; not for a driven moby); returning 1 before skips the update. Before one, `hero_stand_in` puts the hero at `position` (his moby the mod's `figure`, -1 his own) for that update, so the enemy sees, chases and hits another player; elsewhere it answers `OPENRAC_HOOK_UNKNOWN`. One mod's, taken only during `openrac_mod_load` (`OPENRAC_HOOK_TAKEN`, `OPENRAC_HOOK_TOO_LATE`) |
 | `on_moby_hit(mod, fn, user)`, `moby_hit(mod, &hit)` (1.9) | the hit watcher: `fn(user, &hit)` for each hit the game posts (victim and attacker slots, weapon `mask`, damage, position, velocity); returning 1 takes it back, the victim never reads it. One mod's, during load only. `moby_hit` posts a hit of the mod's own to its victim, as the game would and not told to the watcher |
 | `play_eyes(mod, xyz, count)`, `bolts(add)` (1.9) | up to `OPENRAC_EYES_MAX` (8) points besides the camera, which keep the mobys near them running (the world near other players), `count` 0 clears; adds to the player's bolts and returns them |
+| `play_overlay_pause(mod, on)`, `moby_slot_of(moby)` (1.9) | while on, the level's mobys keep being updated under the game's pause menu and its freeze dialogs (the hero and the picture stay as the menu left them), so a game in a party never stops the others' world; the slot of the moby at a game address (a hook point's argument). The world calls always address the level's own mobys, also while the pause menu has its own up; `moby_list` lists a placed moby the game deleted with `OPENRAC_MOBY_DEAD`, so a death is learnt from the game, never from a moby missing |
+| `play_skip(mod)` (1.9) | skips the scene playing (a cutscene, the ship's landing or take-off, the flight between planets) the way the game's own skip does, as Start with the port's Skip cutscenes: pressed over the next ticks until the scene is over; for a party whose scenes end together |
+| `hero_held(&held)`, `figure_held(mod, id, &held)` (1.9) | what the hero wears and holds (at most `OPENRAC_HELD_MAX`, 8, pieces: in Ratchet & Clank the hand's item, the wrench or the weapon or gadget equipped, then Clank and the packs, the boots, the helmet), each with the game's slot, item, class, the body's joint it follows, whether it is hidden or off the body (a thrown wrench, with its place) and its own animation; a figure made to wear and hold the same, each tick it is posed: each piece a moby of its class on the figure's joint, made when this game has its class loaded or can load it beside the hero's own (two weapon classes fit at once), the hand's item falling back to the wrench, taken off when left out, with the figure or with its level |
+| `hero_shots(out, max)`, `figure_shot(mod, id, &shot)` (1.9) | the shots the hero fired since the last call (at most `OPENRAC_SHOTS_MAX`, 16, kept): the weapon's item, where it starts, its velocity and the game's aim angles (Ratchet & Clank: the Blaster's and the Bomb Glove's); a figure firing one as the hero would, the game's own projectile and its effects owned by the figure, which hit and break nothing in this game (`OPENRAC_HOOK_UNKNOWN` for a weapon the port cannot fire for a figure) |
+| `play_notice(mod, text)` (1.9) | a line of text at the top of the game's picture (a notification of the port's) until the mod shows another or clears it (null or ""): what the game's own words cannot say, such as a party waiting for its players. The last mod's line shows |
+| `scene_playing(&frame)`, `play_scene(mod, scene)` (1.9) | the level's own scene playing (a cutscene the level's mobys started, or play_scene: a person spoken to, a place reached, a level's opening; not a movie, the ship's landing or the pause menu's replays): its number in the level, the same in every game, and the frames played, -1 for none; and that scene started as the level's trigger starts it, from its start (its actors, camera, sound, the hero held), once the player is in control (the request waits through a menu or another scene, goes with the level, -1 drops it). A scene's actors are listed with `OPENRAC_MOBY_SCENE`. For a party whose games play the same scenes |
+| `moby_hide(mod, slot, hidden)`, `moby_deletion(slot, &out)`, `camera_position(out)` (1.9) | a moby hidden from drawing as the game hides one (its update did, or a mod: `OPENRAC_MOBY_HIDDEN` in `moby_list`, also for one faded out; `OPENRAC_MOBY_DRAWN` for one drawn in the last frame) or shown again; the last deletion the game made of a slot in this level load: whose update did it (itself or another moby, by slot and class; -1 outside any update) or a mod's moby_kill, from rac1's DeleteMoby, for a mod that wants to know why a moby left the level; where the camera is. For a party's member, whose driven copies do not run the update that hides and shows them |
+| `moby_run(slot, &out)` (1.9) | how the game ran the level's mobys in the last tick, for a report of why one stopped or left: the run list's camera, what the last menu update did with the world (`OPENRAC_RUN_MENU_*`: held, the pause menu's first tick, the level's camera put up, the menu's own left up, a freeze dialog) and the level's camera it puts up, the level's game mode and moby context, and the moby in `slot`: its update and draw distances, drawn or not, and how the run list treated it (`OPENRAC_MOBY_RUN_*`: left out by distance, run as drawn, always, near, near an eye, or by its group) |
+| `developer_menu(mod, title, items, count)`, `take_developer_menu_action(mod)` (1.10) | register a top-level desktop menu beside Developer; grouped items become submenus, and selections are queued for the mod's tick-boundary callback |
+| `developer_menu_set_label(mod, action, label)` (1.10) | update an item's label from the owning mod's tick-boundary callback |
+| `data_dir(mod)`, `save_slot_current()` (1.11) | a folder of the mod's own for its files, beside the memory cards (`mod-data/<id>/`); the memory card slot the game in progress saves into, -1 for none |
+| `hero_set_pose(mod, &pose)` (1.12) | for the mod that has taken the hero's whole update (Ratchet & Clank: `rac1.player.update`, `Hero_Update`, `void()`), from its replacement, which does not call the original: the hero put in `pose` (an `openrac_pose`, as `hero_pose` gives it): his place, rotation (all three, z the yaw) and velocity (units a second) into his motion record and his matrices; a new `seq` started through the game's own `set_hero_animation` (the pose's `frame` its first key, blended in over 4 ticks), `anim_speed` his animation's speed; then what the update does after his movement to show him (his animation moved on, `update_hero_moby`, `update_hero_world_matrices`, `update_hero_equipped_items`, `begin_draw_frame`). With `OPENRAC_POSE_ON_GROUND` or `OPENRAC_POSE_IN_AIR` in the pose's flags, the ground fields the game's follow camera reads (his height above the ground, frames off it, past a jump's top) are set to match, so the camera follows him as on foot; on the ground, a jump, flip, fall or wrench slam state he kept becomes idle (state 0, as `hero_pose` then reports), since the camera keeps a mode of its own for each of them. His looping sounds from a state (the helipack's, a slide's) stop, as on a change of his control mode. The state machine, ledges, rails, the voice and the body's easing do not run: the mod moves him by its own rules. Another mod, or outside a level: `OPENRAC_HOOK_UNKNOWN` |
+| `hero_set_joints(mod, joints, count)` (1.12) | from the same replacement: the hero's joints turned and moved on top of his animation (`openrac_joint_offset`: the joint, a unit quaternion composed after the animation's own turn, a translation in his model's units), as the game's joint modifiers compose; the list replaces the last one and stays until the next call, 0 takes it off (at most `OPENRAC_JOINT_OFFSETS_MAX`). His drawing, shadow and what he carries follow. `OPENRAC_HOOK_UNKNOWN` outside a level or for a mod without the hook |
+| `collision_triangles(lo, hi, out, max)` (1.12) | the collision triangles in the box [lo, hi] (`openrac_collision_triangle`: corners, unit normal, the face's collision byte, `OPENRAC_COLLISION_LEVEL` or the moby's slot): the level's collision tree as port/game/rac1/host/collision.c decodes it, cell by cell (z, y, x), each cell's faces in the game's order, then the collision meshes of the mobys on the moby grid under the box whose bounding sphere meets it, by slot, where they are now; how many there are (more than `max`: the rest left out). It reads the game's memory only: no query of the game's runs, nothing the kernels keep (the stamp, the hit log, the vector registers) changes. A box is cut to 1024 units each way; the mobys' primitives (spheres and capsules on joints) are not triangles and are left out |
+| `prop_create(mod, mesh_path)`, `prop_pose(mod, id, &pose)`, `prop_hide(mod, id, hidden)`, `prop_remove(mod, id)` (1.12) | a prop: a `.glb` of the mod's folder, read as an assets `classes.json` mesh is (`scene::load_model`), drawn by the renderer each frame among the level's mobys (OpenGL and Vulkan alike), lit as a moby, at a pose of a 4 by 4 matrix (`OPENRAC_PROP_MATRIX`) or a place, unit quaternion and scale, tinted and blended (alpha or added) with `OPENRAC_PROP_TINT`; not a moby: the game never sees it. At most `OPENRAC_PROPS_MAX` (256) for all mods, hidden until posed, gone with its level (`prop_pose` then answers `OPENRAC_HOOK_UNKNOWN`). The first prop of a mesh the level was read without has the front end read the level's scenery again with it (a hitch, once); the meshes asked for are read with every level after |
+| `sound_load(mod, path)`, `sound_play(mod, sound, volume, pitch, loop)`, `sound_set(mod, voice, volume, pitch)`, `sound_stop(mod, voice)` (1.12) | a `.wav` (PCM 8 to 32 bits or float, mono or stereo, read by the port) or `.ogg` (Vorbis, through stb_vorbis, which the port already has with stb_image) of the mod's folder, decoded whole (`OPENRAC_SOUNDS_MAX`, 64, a mod); a voice of it (`OPENRAC_SOUND_VOICES_MAX`, 16, for all mods; 0 for none) mixed after the game's sounds and streams at the sound effects' master volume (group 0: the Options page's Sound volume, as the game lowers it under its menus), its volume and pitch (its speed: 2 an octave up) changed while it plays, looped or once, stopped (only the mod that played it can change or stop a voice). No sound output (no window): `sound_load` answers `OPENRAC_HOOK_UNKNOWN` |
+| `camera_view(&out)`, `camera_set(mod, &camera)` (1.12) | the camera the game made itself for its last view in the level (`openrac_camera`: the eye, and the forward, left and up rows), kept just before its view build (`BuildViewMatrices`, port/game/rac1/host/camera_override.c); and a mod's camera written there in its place from the next build on, as `OPENRAC_CAMERA` is: the picture, the sky and what the game's logic reads of the camera all see it, while the game's own camera goes on underneath. Kept until the mod passes null or the level goes; not under the pause menu (its camera is its own). One mod at a time (`OPENRAC_HOOK_TAKEN`); rows that are not unit vectors: `OPENRAC_HOOK_UNKNOWN` |
+| `haze_set(mod, patches, count)` (1.12) | heat haze over the picture, under the HUD (`openrac_haze`: a ball's place, radius and strength): the front end copies the world's picture and redraws each ball's square on the screen from the copy, read a few pixels aside by a wave that moves with the ticks and fades to the ball's edge (port/renderer/haze.cpp, OpenGL and Vulkan alike). The list replaces the mod's last one and goes with the level; at most `OPENRAC_HAZE_MAX` (64) for all mods |
+| `hud_text_set(mod, lines, count)` (1.12) | lines of text in the game's own HUD (`openrac_hud_text`: up to 63 characters, the line's centre on the 4:3 screen from 0 to 1, a size, a colour and flags for the small font and a shadow), drawn glyph by glyph from the game's font after its HUD's elements and hidden with them (Ratchet & Clank: port/game/rac1/host/hud.c). The list replaces the mod's last one and goes with the level; at most `OPENRAC_HUD_TEXTS_MAX` (16) for all mods |
+| `hero_sound_play(mod, sound, loop)`, `hero_sound_stop(mod, voice)` (1.12) | one of the hero's own sounds, the game's, played on him: Ratchet & Clank's entry `sound` of Ratchet's class sound table, through Moby_PlaySound (26 his jump, 36 his double jump, 27 and 53 his wrench swing, 13 landing on a rail, 0 the grind's loop; port/game/rac1/host/play.c). A looping one plays until stopped, or until the level or the mod goes; a voice is stopped only while it still plays on him |
+| `hero_hurt(mod, damage)` (1.12) | hit points taken from the hero as a hit of the game's does, his health shown on the HUD (Ratchet & Clank: `hero_change_health`, at most 1 a hit). Not below 0, and his death is not started (his own update does that), so a mod that has taken that update hands a last hit to the game. His health after, or -1 outside a level |
 
 A mod for several discs carries its own table of the addresses and names it
 uses on each, as the port's `rac1_version.h` does, and picks it by
@@ -465,7 +517,7 @@ uses on each, as the port's `rac1_version.h` does, and picks it by
 `openrac.key(name)`, `pressed(name)`, `mouse()`, `window()`, `take_input(...)`
 and `capture_mouse(on)`. The game's own state (in play, paused, the Quick
 Select open) is the game's: a mod reads it from game memory as it reads
-anything else of the game (rac1-mods' keyboard-mouse reads the game mode).
+anything else of the game (openrac-mods' keyboard-mouse reads the game mode).
 
 **Compatibility.** The major version changes when something in the table
 changes or goes; a mod built for another major is refused. The minor version
@@ -481,13 +533,13 @@ with the mod (`graphics`, `on_views`, `setup_vulkan`, the manifest's
 `vulkan_device`), for a VR mod; 1.5 (SDK 1.5.0) entries in the front-end
 menu with a page of the mod's own (`menu_entry`, `menu_rect`, `menu_text`;
 the C++ layer's `mod.menu_entry(label, [](const MenuPage&, const MenuFrame&)
-{ ... return close; })`); 1.6 (SDK 1.6.0) the tick-boundary and warm-snapshot
+{ ... return close; })`); 1.6 (SDK 1.6.0) the tick-boundary and snapshot
 calls for an optional practice mod (`on_tick_boundary`, `savestate_size`,
 `savestate_save`, `savestate_load`, after 1.5's at the end of the C table; the
 C++ `Mod` wrapper's methods of the same names, and `has_savestates()`). They do
 not run unless a mod registers and calls them. The separate `project-save-clank`
-mod owns the file and Numpad 1/2 controls; its state is not valid across
-process restarts. 1.7 (SDK 1.7.0) pages of the game's own menus and items of
+mod owns persistent slot files and Shift/Ctrl+Numpad 0–9 controls. Slots accept
+only the same game, disc, and exact OpenRAC build that created them. 1.7 (SDK 1.7.0) pages of the game's own menus and items of
 the title's main menu (`ui_page`, `ui_main_item`, `ui_set`, `ui_open`,
 `ui_confirm`, `ui_cursor`, `ui_sound`, after 1.6's; the C++ layer's
 `mod.ui_page([](const UiPage&, const UiEvent&) { ... })`, `mod.ui_main_item`,
@@ -503,7 +555,24 @@ driving, posing, killing and making them (`moby_drive`, `moby_pose`, `moby_kill`
 `moby_spawn`, `figure_slot`), the gate around each moby's update with the hero
 standing in for another player (`on_moby_update`, `hero_stand_in`), the hit
 watcher and posted hits (`on_moby_hit`, `moby_hit`), `play_eyes` and `bolts`; the
-C++ layer's methods of the same names, and `has_world()`.
+C++ layer's methods of the same names, and `has_world()`; and what the hero and a
+figure wear and hold and the shots they fire (`hero_held`, `figure_held`,
+`hero_shots`, `figure_shot`; `has_held()`), a line over the picture (`play_notice`;
+`has_notice()`), and items of the pause menu's Options page opening the mod's pages
+there (`ui_pause_item`; `has_pause_items()`). 1.10 (SDK 1.10.0) optional top-level desktop
+menus (`developer_menu`, `take_developer_menu_action`, and `developer_menu_set_label`), whose
+selections are handled at tick boundaries. 1.11 (SDK 1.11.0) a folder of the mod's own for its files
+(`data_dir`) and the memory card slot the game in progress saves into (`save_slot_current`;
+`has_api_11()`). 1.12 (SDK 1.12.0) the calls a mod needs that replaces how the hero moves (a
+hoverboard), for Ratchet & Clank PAL and NTSC-U: the hook point of the hero's whole update
+(`rac1.player.update`, one over its three level copies), the hero put in a pose from it
+(`hero_set_pose`) and his joints posed on top of his animation (`hero_set_joints`), the collision
+triangles in a box (`collision_triangles`), props drawn by the
+renderer (`prop_create`, `prop_pose`, `prop_hide`, `prop_remove`) and sounds of the mod's own
+(`sound_load`, `sound_play`, `sound_set`, `sound_stop`); the C++ layer's methods of the same names,
+and `has_api_12()` (`has_hero_drive()`, `has_collision()`, `has_props()`, `has_sounds()`). A game
+where no mod takes the hook point or calls them runs as before: the hook point's slot stays null,
+the triangles only read memory, a prop or a sound is only made when a mod asks.
 
 The port's own readers of the pad (the movie player) and its Start skip take the
 report the mods leave, so a key a mod binds to Start skips as the pad's
@@ -549,7 +618,7 @@ of OpenRAC/OpenRAC, with its SHA-256 ([sdk.yml](../../.github/workflows/sdk.yml)
 interface's, `MAJOR.MINOR`, and a patch number for fixes to the SDK itself
 (`sdk/VERSION`): the SDK 1.0.x builds mods for interface 1.0. The archive is
 the same bytes wherever it is made, so a mod's build can pin the version and
-its hash (rac1-mods does: `sdk.lock`).
+its hash (openrac-mods does: `sdk.lock`).
 
 ```sh
 unzip openrac-mod-sdk-1.0.0.zip
@@ -587,8 +656,8 @@ level editor's steps and the packs:
   packs below. A mod for another game is refused;
 - **Remove**, in the row's menu, set apart in `--err`;
 - **The Mods switch** under Play on the game's page (off by default): off, Play
-  passes `--no-mods` (Purist mode); on, Play puts the packs together and passes
-  `--plugins` and `--mods`. The Mods tab says when it is off.
+  passes `--no-mods` (Purist mode, Enhanced graphics off as well); on, Play
+  puts the packs together and passes `--plugins` and `--mods`. The Mods tab says when it is off.
 
 Play passes nothing more: the port reads `plugins.json` from the data folder
 it is given. The Rust side is `core/src/plugins.rs`, with tests on mods made
@@ -600,7 +669,7 @@ first start (an adjective, a noun and 2 or 3 digits: `SwiftLombax427`) and
 changed there. It is the launcher's, not a mod's setting, since every online
 mod shows the same one. Play starts the game with it in the environment as
 `OPENRAC_PLAYER_NAME` (only a valid one: otherwise it is left out), and a
-native mod reads it with `getenv` (rac1-mods' `multiplayer` does, with a
+native mod reads it with `getenv` (openrac-mods' `multiplayer` does, with a
 name of its own when there is none). The port itself does not read it. The
 Rust side is `core/src/multiplayer.rs`.
 
@@ -616,6 +685,28 @@ and the page runs and follows the `probe-bake` action that bakes the probes
 from the player's own levels. Purist mode does not turn it off: it is not a
 mod. The Rust side is `core/src/enhanced.rs`.
 
+**A save says what it was played with.** While any mod is loaded, the port
+writes a small file beside each save the game writes,
+`<card>/<save folder>/save<N>.bin.mods`:
+
+```json
+{"format": 1, "saved": "2026-10-29T14:02:11", "mods": [{"id": "lock-strafe", "version": "1.0.0"}]}
+```
+
+Saving over the slot without mods removes it, so the mark is always what the
+save was last written with. The save file itself is never touched: its header
+has no room, every section carries a CRC, and a real memory card must still
+take the file ([port/assets/disc/save_game.h](../../port/assets/disc/save_game.h)).
+The game never sees the mark: `sceMcGetDir` leaves it out of a listing. The
+mark is written by [lib/mc.c](../../port/game/common/lib/mc.c) from
+`openrac_game_loaded_mods`, which the mod loader sets once at start
+([mods.cpp](../../port/game/common/mods.cpp)). The launcher's Saves block
+shows a **Mods** badge with the names on hover (`core/src/saves.rs`), and
+Ratchet & Clank (PAL) shows the same badge on the game's own memory card page
+([rac1/host/save_marks.c](../../port/game/rac1/host/save_marks.c), the
+`Pause_DrawSaveSlots` wrap); the NTSC-U disc shows it in the launcher only,
+until that page's draw is carried over.
+
 ## 10. Mods in a git repository
 
 A player pastes a repository's address in the Mods tab (**Add from a
@@ -623,11 +714,11 @@ link**), and the launcher finds the mods in it, shows them, and installs the
 one chosen, built: players have no compilers, and nothing is ever built on
 their machine. For that, a repository keeps to these conventions; the SDK's
 template ([sdk/template](../../sdk/template)) and
-[rac1-mods](https://github.com/OpenRAC/rac1-mods) follow them.
+[openrac-mods](https://github.com/OpenRAC/openrac-mods) follow them.
 
 **Where the manifests are.** One mod: `openrac-mod.json` at the top of the
 repository. Several: one folder per mod at the top, each with its
-`openrac-mod.json` (rac1-mods: `lock-strafe/openrac-mod.json`). A top-level
+`openrac-mod.json` (openrac-mods: `lock-strafe/openrac-mod.json`). A top-level
 `openrac-mods.json`, `{"format": 1, "mods": ["lock-strafe", ...]}`, may list
 the folders instead, and then only those are read. In a mod's folder:
 
@@ -647,12 +738,12 @@ with, for each mod:
 |---|---|
 | `<id>-<version>-<platform>.zip` | the mod for one platform (`macos-arm64`, `linux-x86_64`, `windows-x86_64`, ...): what the launcher downloads |
 | `<id>-<version>.zip` | every platform's joined, for installing by hand |
-| `SHA256SUMS` | `sha256sum`'s format, a line per asset: the launcher refuses an asset whose hash is not listed or differs |
+| `SHA256SUMS` | `sha256sum`'s format, a line per asset. Needed only for an asset GitHub gives no `digest` for (older uploads); the launcher refuses an asset with neither, or whose hash differs from either |
 
 The SDK's template carries the workflow that makes them
 ([template/.github/workflows/build.yml](../../sdk/template/.github/workflows/build.yml):
 build and test on macOS, Linux and Windows, package, join, publish on a tag),
-so a modder pushes a tag and nothing else; rac1-mods uses the same file.
+so a modder pushes a tag and nothing else; openrac-mods uses the same file.
 
 **What the launcher does** (`launcher/core/src/remote.rs`):
 
@@ -667,8 +758,9 @@ so a modder pushes a tag and nothing else; rac1-mods uses the same file.
    installed, with the warning that a native mod runs code on this computer;
 3. installs the chosen mod: a native mod is the release's
    `<id>-<version>-<platform>.zip` for this computer, checked against
-   `SHA256SUMS`, then installed as a `.zip` is (section 9). A mod with no
-   asset for this platform, no `SHA256SUMS`, a hash that differs, or a
+   GitHub's `digest` for the asset and `SHA256SUMS`, then installed as a `.zip`
+   is (section 9). A mod with no asset for this platform, neither a digest nor
+   a `SHA256SUMS` line, a hash that differs, or a
    manifest in the archive that is not the one shown, is refused with that
    reason. A data pack (no `plugin`) comes from its asset when the release
    has one, else from the repository's archive at the release's tag (or the
@@ -680,13 +772,13 @@ so a modder pushes a tag and nothing else; rac1-mods uses the same file.
 
 ```json
 { "format": 1,
-  "mods": { "lock-strafe": { "url": "https://github.com/OpenRAC/rac1-mods",
+  "mods": { "lock-strafe": { "url": "https://github.com/OpenRAC/openrac-mods",
                              "path": "lock-strafe", "version": "1.0.0",
                              "tag": "v1.0.0", "commit": null, "pin": false } } }
 ```
 
-**Updates.** **Check for updates** (on the Mods tab, and once a day when it
-opens) asks each source for its newest release with an asset for this
+**Updates.** **Check for updates** (on the Mods tab, and once a day when the
+launcher starts, which offers what it finds in one window) asks each source for its newest release with an asset for this
 platform whose version is above the installed one (for a data pack with no
 releases, a newer commit on its branch), and offers **Update** on the mod's
 row. A pinned mod (**Keep this version**) is never offered one. An update
@@ -712,7 +804,8 @@ into the port: nothing of it crosses the boundary.
   holds the callable, so the C slot still gets a plain function.
 - `mod.ui_page(fn)` (1.7) returns an `openrac::UiPage` (`set(UiContent)`,
   `open()`, `back()`, `confirm(question, tag)`, `cursor()`, `sound(n)`) whose
-  events reach `fn(page, event)`; `mod.ui_main_item(after, label, page)`.
+  events reach `fn(page, event)`; `mod.ui_main_item(after, label, page)`;
+  `mod.has_pause_items()` (1.9) and `mod.ui_pause_item(label, page)`.
 - `mod.has_play()` (1.8), `mod.play_status()`, `mod.hero_pose(pose)`,
   `mod.figure_create()` (-1 for none), `mod.figure_pose(id, pose)`,
   `mod.play_start(level, save)`, `mod.save_read(slot)` and `mod.save_capture()`
@@ -723,8 +816,29 @@ into the port: nothing of it crosses the boundary.
   `mod.figure_slot(id)`, `mod.on_moby_update(fn, user)` and
   `mod.on_moby_hit(fn, user)` (plain functions, during load; they throw
   `openrac::Error` when refused), `mod.hero_stand_in(position, figure)`,
-  `mod.moby_hit(hit)`, `mod.play_eyes(xyz)` and `mod.bolts(add)`: the world
+  `mod.moby_hit(hit)`, `mod.play_eyes(xyz)`, `mod.bolts(add)`, `mod.play_overlay_pause(on)`, `mod.moby_slot_of(moby)` and `mod.play_skip()`: the world
   calls with the sizes set for the mod, answering nothing on an older port.
+- `mod.has_held()` (1.9), `mod.hero_held(held)`, `mod.figure_held(id, held)`,
+  `mod.hero_shots()` (a vector) and `mod.figure_shot(id, shot)`: the held pieces
+  and the shots, answering nothing on a port whose table ends before them.
+- `mod.has_notice()` (1.9) and `mod.play_notice(text)`: a line over the game's picture, "" clears it.
+- `mod.has_scenes()` (1.9), `mod.scene_playing(&frame)` and `mod.play_scene(scene)`: the level's
+  scenes, answering none on a port whose table ends before them.
+- `mod.has_moby_detail()` (1.9), `mod.moby_hide(slot, hidden)`, `mod.moby_deletion(slot, out)`
+  and `mod.camera_position(out)`: false on a port whose table ends before them.
+- `mod.has_moby_run()` (1.9) and `mod.moby_run(slot, out)`: false on a port whose table ends
+  before it.
+- `mod.has_camera()` (1.12), `mod.camera_view(out)`, `mod.camera_set(camera)`,
+  `mod.camera_release()` and `mod.haze_set(patches)` (a vector; empty takes them off): false on a
+  port whose table ends before them. `mod.hud_text_set(lines)` (1.12) the same for HUD text.
+- `mod.has_api_12()` (1.12; `has_hero_drive()`, `has_collision()`, `has_props()`,
+  `has_sounds()`, `has_camera()`), `mod.hero_set_pose(pose)`, `mod.hero_set_joints(joints)` (a vector; empty takes
+  them off), `mod.collision_triangles(lo, hi, max)` (a vector),
+  `mod.prop_create(path)` (-1 for none), `mod.prop_pose(id, position, rotation, scale)` or
+  `mod.prop_pose(id, matrix)`, `mod.prop_hide(id, hidden)`, `mod.prop_remove(id)`,
+  `mod.sound_load(path)` (-1 for none), `mod.sound_play(sound, volume, pitch, loop)` (the voice, 0
+  for none), `mod.sound_set(voice, volume, pitch)` and `mod.sound_stop(voice)`: false, empty or 0
+  on a port whose table ends before them.
 - `mod.on_frame(fn)`, `mod.on_pad(fn)`, `openrac::Memory` (typed reads and
   writes at game addresses), `openrac::StackFrame` (RAII over `stack_push` and
   `stack_pop`).
@@ -734,7 +848,7 @@ into the port: nothing of it crosses the boundary.
   an exception out of `load` into `fail()`.
 
 The SDK template is C++ (`template/src/mod.cpp`); the lock-strafe in
-rac1-mods is the reference C++ mod.
+openrac-mods is the reference C++ mod.
 
 ### Luau scripts
 
@@ -906,14 +1020,11 @@ without releases: its own files). Its row and its preview say **Runs scripts
 
 `sdk/template-script/` is a script mod's repository (manifest, `main.luau`,
 the type definitions, the same workflow, which packages script mods without
-building them), and rac1-mods' `button-swap` is the example: one `on_pad`
+building them), and openrac-mods' `button-swap` is the example: one `on_pad`
 callback that swaps two buttons, chosen in its settings.
 
 ## 12. What is proposed or open
 
-- **Proposed: a mod with data.** A format-2 mod with an `assets` folder that
-  is a data pack, added to the packs when the mod is installed and on when the
-  mod is, so a mod can carry code and textures together.
 - **Proposed: settings in the game.** The in-game drawer showing the loaded
   mods and their settings, written back to `plugins.json`. A mod's own page
   in the front-end menu is there since 1.5 (`menu_entry`, section 6), and
@@ -926,7 +1037,7 @@ callback that swaps two buttons, chosen in its settings.
   headers, the CMake package, the templates, the tools, the guides) is under
   the MIT license ([sdk/LICENSE](../../sdk/LICENSE)), so mods can be under any
   license their authors choose; the port and the rest of OpenRAC stay
-  GPL-3.0-or-later. rac1-mods is GPL-3.0-or-later.
+  GPL-3.0-or-later. openrac-mods is GPL-3.0-or-later.
 - **Decided (2026-10-21): SDK releases stay in OpenRAC's release list**, as
   `sdk-v<version>`, never marked Latest (the workflow passes `--latest=false`,
   and the launcher reads only its own `launcher-v` releases). A repository of

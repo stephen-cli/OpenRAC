@@ -58,13 +58,16 @@
   }
 
   function summary(pack: PackView): string {
-    if (pack.isMap) return "Map mod · starts separately from the campaign";
+    if (pack.isDestination) return "Added ship destination · original planets stay available";
+    if (pack.isMap) return "Standalone map · starts separately from the campaign";
     const parts = [];
     if (pack.textures) parts.push(`${pack.textures} texture${pack.textures === 1 ? "" : "s"}`);
     if (pack.models) parts.push(`${pack.models} model${pack.models === 1 ? "" : "s"}`);
     if (pack.levelFiles) parts.push(`${pack.levelFiles} level edit${pack.levelFiles === 1 ? "" : "s"}`);
     const where = pack.levels === 1 ? "1 level" : `${pack.levels} levels`;
-    return parts.length ? `${parts.join(", ")} in ${where}` : "Replaces nothing the game reads";
+    const levels = parts.length ? [`${parts.join(", ")} in ${where}`] : [];
+    const sounds = pack.sounds ? [`${pack.sounds} sound${pack.sounds === 1 ? "" : "s"}`] : [];
+    return [...levels, ...sounds].join(", ") || "Replaces nothing the game reads";
   }
 </script>
 

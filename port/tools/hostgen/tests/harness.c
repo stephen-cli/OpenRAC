@@ -18,6 +18,15 @@ gaddr openrac_guest_sp = GUEST_STACK_TOP;
 
 static gaddr strings_next = GUEST_STRINGS;
 static gaddr statics_next = GUEST_STATICS;
+static uint64_t cache_generation;
+
+static struct {
+    uint64_t site;
+    uint32_t size;
+    gaddr address;
+} static_sites[4096];
+
+static size_t static_site_count;
 
 gaddr openrac_guest_frame(uint32_t size) {
     openrac_guest_sp = (openrac_guest_sp - size) & ~0xFu;
@@ -32,6 +41,28 @@ gaddr openrac_guest_static(uint32_t size) {
     gaddr at = statics_next;
     statics_next = (at + size + 15) & ~15u;
     return at;
+}
+
+uint64_t openrac_guest_cache_generation(void) {
+    return cache_generation;
+}
+
+gaddr openrac_guest_static_site(uint32_t size, uint64_t site, int* fresh) {
+    size_t i;
+    for (i = 0; i < static_site_count; ++i) {
+        if (static_sites[i].site == site) {
+            *fresh = 0;
+            return static_sites[i].address;
+        }
+    }
+    if (static_site_count == sizeof static_sites / sizeof static_sites[0]) {
+        exit(4);
+    }
+    static_sites[static_site_count].site = site;
+    static_sites[static_site_count].size = size;
+    static_sites[static_site_count].address = openrac_guest_static(size);
+    *fresh = 1;
+    return static_sites[static_site_count++].address;
 }
 
 gaddr openrac_guest_string(const char* s, size_t size) {
@@ -107,9 +138,55 @@ uint64_t openrac_guest_call_regs(gaddr address, const uint64_t* ints, const floa
             return thunks[i].thunk(ints, floats, result);
         }
     }
-    (void)float_result;
-    fprintf(stderr, "no thunk for %08x\n", address);
-    exit(3);
+    /* No thunk (OPENRAC_REGS_THUNKS off, or the port's own function): by the cast, as guest.cpp. */
+    typedef uint64_t U8;
+    typedef U8 (*IntFn)(
+        U8, U8, U8, U8, U8, U8, U8, U8, float, float, float, float, float, float, float, float
+    );
+    typedef float (*FloatFn)(
+        U8, U8, U8, U8, U8, U8, U8, U8, float, float, float, float, float, float, float, float
+    );
+    const U8* i = ints;
+    const float* f = floats;
+    if (float_result) {
+        *result = ((FloatFn)fn)(
+            i[0],
+            i[1],
+            i[2],
+            i[3],
+            i[4],
+            i[5],
+            i[6],
+            i[7],
+            f[0],
+            f[1],
+            f[2],
+            f[3],
+            f[4],
+            f[5],
+            f[6],
+            f[7]
+        );
+        return 0;
+    }
+    return ((IntFn)fn)(
+        i[0],
+        i[1],
+        i[2],
+        i[3],
+        i[4],
+        i[5],
+        i[6],
+        i[7],
+        f[0],
+        f[1],
+        f[2],
+        f[3],
+        f[4],
+        f[5],
+        f[6],
+        f[7]
+    );
 }
 
 const char* openrac_guest_function_name(gaddr address) {

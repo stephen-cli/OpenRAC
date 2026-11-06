@@ -5,10 +5,12 @@
 #include "enhanced/renderer/texture_upscale.h"
 
 #include <algorithm>
+#include <utility>
 
 #include "common/log.h"
 #include "enhanced_texture_shaders.h"
 #include "renderer/gl.h"
+#include "renderer/render_opt.h"
 #include "renderer/texture_pool.h"
 #if defined(OPENRAC_VULKAN) && OPENRAC_VULKAN
 #include "renderer/vulkan/vkgl.h"
@@ -120,12 +122,21 @@ unsigned TextureUpscaler::create(
         return 0;
     }
 
-    if (!m_shader.id()) {
-        if (!m_shader.build_compute("texture upscale", shaders::texture_upscale_comp, error)) {
+    auto& shader = m_shaders
+        [renderer::render_opt::enabled(renderer::render_opt::Opt::ShaderVariants) ? wrap : 4u];
+    if (!shader.id()) {
+        std::string source_code(shaders::texture_upscale_comp);
+        if (renderer::render_opt::enabled(renderer::render_opt::Opt::ShaderVariants)) {
+            source_code =
+                renderer::shader_constants(std::move(source_code), {{"wrap_mode", int(wrap)}});
+        }
+        if (!shader.build_compute("texture upscale", source_code, error)) {
             return 0;
         }
 
-        glGenBuffers(1, &m_buffer);
+        if (!m_buffer) {
+            glGenBuffers(1, &m_buffer);
+        }
     }
 
     unsigned result = 0;
@@ -140,22 +151,26 @@ unsigned TextureUpscaler::create(
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (wrap & 1) ? GL_REPEAT : GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (wrap & 2) ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-    m_shader.use();
-    glUniform1i(m_shader.uniform("tex_T0"), 0);
-    glUniform1i(m_shader.uniform("wrap_mode"), static_cast<int>(wrap));
+    shader.use();
+    glUniform1i(shader.uniform("tex_T0"), 0);
+    glUniform1i(shader.uniform("wrap_mode"), static_cast<int>(wrap));
     glBindTexture(GL_TEXTURE_2D, source);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_buffer);
-    glBufferData(
-        GL_SHADER_STORAGE_BUFFER,
-        static_cast<GLsizeiptr>(byte_size(width, height)),
-        nullptr,
-        GL_DYNAMIC_DRAW
-    );
+    const auto bytes = byte_size(width, height);
+    // The shader overwrites exactly the bytes copied to the result.
+    if (bytes > m_buffer_capacity) {
+        glBufferData(
+            GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes), nullptr, GL_DYNAMIC_DRAW
+        );
+        m_buffer_capacity = bytes;
+    }
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_buffer);
     glDispatchCompute(
         static_cast<unsigned>((width * 2 + 7) / 8), static_cast<unsigned>((height * 2 + 7) / 8), 1
     );
-    const bool ok = vkgl::copy_buffer_to_texture(m_buffer, result, width * 2, height * 2);
+    const bool ok = vkgl::copy_buffer_to_texture(
+        m_buffer, result, width * 2, height * 2, /*reuse_source=*/true
+    );
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
 
     if (!ok) {
@@ -175,18 +190,25 @@ unsigned TextureUpscaler::create(
 #endif
 }
 
-void TextureUpscaler::release() {
+void TextureUpscaler::clear_cache() {
     for (auto& [source, entry] : m_cache) {
         release(entry);
     }
 
     m_cache.clear();
-    m_shader.release();
+}
+
+void TextureUpscaler::release() {
+    clear_cache();
+    for (auto& shader : m_shaders) {
+        shader.release();
+    }
 
     if (m_buffer) {
         glDeleteBuffers(1, &m_buffer);
     }
 
     m_buffer = 0;
+    m_buffer_capacity = 0;
 }
 }  // namespace openrac::enhanced

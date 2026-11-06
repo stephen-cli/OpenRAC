@@ -58,7 +58,10 @@ pub struct PackView {
     pub textures: usize,
     pub models: usize,
     pub level_files: usize,
+    /// How many of the game's sounds it replaces (`audio/<key>.wav`, editor/audio.py).
+    pub sounds: usize,
     pub is_map: bool,
+    pub is_destination: bool,
 }
 
 fn read_state(dir: &Path) -> Result<State, String> {
@@ -114,6 +117,8 @@ fn view(dir: &Path, entry: &Entry) -> PackView {
             level_files += count("level");
         }
     }
+    let sounds = std::fs::read_dir(dir.join("packs").join(&entry.id).join("audio"))
+        .map_or(0, |files| files.flatten().filter(|f| f.path().extension().is_some_and(|e| e == "wav")).count());
     let name = text("name");
     PackView {
         name: if name.is_empty() { entry.id.clone() } else { name },
@@ -121,11 +126,13 @@ fn view(dir: &Path, entry: &Entry) -> PackView {
         description: text("description"),
         id: entry.id.clone(),
         enabled: entry.enabled,
-        is_map: manifest.get("format").and_then(Value::as_u64) == Some(3),
+        is_map: matches!(manifest.get("format").and_then(Value::as_u64), Some(3 | 4)),
+        is_destination: manifest.get("format").and_then(Value::as_u64) == Some(4),
         levels,
         textures,
         models,
         level_files,
+        sounds,
     }
 }
 
@@ -203,6 +210,11 @@ mod tests {
         let packs = list(dir).unwrap();
         assert_eq!(packs.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["hd", "green"]);
         assert_eq!((packs[0].levels, packs[0].textures, packs[0].models, packs[0].level_files), (2, 2, 1, 1));
+        assert_eq!(packs[0].sounds, 0);
+        std::fs::create_dir_all(dir.join("packs/hd/audio")).unwrap();
+        std::fs::write(dir.join("packs/hd/audio/0123456789abcdef.wav"), b"").unwrap();
+        std::fs::write(dir.join("packs/hd/audio/notes.txt"), b"").unwrap();
+        assert_eq!(list(dir).unwrap()[0].sounds, 1);
         assert_eq!((packs[1].name.as_str(), packs[1].enabled), ("Green Ratchet", true));
         assert!(!packs[0].is_map);
 
@@ -211,6 +223,9 @@ mod tests {
         map["format"] = Value::from(3);
         std::fs::write(&manifest_path, serde_json::to_string(&map).unwrap()).unwrap();
         assert!(list(dir).unwrap()[1].is_map);
+        map["format"] = Value::from(4);
+        std::fs::write(dir.join("packs/green").join(MANIFEST), map.to_string()).unwrap();
+        assert!(list(dir).unwrap()[1].is_destination);
 
         let packs = move_pack(dir, "green", true).unwrap();
         assert_eq!(packs[0].id, "green");

@@ -39,7 +39,8 @@ in vec4 v_colour;
 uniform sampler2D tex_T0;
 out vec4 out_colour;
 void main() {
-    out_colour = v_colour * texture(tex_T0, v_uv);
+    vec4 texel = texture(tex_T0, v_uv);
+    out_colour = vec4(vec3(mp_vec3(v_colour.rgb) * mp_vec3(texel.rgb)), v_colour.a * texel.a);
 }
 )glsl";
 
@@ -88,6 +89,26 @@ void set_state(const ImDrawData* data, int width, int height) {
     glActiveTexture(GL_TEXTURE0);
 }
 
+// The font atlas as ImGui has it now, into a texture of its own.
+void upload_font() {
+    ImGuiIO& io = ImGui::GetIO();
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    glGenTextures(1, &s->font);
+    glBindTexture(GL_TEXTURE_2D, s->font);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    io.Fonts->SetTexID(static_cast<ImTextureID>(s->font));
+}
+
 }  // namespace
 
 bool init(std::string& error) {
@@ -104,24 +125,18 @@ bool init(std::string& error) {
     glGenBuffers(1, &s->vertices);
     glGenBuffers(1, &s->indices);
 
-    ImGuiIO& io = ImGui::GetIO();
-    io.BackendRendererName = "openrac_gl_subset";
-    unsigned char* pixels = nullptr;
-    int width = 0;
-    int height = 0;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-    glGenTextures(1, &s->font);
-    glBindTexture(GL_TEXTURE_2D, s->font);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    io.Fonts->SetTexID(static_cast<ImTextureID>(s->font));
+    ImGui::GetIO().BackendRendererName = "openrac_gl_subset";
+    upload_font();
     return true;
+}
+
+void reload_font() {
+    if (s == nullptr) {
+        return;
+    }
+    glDeleteTextures(1, &s->font);
+    s->font = 0;
+    upload_font();
 }
 
 void render(const ImDrawData* data) {

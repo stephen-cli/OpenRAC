@@ -1,11 +1,11 @@
 <script lang="ts">
   // Mods, one game at a time, with the game list on the left as in Games: every game gets the
   // same page. Its head: the game's name (the game starts
-  // with its mods from the game's page: the Mods switch under Play). Then three tabs, so that each of the player's jobs has a place of
+  // with its mods from the game's page: the Mods switch under Play). Then its tabs, so that each of the player's jobs has a place of
   // its own that can be seen from the top: My mods (AddMod: a link, a file or a folder; the
   // gameplay mods, PluginsPanel; the texture, model and level packs,
-  // PacksPanel), Level editor (open a level in Godot, pack the changes) and Models and textures
-  // (AssetsPanel). A game the editor cannot open but that plays has My mods alone; one the editor
+  // PacksPanel), Level editor (open a level in Godot, pack the changes), Models and textures
+  // (AssetsPanel) and, for a game whose sound can be changed, Audio (AudioPanel). A game the editor cannot open but that plays has My mods alone; one the editor
   // cannot open yet says so, and where to follow it. A game it reads in early access (Going
   // Commando, Up Your Arsenal, Deadlocked: no pack or play action of theirs yet) says so in a line.
   // The words are lib/modsText.ts's. The disc image is never changed.
@@ -15,24 +15,28 @@
   // its folders, and the command behind each step under a "Show command" toggle.
   import AddMod from "$components/AddMod.svelte";
   import AssetsPanel from "$components/AssetsPanel.svelte";
+  import AudioPanel from "$components/AudioPanel.svelte";
   import CommandBox from "$components/CommandBox.svelte";
+  import EditorFlow from "$components/EditorFlow.svelte";
   import GameChip from "$components/GameChip.svelte";
   import GamesFrame from "$components/GamesFrame.svelte";
   import Icon from "$components/Icon.svelte";
   import PacksPanel from "$components/PacksPanel.svelte";
+  import ModBrowse from "$components/ModBrowse.svelte";
   import ModLoadSummary from "$components/ModLoadSummary.svelte";
+  import ModUpdatesPanel from "$components/ModUpdatesPanel.svelte";
   import PluginsPanel from "$components/PluginsPanel.svelte";
-  import { api, onAndroid, pickFile, type ActionView, type GameView, type VersionView } from "$lib/api";
-  import { app, guardShown, jobs, run, runChain, saveConfig, toast } from "$lib/app.svelte";
-  import { levelName, levelsOf, type EntryState } from "$lib/labels";
-  import { GODOT_URL, SITE_URL } from "$lib/links";
-  import { EDITOR, GAME_LIST, PAGE } from "$lib/modsText";
-  import { foundDisc, playerVersion, setUp } from "$lib/player.svelte";
+  import { api, onAndroid, type ActionView, type GameView, type VersionView } from "$lib/api";
+  import { app, guardShown, jobs, run } from "$lib/app.svelte";
+  import type { EntryState } from "$lib/labels";
+  import { SITE_URL } from "$lib/links";
+  import { BROWSE, EDITOR, GAME_LIST, PAGE } from "$lib/modsText";
+  import { playerVersion } from "$lib/player.svelte";
   import type { Job } from "$lib/queue";
   import { arrive, enter } from "$lib/motion";
   import { followHistory, modFromAddress, modNav, openMod, resetMod } from "$lib/modNav.svelte";
-  import { hidePaths } from "$lib/paths";
-  import { onMount } from "svelte";
+  import { changeSet } from "$lib/deepLink.svelte";
+  import { onMount, untrack } from "svelte";
   import { tablist } from "$lib/tabs";
   import { themeStyle } from "$lib/themes";
   import { fade, fly } from "svelte/transition";
@@ -79,7 +83,6 @@
   const jobsOf = (v: VersionView, ids: string[]) =>
     jobs.list.filter((j) => j.scope.kind === "version" && j.scope.key === v.key && ids.includes(j.actionId));
   const running = (v: VersionView, ids: string[]) => jobsOf(v, ids).find(live) ?? null;
-  const needs = (a: ActionView | null) => (a?.blockers ?? []).map((b) => b.replace(/^needs /, ""));
 
   /** Early access: the editor reads the game's levels, but they are not packed back and the game
    *  is not playable yet (the version has no editor-pack, and its play is planned). */
@@ -101,11 +104,30 @@
     if (
       early(v) &&
       v.status.disc.state === "found" &&
-      !running(v, ["editor-extract", "assets-export", "assets-import", "port-levels"])
+      !running(v, [
+        "editor-extract",
+        "assets-export",
+        "assets-import",
+        "port-levels",
+        "audio-export",
+        "audio-export-all",
+        "audio-import",
+      ])
     ) {
       return { text: GAME_LIST.early, tone: "info" };
     }
-    if (running(v, ["editor-extract", "editor-import", "editor-pack", "assets-export", "assets-import"])) {
+    if (
+      running(v, [
+        "editor-extract",
+        "editor-import",
+        "editor-pack",
+        "assets-export",
+        "assets-import",
+        "audio-export",
+        "audio-export-all",
+        "audio-import",
+      ])
+    ) {
       return { text: GAME_LIST.working, tone: "warn", busy: true };
     }
     if (v.status.disc.state !== "found") return { text: GAME_LIST.setUp, tone: "warn" };
@@ -138,14 +160,24 @@
   /** Android's one page of mods (no level editor there): the version they are for. */
   const mine = $derived(onAndroid ? (v ?? played) : null);
 
-  /** The page's tab: My mods, the level editor, or models and textures. */
-  type Tab = "mine" | "editor" | "assets";
-  let tab = $state<Tab>("mine");
-  const TABS: { id: Tab; label: string; icon: "library" | "edit" | "folder" }[] = [
+  /** The page's tab: My mods, Browse, the level editor, models and textures, or audio. */
+  type Tab = "mine" | "browse" | "editor" | "assets" | "audio";
+  // ?tab=editor (or assets, browse, audio) opens that tab at start: handy for screenshots, as ?page= is (App.svelte).
+  const askedTab = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("tab");
+  let tab = $state<Tab>(
+    askedTab === "editor" || askedTab === "assets" || askedTab === "browse" || askedTab === "audio" ? askedTab : "mine",
+  );
+  const TABS: { id: Tab; label: string; icon: "library" | "edit" | "folder" | "globe" | "sound" }[] = [
     { id: "mine", label: PAGE.tabMine, icon: "library" },
+    { id: "browse", label: BROWSE.tabTitle, icon: "globe" },
     { id: "editor", label: PAGE.tabEditor, icon: "edit" },
     { id: "assets", label: PAGE.tabAssets, icon: "folder" },
+    { id: "audio", label: PAGE.tabAudio, icon: "sound" },
   ];
+  /** The tabs of a version: Audio only where its sounds can be exported (Ratchet & Clank's two discs). */
+  const tabsOf = (version: VersionView) => TABS.filter((t) => t.id !== "audio" || !!action(version, "audio-export"));
+  /** The tab shown: one the game does not have (Audio, another game picked) is My mods. */
+  const shownTab = (version: VersionView): Tab => (tabsOf(version).some((t) => t.id === tab) ? tab : "mine");
   /** Bumped when a pack was added or imported: the packs' list is read again. */
   let reload = $state(0);
   /** Bumped when a gameplay mod was added: their list is read again. */
@@ -154,7 +186,15 @@
     if (what.plugin) pluginsReload += 1;
     if (what.pack) reload += 1;
   };
-  let opening = $state<string | null>(null);
+
+  // A change set applied (DeepLinkInstall): the lists are read again.
+  $effect(() => {
+    if (changeSet.phase !== "done") return;
+    untrack(() => {
+      pluginsReload += 1;
+      reload += 1;
+    });
+  });
 
   // A mod's own page (PluginsPanel shows it in place of My mods' lists): Back and Escape return;
   // another game or tab leaves it. ?mod=<id> opens one at start.
@@ -174,61 +214,6 @@
     if (v ? !playable(v) : !played) resetMod();
     else tab = "mine";
   });
-  /** A job's line on the page: no folder in it (lib/paths.ts). */
-  const lineOf = (line: string | undefined) => (line === undefined ? undefined : hidePaths(line).text);
-  /** The level the editor opens, per game. Each level is a Godot project of its own. */
-  const level = $state<Record<string, number>>({});
-
-  /** The picker is open: a second press opens no other. */
-  let pickingGodot = false;
-
-  async function chooseGodot() {
-    if (!app.config || pickingGodot) return;
-    pickingGodot = true;
-    const picked = await pickFile(EDITOR.pickGodot).finally(() => (pickingGodot = false));
-    if (!picked) return;
-    // Settings checks a pick the same way: the zip, a Godot 3 or another program is said at once,
-    // not when a level does not open.
-    const check = await guardShown(api.checkTool("godot", picked));
-    if (!check) return;
-    if (!check.ok) {
-      toast(hidePaths(EDITOR.notGodot(check.message)).text, "error");
-      return;
-    }
-    await saveConfig({ ...app.config, godot: picked });
-  }
-
-  /** Opens the chosen level in Godot (api.openLevelInGodot); the first time, reads the levels from
-   *  the disc before. */
-  async function editLevels(v: VersionView) {
-    const edit = action(v, "editor-open");
-    if (!edit) return;
-    const which = level[v.game] ?? levelsOf(v.game)[0]?.number ?? 0;
-    opening = v.key;
-    let done: boolean;
-    if (edit.runnable) {
-      done = (await guardShown(api.openLevelInGodot(v.key, which))) !== undefined;
-    } else {
-      const extract = action(v, "editor-extract");
-      done = await runChain({ kind: "version", key: v.key }, extract ? [extract, edit] : [edit], which);
-    }
-    opening = null;
-    if (done) toast(EDITOR.opening(levelName(v.game, which)));
-  }
-
-  /** The last pack, from the line the packer printed ("Packed 1 level(s), 3 moby edit(s): …"), and
-   *  the folder it wrote, for Open folder. */
-  function packed(v: VersionView): { text: string; failed: boolean; folder: string | null } | null {
-    const last = jobsOf(v, ["editor-pack"]).at(-1);
-    if (!last || live(last)) return null;
-    if (last.state !== "succeeded") return { text: EDITOR.packStopped, failed: true, folder: null };
-    const folder = last.outputs[0] ?? null;
-    const line = last.lines.findLast((l) => l.line.startsWith("Packed "))?.line ?? "";
-    const found = /^Packed (\d+) level\(s\), (\d+) moby edit\(s\)/.exec(line);
-    if (!found) return { text: EDITOR.packed, failed: false, folder };
-    const [levels, edits] = [Number(found[1]), Number(found[2])];
-    return { text: levels ? EDITOR.packedSome(edits, levels) : EDITOR.packedNone, failed: false, folder };
-  }
 </script>
 
 <!-- Android: no game list; the mods are for the game picked in Games, named at the top right. -->
@@ -263,7 +248,9 @@
                or model export: they need Godot and a desktop. -->
           <PluginsPanel version={mine} reload={pluginsReload} onpack={() => (reload += 1)} />
           {#if !onModPage}
+            <ModUpdatesPanel version={mine} onchange={() => (pluginsReload += 1)} />
             <AddMod version={mine} links={playable(mine)} onadded={added} />
+            {#if playable(mine)}<ModBrowse version={mine} />{/if}
             <PacksPanel version={mine} {reload} />
           {/if}
         {:else if !v && played}
@@ -271,6 +258,10 @@
                game plays: its gameplay mods, which load when it is played from its page. -->
           {#if !onModPage}<AddMod version={played} onadded={added} />{/if}
           <PluginsPanel version={played} reload={pluginsReload} onpack={() => (reload += 1)} />
+          {#if !onModPage}
+            <ModUpdatesPanel version={played} onchange={() => (pluginsReload += 1)} />
+            <ModBrowse version={played} />
+          {/if}
         {:else if !v}
           <!-- Every game has this page; one the editor cannot open yet says so. -->
           <section class="panel none">
@@ -284,15 +275,9 @@
           </section>
         {:else}
           {@const scope = { kind: "version" as const, key: v.key }}
-          {@const edit = action(v, "editor-open")}
-          {@const pack = action(v, "editor-pack")}
           {@const adder = action(v, "overrides-add")}
-          {@const preparing = running(v, ["editor-extract", "editor-import"])}
-          {@const packing = running(v, ["editor-pack"])}
-          {@const result = packed(v)}
-          {@const lacksGodot = needs(edit).some((b) => b.startsWith("Godot"))}
-          {@const noDisc = v.status.disc.state !== "found"}
           {@const dirs = folders(v)}
+          {@const current = shownTab(v)}
 
           {#if early(v)}
             <!-- Honest about early access, in a line: what works, what comes later. -->
@@ -300,34 +285,35 @@
           {/if}
 
           {#if !onModPage}<div class="tabs" role="tablist" aria-label={PAGE.tabsLabel} use:tablist>
-              {#each TABS as t (t.id)}
+              {#each tabsOf(v) as t (t.id)}
                 <button
                   role="tab"
                   id={`mods-tab-${t.id}`}
                   aria-controls="mods-panel"
-                  aria-selected={tab === t.id}
-                  tabindex={tab === t.id ? 0 : -1}
-                  class:on={tab === t.id}
+                  aria-selected={current === t.id}
+                  tabindex={current === t.id ? 0 : -1}
+                  class:on={current === t.id}
                   onclick={() => (tab = t.id)}><Icon name={t.icon} size={16} />{t.label}</button
                 >
               {/each}
             </div>{/if}
 
-          {#key tab}
+          {#key current}
             <div
               id="mods-panel"
               class="tabpanel"
               role="tabpanel"
-              aria-labelledby={`mods-tab-${tab}`}
+              aria-labelledby={`mods-tab-${current}`}
               in:fade={{ duration: enter().duration ?? 0 }}
             >
-              {#if tab === "mine" && onModPage && playable(v)}
+              {#if current === "mine" && onModPage && playable(v)}
                 <PluginsPanel version={v} reload={pluginsReload} onpack={() => (reload += 1)} />
-              {:else if tab === "mine"}
+              {:else if current === "mine"}
                 <AddMod version={v} links={playable(v)} files={playable(v) || !!adder?.runnable} onadded={added} />
                 {#if playable(v)}
                   <!-- Gameplay mods need the game's port: they plug into it (docs/port/MODS.md). -->
                   <PluginsPanel version={v} reload={pluginsReload} onpack={() => (reload += 1)} />
+                  <ModUpdatesPanel version={v} onchange={() => (pluginsReload += 1)} />
                 {/if}
                 <PacksPanel
                   version={v}
@@ -341,93 +327,17 @@
                     ><Icon name="edit" size={14} />{PAGE.makeOwnButton}</button
                   >
                 </p>
-              {:else if tab === "editor"}
-                <section class="panel">
-                  <p class="muted tab-lead">{early(v) ? EDITOR.leadEarly : EDITOR.lead}</p>
-                  <ol class="steps">
-                    <li>
-                      <div class="text">
-                        <h3>{EDITOR.openTitle}</h3>
-                        <p class="muted">
-                          {#if noDisc}
-                            {EDITOR.noDisc}
-                          {:else if lacksGodot}
-                            {EDITOR.noGodot}
-                          {:else if preparing}
-                            {preparing.title}: {lineOf(preparing.lines.at(-1)?.line) ?? "…"}
-                          {:else if edit?.runnable}
-                            {early(v) ? EDITOR.readyEarly : EDITOR.ready}
-                          {:else}
-                            {early(v) ? EDITOR.firstTimeEarly : EDITOR.firstTime}
-                          {/if}
-                        </p>
-                      </div>
-                      <div class="controls">
-                        {#if noDisc}
-                          <button onclick={() => void setUp(shown.id, shown.title, foundDisc(shown.id)?.path)}
-                            ><Icon name="disc" size={16} />{EDITOR.setUp}</button
-                          >
-                        {:else if lacksGodot}
-                          <button class="ghost" onclick={() => void guardShown(api.openUrl(GODOT_URL))}
-                            ><Icon name="external" size={16} />{EDITOR.getGodot}</button
-                          >
-                          <button onclick={() => void chooseGodot()}
-                            ><Icon name="folder" size={16} />{EDITOR.chooseGodot}</button
-                          >
-                        {:else}
-                          <select
-                            aria-label={EDITOR.levelLabel}
-                            value={level[v.game] ?? levelsOf(v.game)[0]?.number ?? 0}
-                            onchange={(e) => (level[v.game] = Number(e.currentTarget.value))}
-                          >
-                            {#each levelsOf(v.game) as l (l.number)}<option value={l.number}>{l.name}</option>{/each}
-                          </select>
-                          <button disabled={opening === v.key || !!preparing} onclick={() => void editLevels(v)}>
-                            {#if opening === v.key || preparing}<span class="spinner"></span>{:else}<Icon
-                                name="edit"
-                                size={16}
-                              />{/if}
-                            {edit?.runnable ? EDITOR.open : EDITOR.prepare}
-                          </button>
-                        {/if}
-                      </div>
-                    </li>
-                    <li>
-                      <div class="text">
-                        <h3>{EDITOR.packTitle}</h3>
-                        <p class="muted" class:failed={result?.failed} class:done={result && !result.failed}>
-                          {#if !pack && early(v)}
-                            {EDITOR.packEarly}
-                          {:else if packing}
-                            {lineOf(packing.lines.at(-1)?.line) ?? EDITOR.packReading}
-                          {:else if result}
-                            {result.text}
-                          {:else}
-                            {EDITOR.packLine}
-                          {/if}
-                        </p>
-                      </div>
-                      <div class="controls">
-                        {#if result?.folder}
-                          {@const folder = result.folder}
-                          <button class="ghost" onclick={() => void guardShown(api.openOutput(folder))}
-                            ><Icon name="folder" size={16} />{EDITOR.openFolder}</button
-                          >
-                        {/if}
-                        <button disabled={!pack?.runnable || !!packing} onclick={() => pack && void run(scope, pack)}>
-                          {#if packing}<span class="spinner"></span>{:else}<Icon
-                              name="save"
-                              size={16}
-                            />{/if}{EDITOR.pack}
-                        </button>
-                      </div>
-                    </li>
-                  </ol>
-                </section>
+              {:else if current === "browse"}
+                {#if playable(v)}<ModBrowse version={v} />{/if}
+              {:else if current === "editor"}
+                <EditorFlow game={shown} version={v} onchanged={() => reload++} />
                 {#if v.game === "rac1"}
                   <ModLoadSummary
                     version={v}
-                    refreshKey={`${reload}:${result?.text ?? ""}:${jobsOf(v, ["overrides-stack"]).at(-1)?.state ?? ""}`}
+                    refreshKey={`${reload}:${jobsOf(v, ["editor-pack", "overrides-stack"])
+                      .filter((j) => !live(j))
+                      .map((j) => j.key)
+                      .join(",")}`}
                     canPrepare={!!action(v, "overrides-stack")?.runnable && !running(v, ["overrides-stack"])}
                     prepare={() => {
                       const stack = action(v, "overrides-stack");
@@ -435,6 +345,10 @@
                     }}
                   />
                 {/if}
+              {:else if current === "audio"}
+                <section class="panel">
+                  <AudioPanel version={v} onimported={() => reload++} />
+                </section>
               {:else}
                 <section class="panel">
                   <AssetsPanel version={v} onimported={() => reload++} />
@@ -443,7 +357,7 @@
             </div>
           {/key}
 
-          {#if developer && tab !== "assets" && !onModPage}
+          {#if developer && current !== "assets" && current !== "audio" && !onModPage}
             <!-- The developer view: kept apart from the player's, under the tabs, folded (its folders
                  name the user's). -->
             <details class="panel sdk more">
@@ -454,7 +368,7 @@
               </p>
               <CommandBox
                 lines={[
-                  ...(tab === "editor"
+                  ...(current === "editor"
                     ? [
                         `python3 editor/extract.py godot <disc.iso> ${dirs.projects} --split`,
                         `python3 editor/extract.py pack <disc.iso> ${dirs.projects} ${dirs.packed}`,
@@ -584,7 +498,7 @@
   }
 
   @media (hover: hover) {
-    .tabs button:hover:not(.on) {
+    :global(html:where(:not([data-input="pad"]))) .tabs button:hover:not(.on) {
       color: var(--text);
     }
   }
@@ -608,19 +522,6 @@
     gap: 10px;
     margin: 4px 0 0;
     font-size: 0.875rem;
-  }
-
-  .tab-lead {
-    margin: 0 0 4px;
-    font-size: 0.875rem;
-  }
-
-  .failed {
-    color: var(--err);
-  }
-
-  .done {
-    color: var(--ok);
   }
 
   .sdk {

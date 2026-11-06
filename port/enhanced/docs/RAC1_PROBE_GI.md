@@ -42,7 +42,7 @@ ambiguous. Correcting triangle winding alone cannot resolve them.
 
 ## Probe data and sampling
 
-Format 4, bake revision 3 stores bordered octahedral irradiance/distance-moment maps,
+Format 6, bake revision 5 stores bordered octahedral irradiance/distance-moment maps,
 relocation and validity as directly uploadable planes. Older formats or stale scene/settings
 hashes are rejected.
 
@@ -102,3 +102,85 @@ Exports and bakes stay local. PAL and NTSC need separate data and identities.
 - [Embree overview](https://github.com/RenderKit/embree/blob/master/doc/src/overview.md).
 - NVIDIA DDGI [algorithms](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/main/docs/Algorithms.md)
   and [sampling](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/main/rtxgi-sdk/shaders/ddgi/Irradiance.hlsl).
+
+
+## Preparation failures and logs
+
+Lighting preparation writes `probe-bake.log` in the version's probe-cache root.
+It records the tool/input locations, preparation stages, native error output,
+Python tracebacks and suggested recovery steps. Per-level `batch.log` and
+`interior-inference.log` retain the native tools' full output in the level's
+partial folder. Logs are local files and may contain local paths.
+
+A failed launcher task shows the reason in its persistent error notice, with a
+plain-language explanation and a suggested fix. **Error details** expands the
+native reason (paths are shortened); **View details** opens Activity, where the
+whole task output can be copied. On desktop, **Open log** opens the associated
+text log. The launcher only opens `.log` files inside that version's lighting
+cache, with canonical-path checks against traversal and external symlinks.
+Android uses Activity for the output rather than a desktop log viewer.
+
+Failures also emit a versioned `openrac-bake-error: {JSON}` line, retained in
+`bake-all-result.json` for each failed level. The error categories and recovery
+text live in [diagnostics.py](../tools/baker/diagnostics.py). Older tools without
+that record still get an explicit fallback notice and Activity access.
+
+A failed level does not discard a previously verified bake. Partial verified
+grids and native logs remain available for retry. Installing a replacement uses
+a recoverable `.level_NN.previous` backup instead of deleting the previous bake
+first. A failed rollback reports the backup location. A cache lock prevents two
+CLI preparations from writing the same cache at once; the OS releases it when
+the process stops. Empty menu/flight levels are successful no-bake results,
+not errors. Incomplete or unverified cached results are rebuilt.
+
+
+### Authored interior environments
+
+Place a `lighting-environments.json` file beside the level's `manifest.json`. The
+exporter copies tracked files from the matching game, disc version and level
+under `port/enhanced/lighting/profiles/`. Native interior preparation uses
+the exported file when generating `probe-interiors.json`. The bake command
+installs missing defaults on existing exports and refreshes copies that still
+match the last installed default. Local edits and deletions of installed
+profiles are preserved.
+
+```json
+{
+  "version": 1,
+  "barriers": [],
+  "sources": [{"position": [12, 18, 4], "light": 0, "ambient": [50, 50, 50]}]
+}
+```
+
+Each barrier is a triangle of three world-space points. For a doorway polygon,
+supply triangles that cover the opening. Barriers block lighting connectivity
+in both directions while preserving walkability and enclosure tests. Place each
+source in free air inside its room. It selects an existing level light set and
+RGB ambient bytes for the enclosed space it reaches. Unreachable sources are
+logged and skipped. These sources assign lighting environments. Direct light
+emitters are authored separately. For tilted interiors, a source can also
+reference a named `frame`. Define it once in the top-level `frames` object,
+for example `"frames": {"deck": {"up": [0, 0.15, 0.99]}}`, then use
+`"frame": "deck"` on each source on that deck. The baker normalizes the fitted
+deck normal and uses it for ceiling and enclosure rays and light spacing.
+Sources without a frame use world up. Floor inference stays in world coordinates.
+
+#### Repeatable lighting review
+
+1. Save the original and enhanced reference views. Record camera position,
+   forward vector, aspect ratio, graphics settings, and the capture tick.
+2. Keep a verified baseline bake and a separate copy of the level export.
+   Run `lighting_review.py suggest BASELINE_LEVEL_BAKE` for low-sky rooms
+   with missing or conflicting labels and their nearby original moods.
+   Add `--near X Y Z` to review a picked location, including labelled rooms.
+   Use `lighting_review.py draft BASELINE_LEVEL_BAKE lighting-environments.json --region ID`
+   to start a sidecar. Review the coordinates, adjust the colour, and triangulate
+   any doorway barriers before putting the sidecar beside the export manifest.
+3. Rebake into a new output directory. Run
+   `lighting_review.py compare BASELINE_LEVEL_BAKE CANDIDATE_LEVEL_BAKE --authoring lighting-environments.json`.
+   The report compares matching floor positions, nominal dense bounds, emitter
+   counts, and nearby ceiling light radiance. A bounds hit does not establish
+   runtime selection or valid visibility at a receiver.
+4. Recapture the saved views with the same build and settings. Walk the route
+   with probe coverage enabled to check doorways and places where a bake falls
+   back to sparse probes. Keep the sidecar and the reports with the local bake.
