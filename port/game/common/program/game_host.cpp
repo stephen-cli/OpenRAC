@@ -30,12 +30,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/c_boundary.h"
 #include "common/crash.h"
+#include "common/env.h"
 #include "common/log.h"
 #include "mods.h"
 #include "openrac/guest.h"
@@ -61,6 +64,33 @@ int openrac_game_enhanced_water(void) {
 
 namespace openrac::program {
 namespace {
+
+#ifndef OPENRAC_FRONTEND
+// Without a window, OPENRAC_PRESS's plain entries (FRAME:MASK:FRAMES, FRAME counted in the game's
+// frames) still press port 0's buttons, so a headless run gets through the boot's memory card
+// warning as a windowed one does. The window's other kinds (c, k, s, S: frontend/input.cpp) count
+// window frames and are left out here.
+void scripted_press(int port, uint16_t* buttons) {
+    static const std::optional<std::string_view> press = env::value(env::Var::Press);
+
+    if (port != 0 || !press) {
+        return;
+    }
+    const std::string text(*press);
+    const auto frame = static_cast<unsigned long>(g_frame);
+
+    for (const char* at = text.c_str(); at && *at;) {
+        unsigned long from = 0, mask = 0, length = 5;
+
+        if (std::sscanf(at, "%lu:%lx:%lu", &from, &mask, &length) >= 2 && frame >= from
+            && frame < from + length) {
+            *buttons = static_cast<uint16_t>(*buttons & ~mask);
+        }
+        at = std::strchr(at, ',');
+        at = at ? at + 1 : nullptr;
+    }
+}
+#endif
 
 #ifdef OPENRAC_FRONTEND
 // [verbose log] The first pad's buttons each time they change, and its sticks when one moves far.
@@ -735,10 +765,15 @@ int openrac_game_pad(int port, uint16_t* buttons, uint8_t analog[4]) {
             return 1;
         }
 #endif
-        (void)port;
         *buttons = 0xFFFF;  // nothing pressed (active low)
         std::memset(analog, 0x80, 4);
+#ifndef OPENRAC_FRONTEND
+        scripted_press(port, buttons);
+        return *buttons != 0xFFFF;
+#else
+        (void)port;
         return 0;
+#endif
     });
 }
 
