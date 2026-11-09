@@ -15,14 +15,14 @@
  * was never made. */
 void func_001EC210(gaddr cam) {
     const gaddr follow = OPENRAC_DATA(RAC1_ADDR(0x00187040u)) + 0x190u;
-    gaddr* moby = &GREF(gaddr, follow + 0xC4u);
+    const gaddr moby = follow + 0xC4u;
     if (GREF(int16_t, cam + 0x86u) == 0) {
-        if (*moby == 0 && openrac_guest_overlay() >= 0) {
-            *moby = func_L00_002A6070(follow - 0x50u); /* &gCamera.pos */
+        if (GREF(gaddr, moby) == 0 && openrac_guest_overlay() >= 0) {
+            GREF(gaddr, moby) = func_L00_002A6070(follow - 0x50u); /* &gCamera.pos */
         }
-    } else if (*moby != 0) {
-        func_0020D678(*moby); /* DeleteMoby */
-        *moby = 0;
+    } else if (GREF(gaddr, moby) != 0) {
+        func_0020D678(GREF(gaddr, moby)); /* DeleteMoby */
+        GREF(gaddr, moby) = 0;
     }
 }
 #endif

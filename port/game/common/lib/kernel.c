@@ -266,7 +266,9 @@ unsigned int openrac_lib_sceSifSetDma(gaddr transfers, int count) { /* sceSifSet
     int i;
     for (i = 0; i < count; i++) {
         uint32_t t[4];
-        memcpy(t, G(transfers + (gaddr)i * 16u), 16);
+        for (int k = 0; k < 4; k++) {
+            t[k] = GREF(uint32_t, transfers + (gaddr)i * 16u + (gaddr)k * 4u);
+        }
         if (t[1] < IOP_BYTES && t[2] <= IOP_BYTES - t[1]) {
             memcpy(iop_memory + t[1], G(t[0]), t[2]);
         }
@@ -402,7 +404,7 @@ int openrac_lib_sceSifBindRpc(gaddr client, unsigned int number, int mode) { /* 
             break;
         }
     }
-    memcpy(G(client + 0x24u), &one, 4);
+    GREF(uint32_t, client + 0x24u) = one;
     return 0;
 }
 
@@ -424,10 +426,10 @@ int openrac_lib_sceSifCallRpc(
     if (trace_sif() && sif_rpc_calls++ < 32) {
         uint32_t client_word_14, client_word_18, client_word_1c, client_server;
         char caller[160];
-        memcpy(&client_word_14, G(client + 0x14u), 4);
-        memcpy(&client_word_18, G(client + 0x18u), 4);
-        memcpy(&client_word_1c, G(client + 0x1cu), 4);
-        memcpy(&client_server, G(client + 0x24u), 4);
+        client_word_14 = GREF(uint32_t, client + 0x14u);
+        client_word_18 = GREF(uint32_t, client + 0x18u);
+        client_word_1c = GREF(uint32_t, client + 0x1cu);
+        client_server = GREF(uint32_t, client + 0x24u);
         openrac_host_caller(1, caller, sizeof caller);
         fprintf(stderr,
                 "SIF call caller=%s client=%08x server=%08x fields=%08x/%08x/%08x server_ptr=%08x fn=%d mode=%d send=%08x/%d recv=%08x/%d end=%08x param=%08x\n",
@@ -443,7 +445,7 @@ int openrac_lib_sceSifCallRpc(
      * The table above only says which server a bound client is for (it holds
      * RPC_CLIENTS of them); a call replayed on its own, without the binds
      * before it, still sees the binding. */
-    memcpy(&bound, G(client + 0x24u), 4);
+    bound = GREF(uint32_t, client + 0x24u);
     if (bound == 0) {
         return -1;
     }
@@ -452,11 +454,11 @@ int openrac_lib_sceSifCallRpc(
     if (server_of(client) == 0x11) {
         const uint32_t base = 0x00080000u, bytes = 0x00170000u;
         if (number == 2 && rsize >= 8) {
-            memcpy(G(receive), &base, 4);
-            memcpy(G(receive + 4u), &bytes, 4);
+            GREF(uint32_t, receive) = base;
+            GREF(uint32_t, receive + 4u) = bytes;
         } else if (number == 1 && rsize > 0) {
             uint32_t from;
-            memcpy(&from, G(send), 4);
+            from = GREF(uint32_t, send);
             if (from < IOP_BYTES && (uint32_t)rsize <= IOP_BYTES - from) {
                 memcpy(G(receive), iop_memory + from, (size_t)rsize);
             }
@@ -621,7 +623,9 @@ int openrac_lib_ReferThreadStatus(int id, gaddr info) { /* ReferThreadStatus */
     status[5] = 1; /* initial priority */
     status[6] = 1; /* current priority */
     if (info != 0) {
-        memcpy(G(info), status, sizeof status);
+        for (int i = 0; i < 12; i++) {
+            GREF(uint32_t, info + (gaddr)i * 4u) = status[i];
+        }
     }
     return id;
 }
@@ -680,7 +684,7 @@ static uint32_t osd_config_word(void) {
 
 void openrac_lib_SetOsdConfigParam(gaddr config) { /* SetOsdConfigParam */
     if (config != 0) {
-        memcpy(&osd_config, G(config), 4);
+        osd_config = GREF(uint32_t, config);
         osd_config_set = 1;
     }
 }
@@ -688,7 +692,7 @@ void openrac_lib_SetOsdConfigParam(gaddr config) { /* SetOsdConfigParam */
 void openrac_lib_GetOsdConfigParam(gaddr config) { /* GetOsdConfigParam */
     if (config != 0) {
         uint32_t word = osd_config_word();
-        memcpy(G(config), &word, 4);
+        GREF(uint32_t, config) = word;
     }
 }
 
@@ -772,10 +776,10 @@ void openrac_lib_SetVSyncFlag(gaddr flag, gaddr csr) { /* SetVSyncFlag */
     uint32_t one = 1;
     uint64_t status = 0;
     if (csr != 0) {
-        memcpy(G(csr), &status, 8);
+        GREF(uint64_t, csr) = status;
     }
     if (flag != 0) {
-        memcpy(G(flag), &one, 4);
+        GREF(uint32_t, flag) = one;
     }
 }
 
@@ -823,7 +827,7 @@ int openrac_lib_sceSifGetReg(unsigned int reg) { /* sceSifGetReg */
 int openrac_lib_Deci2Call(int function, gaddr args) { /* Deci2Call */
     if (function == 16 && args != 0) {
         uint32_t text;
-        memcpy(&text, G(args), 4);
+        text = GREF(uint32_t, args);
         if (text != 0) {
             fprintf(stderr, "[game] %s", (const char*)G(text));
         }

@@ -446,6 +446,8 @@ int openrac_lib_sceMcUnformat(int port, int slot) {
 /* ---- Directories ---- */
 
 /* One entry of sceMcGetDir's table, 64 bytes. */
+OPENRAC_GUEST_ORDER
+
 typedef struct {
     uint8_t created[8]; /* reserved, second, minute, hour, day, month, year (16 bits) */
     uint8_t modified[8];
@@ -456,6 +458,8 @@ typedef struct {
     uint32_t pda;
     char name[32];
 } mc_entry;
+
+OPENRAC_HOST_ORDER
 
 #define MAX_ENTRIES 64
 static mc_entry listing[MAX_ENTRIES];

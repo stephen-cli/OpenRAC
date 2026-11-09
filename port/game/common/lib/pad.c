@@ -65,9 +65,8 @@ int openrac_lib_scePad2Read(int socket, gaddr data) { /* scePad2Read */
 
 /* Which buttons exist: every button and both sticks. */
 int openrac_lib_scePad2GetButtonProfile(int socket, gaddr profile) { /* scePad2GetButtonProfile */
-    uint32_t all = 0xFFFFFFFFu;
     (void)socket;
-    __builtin_memcpy(G(profile), &all, 4);
+    GREF(uint32_t, profile) = 0xFFFFFFFFu;
     return 4;
 }
 

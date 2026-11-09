@@ -42,22 +42,26 @@ void openrac_lib__GetGsDxDyOffset(int mode, gaddr dx1, gaddr dy1, gaddr dx2, gad
 /* sceGsSetDefDispEnv(disp, psm, width, height, dx, dy): the display
  * environment is {PMODE, SMODE2, DISPFB, DISPLAY, BGCOLOR}, 64 bits each. */
 void openrac_lib_sceGsSetDefDispEnv(gaddr disp, short psm, short w, short h, short dx, short dy) {
-    uint64_t* d = (uint64_t*)G(disp);
     const int magh = 2560 / (w > 0 ? w : 640) - 1; /* the console's horizontal clock divider */
-    d[0] = bits(1, 0, 1) | bits(1, 5, 1) | bits(0xFF, 8, 8); /* PMODE: circuit 1, fixed alpha */
-    d[1] = bits(1, 0, 1) | bits(1, 1, 1);                    /* SMODE2: interlaced, frame */
-    d[2] = bits(0, 0, 9) | bits((uint64_t)(w + 63) / 64, 9, 6)
-           | bits((uint64_t)psm, 15, 5); /* DISPFB */
-    d[3] = bits((uint64_t)(636 + dx * (magh + 1)), 0, 12) | bits((uint64_t)(50 + dy), 12, 11)
-           | bits((uint64_t)magh, 23, 4) | bits((uint64_t)((w * (magh + 1)) - 1), 32, 12)
-           | bits((uint64_t)(h - 1), 44, 11); /* DISPLAY */
-    d[4] = 0;                                 /* BGCOLOR */
+    /* PMODE: circuit 1, fixed alpha */
+    GREF(uint64_t, disp) = bits(1, 0, 1) | bits(1, 5, 1) | bits(0xFF, 8, 8);
+    /* SMODE2: interlaced, frame */
+    GREF(uint64_t, disp + 8u) = bits(1, 0, 1) | bits(1, 1, 1);
+    /* DISPFB */
+    GREF(uint64_t, disp + 16u) =
+        bits(0, 0, 9) | bits((uint64_t)(w + 63) / 64, 9, 6) | bits((uint64_t)psm, 15, 5);
+    /* DISPLAY */
+    GREF(uint64_t, disp + 24u) = bits((uint64_t)(636 + dx * (magh + 1)), 0, 12)
+                                 | bits((uint64_t)(50 + dy), 12, 11) | bits((uint64_t)magh, 23, 4)
+                                 | bits((uint64_t)((w * (magh + 1)) - 1), 32, 12)
+                                 | bits((uint64_t)(h - 1), 44, 11);
+    /* BGCOLOR */
+    GREF(uint64_t, disp + 32u) = 0;
 }
 
 /* sceGsPutDispEnv: the frame buffer to show. */
 void openrac_lib_sceGsPutDispEnv(gaddr disp) {
-    const uint64_t* d = (const uint64_t*)G(disp);
-    const uint64_t dispfb = d[2], display = d[3];
+    const uint64_t dispfb = GREF(uint64_t, disp + 16u), display = GREF(uint64_t, disp + 24u);
     const int magh = (int)((display >> 23) & 0xF) + 1;
     openrac_game_display out;
     out.frame_base = (int)(dispfb & 0x1FF);
@@ -99,6 +103,8 @@ int openrac_lib_sceGsSyncPath(int mode, unsigned short timeout) {
 /* An image load, as the game keeps it: a GIF tag, then BITBLTBUF, TRXPOS,
  * TRXREG and TRXDIR as (value, register) pairs, then the GIF tag of the image
  * data. 96 bytes. */
+OPENRAC_GUEST_ORDER
+
 typedef struct {
     uint64_t tag[2];
     uint64_t bitbltbuf, bitbltbuf_reg;
@@ -107,6 +113,8 @@ typedef struct {
     uint64_t trxdir, trxdir_reg;
     uint64_t image_tag[2];
 } image_transfer;
+
+OPENRAC_HOST_ORDER
 
 /* sceGsSetDefLoadImage(transfer, base, width, psm, x, y, w, h): host to GS,
  * the destination fields. */
@@ -141,6 +149,8 @@ void openrac_lib_sceGsSetDefLoadImage(
  * not a load's): four VIF codes (NOP, MSKPATH3 masking path 3, FLUSHA, DIRECT
  * of 6 quadwords), a GIF tag (NLOOP 5, EOP, PACKED, A+D), then BITBLTBUF,
  * TRXPOS, TRXREG, FINISH and TRXDIR as (value, register) pairs. 112 bytes. */
+OPENRAC_GUEST_ORDER
+
 typedef struct {
     uint32_t vifcode[4];
     uint64_t tag[2];
@@ -150,6 +160,8 @@ typedef struct {
     uint64_t finish, finish_reg;
     uint64_t trxdir, trxdir_reg;
 } image_readback;
+
+OPENRAC_HOST_ORDER
 
 /* sceGsSetDefStoreImage(transfer, base, width, psm, x, y, w, h): the source
  * fields, each argument sign-extended into its place as the library does it.
@@ -270,24 +282,24 @@ void openrac_lib_sceDmaSend(gaddr channel, gaddr tag) {
     }
 
     uint32_t tadr;
-    memcpy(&tadr, G(channel + 0x30u), sizeof tadr);
+    tadr = GREF(uint32_t, channel + 0x30u);
     if (tadr != 0xFFFFFFFFu) {
-        memcpy(G(channel + 0x30u), &tag, sizeof tag);
+        GREF(uint32_t, channel + 0x30u) = tag;
     }
     const uint32_t qwc = 0;
-    memcpy(G(channel + 0x20u), &qwc, sizeof qwc);
+    GREF(uint32_t, channel + 0x20u) = qwc;
 
     uint32_t chcr;
-    memcpy(&chcr, G(channel), sizeof chcr);
+    chcr = GREF(uint32_t, channel);
     chcr = (chcr & ~0xCu) | 0x105u;
-    memcpy(G(channel), &chcr, sizeof chcr);
+    GREF(uint32_t, channel) = chcr;
 
     openrac_game_dma_send(channel, tag);
 
     /* The renderer has consumed the chain synchronously. Clear the start
      * bit before notifying the game so polling and completion callbacks both
      * observe an idle channel. Keep any fields changed during the hand-off. */
-    memcpy(&chcr, G(channel), sizeof chcr);
+    chcr = GREF(uint32_t, channel);
     chcr &= ~0x100u;
 
     /* The DMAC channel number from its register block: 0x10008000 is VIF0
@@ -299,6 +311,6 @@ void openrac_lib_sceDmaSend(gaddr channel, gaddr tag) {
          * channel 1's interrupt; the game's own handler clears its wait flag. */
         chcr = (chcr & ~0x03FF0000u) | 0x02010000u;
     }
-    memcpy(G(channel), &chcr, sizeof chcr);
+    GREF(uint32_t, channel) = chcr;
     openrac_game_run_dmac_handlers(channel_id);
 }

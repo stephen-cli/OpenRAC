@@ -103,11 +103,12 @@ void func_001F2608(void) {
     }
     /* The level's own camera (not the pause menu's), as the game made it; then a mod's over it. */
     if (openrac_guest_overlay() >= 0 && rac1_level_running() && GREF(int, CONTEXT) == 0) {
-        const float* pos = (const float*)G(OPENRAC_DATA(CAMERA_POS));
-        const float* r = (const float*)G(OPENRAC_DATA(CAMERA_ROWS));
-        memcpy(game_camera.eye, pos, sizeof(game_camera.eye));
         for (int i = 0; i < 3; ++i) {
-            memcpy(game_camera.rows + 3 * i, r + 4 * i, 3 * sizeof(float));
+            game_camera.eye[i] = GREF(float, OPENRAC_DATA(CAMERA_POS) + 4u * (gaddr)i);
+            for (int j = 0; j < 3; ++j) {
+                game_camera.rows[3 * i + j] =
+                    GREF(float, OPENRAC_DATA(CAMERA_ROWS) + 4u * (gaddr)(4 * i + j));
+            }
         }
         game_camera.loads = rac1_program_loads();
         game_camera.seen = 1;
@@ -116,21 +117,22 @@ void func_001F2608(void) {
         }
         /* Only in play: the pause menu sets itself up from the camera it finds. */
         if (mod_camera.on && GREF(int, LEVEL_MODE) == 0) {
-            float* p = (float*)G(OPENRAC_DATA(CAMERA_POS));
-            float* w = (float*)G(OPENRAC_DATA(CAMERA_ROWS));
-            memcpy(p, mod_camera.eye, sizeof(mod_camera.eye));
             for (int i = 0; i < 3; ++i) {
-                memcpy(w + 4 * i, mod_camera.rows + 4 * i, 3 * sizeof(float));
+                GREF(float, OPENRAC_DATA(CAMERA_POS) + 4u * (gaddr)i) = mod_camera.eye[i];
+                for (int j = 0; j < 3; ++j) {
+                    GREF(float, OPENRAC_DATA(CAMERA_ROWS) + 4u * (gaddr)(4 * i + j)) =
+                        mod_camera.rows[4 * i + j];
+                }
             }
         }
     }
     /* Only in a level: the boot program's title and menus build their own views here too. */
     if (on && openrac_guest_overlay() >= 0) {
-        float* pos = (float*)G(OPENRAC_DATA(CAMERA_POS));
-        float* r = (float*)G(OPENRAC_DATA(CAMERA_ROWS));
-        memcpy(pos, eye, sizeof(eye));
         for (int i = 0; i < 3; ++i) {
-            memcpy(r + 4 * i, rows + 4 * i, 3 * sizeof(float));
+            GREF(float, OPENRAC_DATA(CAMERA_POS) + 4u * (gaddr)i) = eye[i];
+            for (int j = 0; j < 3; ++j) {
+                GREF(float, OPENRAC_DATA(CAMERA_ROWS) + 4u * (gaddr)(4 * i + j)) = rows[4 * i + j];
+            }
         }
     }
     func_001F2608__game();

@@ -638,7 +638,7 @@ static uint32_t save_capture(uint8_t* out, uint32_t size) {
     const gaddr room = save_room();
     func_0020BA00(room);
     int32_t parts[2];
-    memcpy(parts, G(room), sizeof parts);
+    openrac_guest_read_words(parts, room, sizeof(parts) / 4);
     const uint64_t total =
         (uint64_t)SAVE_HEADER + (uint64_t)parts[0] + SAVE_LEVEL_PARTS * (uint64_t)parts[1];
     if (parts[0] <= 0 || parts[1] <= 0 || total > SAVE_ROOM) {

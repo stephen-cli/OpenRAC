@@ -198,8 +198,7 @@ void apply_writes() {
             ) >= 3
             && now >= 0 && now >= static_cast<std::int64_t>(frame)
             && now < static_cast<std::int64_t>(frame + length)) {
-            const std::uint32_t word = static_cast<std::uint32_t>(value);
-            std::memcpy(G(static_cast<gaddr>(address)), &word, 4);
+            openrac_guest_set_u32(static_cast<gaddr>(address), static_cast<std::uint32_t>(value));
         }
 
         at = std::strchr(at, ',');
@@ -459,7 +458,7 @@ int vsync() {
                 const gaddr from = kind == 'd'   ? OPENRAC_DATA(at_word)
                                    : kind == 'l' ? OPENRAC_LDATA(0, at_word)
                                                  : at_word;
-                std::memcpy(&w, G(from), 4);
+                w = openrac_guest_u32(from);
                 float f;
                 std::memcpy(&f, &w, 4);
                 line += kind != 'f' ? std::format(" {}", static_cast<std::int32_t>(w))

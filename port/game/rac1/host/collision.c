@@ -2016,7 +2016,7 @@ static void note(
     n->out = x->out;
     memcpy(n->a, a, sizeof n->a);
     memcpy(n->b, b, sizeof n->b);
-    memcpy(n->output, G(x->out + 0x18), sizeof n->output);
+    openrac_guest_read_words(n->output, x->out + 0x18, sizeof(n->output) / 4);
 }
 
 static void note_line(
@@ -2026,8 +2026,8 @@ static void note_line(
         return;
     }
     float a[3], b[3];
-    memcpy(a, G(pa), sizeof a);
-    memcpy(b, G(pb), sizeof b);
+    openrac_guest_read_words(a, pa, sizeof(a) / 4);
+    openrac_guest_read_words(b, pb, sizeof(b) / 4);
     note(entry, x, a, b, (uint32_t)fl, (gaddr)ignore, (gaddr)tmpl, r);
 }
 
@@ -2046,7 +2046,7 @@ static void note_volume(
     }
     float a[3];
     const float b[3] = {radius, height, 0.0f};
-    memcpy(a, G(centre), sizeof a);
+    openrac_guest_read_words(a, centre, sizeof(a) / 4);
     note(entry, x, a, b, (uint32_t)fl, ignore, 0, r);
 }
 

@@ -23,14 +23,22 @@ static void rotate(gaddr out, gaddr in, int axis, float angle) {
     r[b][a] = -s;
     r[b][b] = c;
     float m[4][4], result[4][4];
-    memcpy(m, G(in), sizeof m);
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            m[i][j] = GREF(float, in + (gaddr)(i * 4 + j) * 4u);
+        }
+    }
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 4; j++) {
             result[i][j] =
                 m[i][0] * r[0][j] + m[i][1] * r[1][j] + m[i][2] * r[2][j] + m[i][3] * r[3][j];
         }
     }
-    memcpy(G(out), result, sizeof result);
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            GREF(float, out + (gaddr)(i * 4 + j) * 4u) = result[i][j];
+        }
+    }
 }
 
 void openrac_lib_sceVu0RotMatrixZ(gaddr m0, gaddr m1, float rz) {

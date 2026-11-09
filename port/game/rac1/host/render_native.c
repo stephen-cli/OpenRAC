@@ -113,12 +113,12 @@ void func_00212578(int a0, int a1) {
  */
 static void mark_drawn_mobys(gaddr first, int count) {
     float cam[3], rows[12], view[12];
-    memcpy(cam, G(OPENRAC_DATA(RAC1_ADDR(0x00187180u))), sizeof(cam));
+    openrac_guest_read_words(cam, OPENRAC_DATA(RAC1_ADDR(0x00187180u)), sizeof(cam) / 4);
     /* The camera's rotation as MobyProc loads it (lqc2 of gCamera's first three rows, 0x187040):
      * BuildViewMatrices makes them from the forward, side and up rows (z, x, y) of 0x187390, or
      * from the camera's angles, column by column: forward is column 2, side and up columns 0 and 1
      * negated. Read back so, they are those rows bit for bit, whichever way the frame made them. */
-    memcpy(view, G(OPENRAC_DATA(RAC1_ADDR(0x00187040u))), sizeof(view));
+    openrac_guest_read_words(view, OPENRAC_DATA(RAC1_ADDR(0x00187040u)), sizeof(view) / 4);
     for (int c = 0; c < 3; ++c) {
         rows[c] = view[c * 4 + 2];
         rows[4 + c] = -view[c * 4 + 0];
@@ -126,8 +126,8 @@ static void mark_drawn_mobys(gaddr first, int count) {
     }
     rows[3] = rows[7] = rows[11] = 0.0f;
     float tx, ty;
-    memcpy(&tx, G(OPENRAC_DATA(RAC1_ADDR(0x0018CE00u)) + 0xB0), 4);
-    memcpy(&ty, G(OPENRAC_DATA(RAC1_ADDR(0x0018CE00u)) + 0xB4), 4);
+    openrac_guest_read_words(&tx, OPENRAC_DATA(RAC1_ADDR(0x0018CE00u)) + 0xB0, 1);
+    openrac_guest_read_words(&ty, OPENRAC_DATA(RAC1_ADDR(0x0018CE00u)) + 0xB4, 1);
     if (!(tx > 0.05f && tx < 10.0f)) {
         tx = 0.63f;
     }
@@ -226,8 +226,7 @@ void func_00218B10(void) {
         if ((r[1] & 0x80) != 0) {
             continue;
         }
-        uint64_t entry;
-        memcpy(&entry, G(table + (gaddr)r[2] * 8), 8);
+        const uint64_t entry = GREF(uint64_t, table + (gaddr)r[2] * 8);
         openrac_game_particle(r, (uint32_t)(entry >> 32) >> 4, (uint32_t)entry >> 4, 5, 0);
     }
 }
@@ -290,7 +289,7 @@ void func_0022B8F8(gaddr a0) {
  */
 void func_0022C9A8(int shell) {
     float m[16];
-    memcpy(m, G(OPENRAC_DATA(RAC1_ADDR(0x001D9A70u))), sizeof(m));
+    openrac_guest_read_words(m, OPENRAC_DATA(RAC1_ADDR(0x001D9A70u)), sizeof(m) / 4);
     openrac_game_sky_shell(shell, m);
     func_0022C9A8__game(shell);
 }
@@ -343,8 +342,7 @@ void func_0022CEB8(void) {
         if (!sky_ram_span(texture, sizeof(uint64_t))) {
             return;
         }
-        uint64_t tex0;
-        memcpy(&tex0, G(texture), sizeof(tex0));
+        const uint64_t tex0 = GREF(uint64_t, texture);
         openrac_game_sky_sprite(r, tex0);
     }
 }

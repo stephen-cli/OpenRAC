@@ -93,7 +93,7 @@ int func_0020C468(int src, int dst) {
 /* A word of the VU0 patch microprogram in the game's memory (D_0010E4C0). */
 static unsigned word(int i) {
     unsigned w;
-    memcpy(&w, G(RAC1_ADDR(0x0010E4C0u) + (gaddr)i * 4u), 4);
+    openrac_guest_read_words(&w, RAC1_ADDR(0x0010E4C0u) + (gaddr)i * 4u, 1);
     return w;
 }
 
@@ -230,9 +230,9 @@ int func_0023B670(int a0, int a1, int a2, gaddr a3, int a4) {
  */
 void func_00235118(void) {
     uint32_t fences;
-    memcpy(&fences, G(OPENRAC_DATA(RAC1_ADDR(0x00160FE0u))), 4);
+    openrac_guest_read_words(&fences, OPENRAC_DATA(RAC1_ADDR(0x00160FE0u)), 1);
     fences &= ~0x1Fu;
-    memcpy(G(OPENRAC_DATA(RAC1_ADDR(0x00160FE0u))), &fences, 4);
+    openrac_guest_write_words(OPENRAC_DATA(RAC1_ADDR(0x00160FE0u)), &fences, 1);
 }
 
 /*
@@ -265,30 +265,37 @@ int func_0012DDC0(void) {
         uint64_t argument;
     } callbacks[0x100];
     openrac_lib_snd_FlushSoundCommands();
-    memcpy(&cur, G(RAC1_ADDR(0x0015EDC0u)), 4);
+    openrac_guest_read_words(&cur, RAC1_ADDR(0x0015EDC0u), 1);
     cur &= 1;
-    memcpy(&count_at, G(RAC1_ADDR(0x0015EDA0u) + cur * 4u), 4);
-    memcpy(&callbacks_at, G(RAC1_ADDR(0x0015EDB0u) + cur * 4u), 4);
+    openrac_guest_read_words(&count_at, RAC1_ADDR(0x0015EDA0u) + cur * 4u, 1);
+    openrac_guest_read_words(&callbacks_at, RAC1_ADDR(0x0015EDB0u) + cur * 4u, 1);
     if (count_at != 0) {
-        memcpy(&count, G(count_at), 4);
-        memcpy(&used, G(RAC1_ADDR(0x0015EDA8u) + cur * 4u), 4);
+        openrac_guest_read_words(&count, count_at, 1);
+        openrac_guest_read_words(&used, RAC1_ADDR(0x0015EDA8u) + cur * 4u, 1);
         used = used <= 0xFFC ? 0xFFC - used : 0;
         if (count > 0x100) {
             count = 0x100;
         }
         memcpy(batch, G(count_at + 4u), used);
         if (callbacks_at != 0) {
-            memcpy(callbacks, G(callbacks_at), count * sizeof callbacks[0]);
+            for (uint32_t i = 0; i < count; ++i) {
+                const gaddr entry = callbacks_at + i * (gaddr)sizeof callbacks[0];
+                callbacks[i].function = GREF(uint32_t, entry);
+                callbacks[i].pad = 0;
+                callbacks[i].argument = GREF(uint64_t, entry + 8u);
+            }
         } else {
             memset(callbacks, 0, sizeof callbacks);
         }
-        memcpy(G(count_at), &zero, 4);
+        openrac_guest_write_words(count_at, &zero, 1);
     }
-    memcpy(G(RAC1_ADDR(0x0015EDA8u) + cur * 4u), &free_bytes, 4);
+    openrac_guest_write_words(RAC1_ADDR(0x0015EDA8u) + cur * 4u, &free_bytes, 1);
     for (uint32_t i = 0, at = 0; i < count && at + 4 <= used; ++i) {
         uint16_t command, size;
         memcpy(&command, batch + at, 2);
         memcpy(&size, batch + at + 2, 2);
+        command = openrac_le16(command);
+        size = openrac_le16(size);
         if (at + 4u + size > used) {
             break;
         }
@@ -325,10 +332,10 @@ void game_D_0023B578(gaddr moby) {
     if (*(uint8_t *)G(moby + 0x70u) & 2) {
         float v;
         float zero = 0.0f, result;
-        memcpy(&v, G(moby + 0x58u), 4);
+        openrac_guest_read_words(&v, moby + 0x58u, 1);
         result = zero < v ? zero : 1.0f;
-        memcpy(G(moby + 0x54u), &result, 4);
-        memcpy(G(moby + 0x58u), &zero, 4);
+        openrac_guest_write_words(moby + 0x54u, &result, 1);
+        openrac_guest_write_words(moby + 0x58u, &zero, 1);
     }
     func_0023B5D0(moby);
 }

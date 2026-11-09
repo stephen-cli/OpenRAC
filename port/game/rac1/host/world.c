@@ -703,7 +703,7 @@ int rac1_world_camera_position(float out[3]) {
     if (!main_context() && level_view.load == rac1_program_loads()) {
         memcpy(out, level_view.camera + 0x140, 3 * sizeof(float));
     } else {
-        memcpy(out, G(OPENRAC_DATA(CAMERA_POSITION)), 3 * sizeof(float));
+        openrac_guest_read_words(out, OPENRAC_DATA(CAMERA_POSITION), 3);
     }
     return 1;
 }

@@ -107,7 +107,7 @@ void func_L01_002B9198(gaddr tiles, int count) {
     /* All three buffers must be flat, including pre-existing waves when toggled on.
      * Keep the tile metadata, UV scrolling and draw callback active. */
     for (int i = 0; i < count; ++i) {
-        memset(&GREF(unsigned char, tiles + (unsigned)i * 0x1190u + 0x50u), 0, 3u * 0x5C0u);
+        memset(G(tiles + (unsigned)i * 0x1190u + 0x50u), 0, 3u * 0x5C0u);
     }
 }
 
@@ -190,7 +190,7 @@ void func_L01_002635C8(gaddr layer) {
     }
     const float amplitude = GREF(float, layer + 0x18);
     float offsets[4];
-    memcpy(offsets, G(layer + 0x40), sizeof(offsets));
+    openrac_guest_read_words(offsets, layer + 0x40, sizeof(offsets) / 4);
     water_uv_motion(layer);
     GREF(float, layer + 0x18) = 0;
     memset(G(layer + 0x40), 0, sizeof(offsets));
@@ -205,7 +205,7 @@ void func_L01_002635C8(gaddr layer) {
      * enhanced displacement; the original packet layout and colour remain unchanged. */
     func_L01_002635C8__game(layer);
     GREF(float, layer + 0x18) = amplitude;
-    memcpy(G(layer + 0x40), offsets, sizeof(offsets));
+    openrac_guest_write_words(layer + 0x40, offsets, sizeof(offsets) / 4);
     for (unsigned i = 0; i < count; ++i) {
         const gaddr at = vertices + i * 16u;
         GREF(float, at + 8) = saved[i * 2];

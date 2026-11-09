@@ -17,11 +17,11 @@
  * (the largest float), times zero. */
 void func_001252C0(gaddr out, gaddr v) {
     float in[3];
-    memcpy(in, G(v), sizeof in);
+    openrac_guest_read_words(in, v, sizeof(in) / 4);
     const float len = sqrtf((in[0] * in[0] + in[1] * in[1]) + in[2] * in[2]);
     const float q = len == 0.0f ? FLT_MAX : 1.0f / len;
     const float r[4] = {in[0] * q, in[1] * q, in[2] * q, 0.0f};
-    memcpy(G(out), r, sizeof r);
+    openrac_guest_write_words(out, r, sizeof(r) / 4);
 }
 
 /* sceVu0ScaleVector (func_00125328, an entry inside the library object at 0x125300): out = v * s,
@@ -30,9 +30,9 @@ void func_001252C0(gaddr out, gaddr v) {
 #if !RAC1_OMIT(func_00125328)
 void func_00125328(gaddr out, gaddr v, float s) {
     float in[4];
-    memcpy(in, G(v), sizeof in);
+    openrac_guest_read_words(in, v, sizeof(in) / 4);
     const float r[4] = {in[0] * s, in[1] * s, in[2] * s, in[3] * s};
-    memcpy(G(out), r, sizeof r);
+    openrac_guest_write_words(out, r, sizeof(r) / 4);
 }
 #endif
 
@@ -43,7 +43,7 @@ void func_00125328(gaddr out, gaddr v, float s) {
 void func_00125358(gaddr m) {
     const float unit[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
                             0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
-    memcpy(G(m), unit, sizeof unit);
+    openrac_guest_write_words(m, unit, sizeof(unit) / 4);
 }
 #endif
 
@@ -65,11 +65,11 @@ void func_L00_0025C710(gaddr out, gaddr a, gaddr b, float t) {
     float va[4];
     float vb[4];
     float r[4];
-    memcpy(va, G(a), sizeof(va));
-    memcpy(vb, G(b), sizeof(vb));
+    openrac_guest_read_words(va, a, sizeof(va) / 4);
+    openrac_guest_read_words(vb, b, sizeof(vb) / 4);
     for (int i = 0; i < 4; ++i) {
         r[i] = func_L00_0025C700(va[i], vb[i], t);
     }
-    memcpy(G(out), r, sizeof(r));
+    openrac_guest_write_words(out, r, sizeof(r) / 4);
 }
 #endif

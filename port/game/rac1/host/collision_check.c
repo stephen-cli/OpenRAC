@@ -107,11 +107,11 @@ static size_t g_count, g_cap;
 #define DMA_FROM_SPR 0x1000D000u
 
 static void dma_channel(gaddr ch, int to_spr) {
-    uint32_t* chcr = &GREF(uint32_t, ch);
-    if (!(*chcr & 0x100u)) {
+    const uint32_t chcr = GREF(uint32_t, ch);
+    if (!(chcr & 0x100u)) {
         return;
     }
-    if ((*chcr >> 2 & 3u) != 0) {
+    if ((chcr >> 2 & 3u) != 0) {
         static int said;
         if (!said++) {
             fprintf(stderr, "[coll-check] a chained DMA to the scratchpad: not modelled\n");
@@ -130,7 +130,7 @@ static void dma_channel(gaddr ch, int to_spr) {
     GREF(uint32_t, ch + 0x10) = madr;
     GREF(uint32_t, ch + 0x80) = sadr;
     GREF(uint32_t, ch + 0x20) = 0;
-    *chcr &= ~0x100u;
+    GREF(uint32_t, ch) = chcr & ~0x100u;
 }
 
 /* asm_shadows.c reaches game memory through this (its OPENRAC_EE_PTR). */

@@ -18,11 +18,12 @@ namespace {
 constexpr std::size_t kSoundRecordSize = 12;
 constexpr std::size_t kGrainRecordSize = 0x28;
 
+// A grain's field: the console's bytes, little-endian, in the host's order.
 template <typename T>
 T grain_field(const std::array<u8, 32>& data, std::size_t offset) {
     T value;
     std::memcpy(&value, data.data() + offset, sizeof(T));
-    return value;
+    return ByteView::from_little_endian(value);
 }
 
 }  // namespace

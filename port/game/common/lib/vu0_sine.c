@@ -16,9 +16,7 @@
 /* Returns the constant of the instruction pair at microprogram address
  * `entry`: the I-register immediate of a LOI pair, its lower word. */
 static float program_constant(const openrac_vu0_sine_program* program, uint32_t entry) {
-    float value;
-    memcpy(&value, G(program->code + (entry - program->load)), sizeof value);
-    return value;
+    return GREF(float, program->code + (entry - program->load));
 }
 
 /* Returns x + c3 x^3 + c5 x^5 + c7 x^7 + c9 x^9, nested in x^2. */

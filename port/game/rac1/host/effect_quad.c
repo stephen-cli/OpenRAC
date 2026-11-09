@@ -44,7 +44,7 @@ void func_001F7EF8(gaddr a0, int a1, int a2) {
     memcpy(q.corner, r, sizeof(q.corner));
     if (a1 != 0) {
         float m[16];
-        memcpy(m, G((gaddr)a1), sizeof(m));
+        openrac_guest_read_words(m, (gaddr)a1, sizeof(m) / 4);
         for (int k = 0; k < 4; ++k) {
             const float x = q.corner[k][0], y = q.corner[k][1], z = q.corner[k][2], w = q.corner[k][3];
             for (int i = 0; i < 4; ++i) {

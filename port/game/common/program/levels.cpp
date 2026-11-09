@@ -162,6 +162,9 @@ void load_level_program(int level) {
     for (std::size_t at = 0; at + 16 <= bytes.size();) {
         std::uint32_t head[4];
         std::memcpy(head, bytes.data() + at, sizeof(head));
+        for (std::uint32_t& word : head) {
+            word = openrac_le32(word);  // the piece's header is the console's, little-endian
+        }
 
         if (entry == 0) {
             entry = head[3];

@@ -299,7 +299,9 @@ gaddr func_0020E6B8(void) {
             last_run.runs = 0;
         }
         ++last_run.runs;
-        memcpy(last_run.camera, G(OPENRAC_DATA(CAMERA_BLOCK) + 0x140), sizeof last_run.camera);
+        openrac_guest_read_words(
+            last_run.camera, OPENRAC_DATA(CAMERA_BLOCK) + 0x140, sizeof(last_run.camera) / 4
+        );
         memset(last_run.ran, -1, sizeof last_run.ran);
         run_slots = last_run.ran;
     }

@@ -30,6 +30,7 @@
 #include "audio/sound_replacements.h"
 #include "common/log.h"
 #include "openrac/game_host.h"
+#include "openrac/guest.h"
 
 namespace {
 
@@ -551,10 +552,11 @@ void apply_stream_replacement(std::FILE* disc, std::uint32_t sector, Track& trac
     }
 }
 
+// Word I of a command's data or a bank's header: the game's bytes, little-endian.
 std::int32_t word(const std::uint8_t* data, std::uint32_t i) {
-    std::int32_t v;
+    std::uint32_t v;
     std::memcpy(&v, data + i * 4, 4);
-    return v;
+    return static_cast<std::int32_t>(openrac_le32(v));
 }
 
 // The bank file's size from its header: {u32 type, u32 count, {u32 offset, u32 size}[count]}.
@@ -563,8 +565,7 @@ std::size_t bank_size(const std::uint8_t* header, std::size_t available) {
         return 0;
     }
 
-    std::uint32_t count;
-    std::memcpy(&count, header + 4, 4);
+    const auto count = static_cast<std::uint32_t>(word(header, 1));
 
     if (count == 0 || count > 8 || available < 8 + count * 8) {
         return 0;
@@ -573,9 +574,8 @@ std::size_t bank_size(const std::uint8_t* header, std::size_t available) {
     std::size_t end = 0;
 
     for (std::uint32_t i = 0; i < count; ++i) {
-        std::uint32_t offset, size;
-        std::memcpy(&offset, header + 8 + i * 8, 4);
-        std::memcpy(&size, header + 12 + i * 8, 4);
+        const auto offset = static_cast<std::uint32_t>(word(header, 2 + i * 2));
+        const auto size = static_cast<std::uint32_t>(word(header, 3 + i * 2));
         end = std::max<std::size_t>(end, std::size_t{offset} + size);
     }
 

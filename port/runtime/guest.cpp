@@ -41,6 +41,19 @@ gaddr openrac_guest_sp = GUEST_STACK_TOP;
 
 namespace {
 
+// The console's words, read out of game memory or a copy of it (little-endian) in the host's order.
+std::uint32_t word_at(const void* bytes) {
+    std::uint32_t w;
+    std::memcpy(&w, bytes, 4);
+    return openrac_le32(w);
+}
+
+void words_at(std::uint32_t* words, const void* bytes, std::size_t count) {
+    for (std::size_t i = 0; i < count; ++i) {
+        words[i] = word_at(static_cast<const std::uint8_t*>(bytes) + i * 4);
+    }
+}
+
 using openrac::log::error;
 using openrac::log::fatalf;
 using openrac::log::info;
@@ -584,7 +597,7 @@ openrac_host_fn openrac_guest_function(gaddr address) {
         // place's own target, read from the program in memory.
         for (int depth = 0; depth < 4 && g_ambiguous.count(e->fn) != 0; ++depth) {
             std::uint32_t w[7];
-            std::memcpy(w, G(address), sizeof(w));
+            words_at(w, G(address), 7);
             if (w[0] != 0x27BDFFF0u || w[1] != 0x7FBF0000u || (w[2] >> 26) != 3 || w[3] != 0
                 || w[4] != 0x7BBF0000u || w[5] != 0x03E00008u || w[6] != 0x27BD0010u) {
                 break;
@@ -605,7 +618,7 @@ openrac_host_fn openrac_guest_function(gaddr address) {
     // another function, which the game points at as a callback that does nothing.
     if (address + 8 <= 0x02000000u && (address & 3) == 0) {
         std::uint32_t w[2];
-        std::memcpy(w, G(address), sizeof(w));
+        words_at(w, G(address), 2);
         const bool returns_zero = w[1] == 0 || w[1] == 0x0000102Du || w[1] == 0x00001025u || w[1] == 0x00001021u;
         if (w[0] == 0x03E00008u && returns_zero) {
             return reinterpret_cast<openrac_host_fn>(&returns_nothing);
@@ -663,7 +676,7 @@ static gaddr folded_call(const uint32_t* places, int count, gaddr caller, uint32
     bool several = false;
     for (std::uint32_t i = 0; i * 4 < size && result == 0; ++i) {
         std::uint32_t w;
-        std::memcpy(&w, G(caller + i * 4), 4);
+        w = word_at(G(caller + i * 4));
         if ((w >> 26) != 3) {
             continue;
         }
@@ -716,7 +729,7 @@ static gaddr folded_address(
     int seen = 0;
     for (std::uint32_t i = 0; i * 4 < size && result == 0; ++i) {
         std::uint32_t w;
-        std::memcpy(&w, G(caller + i * 4), 4);
+        w = word_at(G(caller + i * 4));
         const std::uint32_t op = w >> 26;
         const std::uint32_t rs = (w >> 21) & 31;
         const std::uint32_t rt = (w >> 16) & 31;
@@ -1088,14 +1101,14 @@ int current_overlay() {
 std::uint32_t exe_word(gaddr at) {
     std::uint32_t w = 0;
     if (at >= g_exe_base && at + 4 <= g_exe_base + g_exe_code.size()) {
-        std::memcpy(&w, g_exe_code.data() + (at - g_exe_base), 4);
+        w = word_at(g_exe_code.data() + (at - g_exe_base));
     }
     return w;
 }
 
 std::uint32_t game_word(gaddr at) {
     std::uint32_t w;
-    std::memcpy(&w, G(at), 4);
+    w = word_at(G(at));
     return w;
 }
 
@@ -1536,7 +1549,7 @@ std::uint32_t level_reader(int level, gaddr at) {
     for (const Chunk& c : level_program(level)) {
         if (at >= c.base && at + 4 <= c.base + c.bytes.size()) {
             std::uint32_t w;
-            std::memcpy(&w, c.bytes.data() + (at - c.base), 4);
+            w = word_at(c.bytes.data() + (at - c.base));
             return w;
         }
     }
@@ -1622,7 +1635,7 @@ gaddr search_pair(gaddr address, int overlay) {
     }
     const auto exe_at = [](std::size_t i) {
         std::uint32_t w;
-        std::memcpy(&w, g_exe_code.data() + i * 4, 4);
+        w = word_at(g_exe_code.data() + i * 4);
         return w;
     };
     constexpr std::size_t kBefore = 6, kLength = 24;
@@ -1925,14 +1938,14 @@ static gaddr data_in_copy(int from, gaddr canon, uint32_t size, gaddr self, gadd
         }
         if (overlay == from) {
             std::uint32_t w;
-            std::memcpy(&w, G(at), 4);
+            w = word_at(G(at));
             return w;
         }
         return level_reader(from, at);
     };
     const auto self_word = [&](gaddr at) {
         std::uint32_t w;
-        std::memcpy(&w, G(at), 4);
+        w = word_at(G(at));
         return w;
     };
     // addiu, ori, and the loads and stores (lb .. sw, lwc1, swc1, ld, sd, lq, sq) that take %lo.
@@ -1999,14 +2012,14 @@ static gaddr code_in_copy_at(int from, int overlay, gaddr canon, uint32_t size, 
     const auto canon_word = [&](gaddr at) -> std::uint32_t {
         if (overlay == from) {
             std::uint32_t w;
-            std::memcpy(&w, G(at), 4);
+            w = word_at(G(at));
             return w;
         }
         return level_reader(from, at);
     };
     const auto self_word = [&](gaddr at) {
         std::uint32_t w;
-        std::memcpy(&w, G(at), 4);
+        w = word_at(G(at));
         return w;
     };
     const auto formed = [](std::uint32_t hi, std::uint32_t lo) -> gaddr {
@@ -2124,7 +2137,7 @@ static gaddr call_in_copy(int from, gaddr canon, uint32_t size, gaddr self, gadd
         }
         if (overlay == from) {
             std::uint32_t w;
-            std::memcpy(&w, G(at), 4);
+            w = word_at(G(at));
             return w;
         }
         return level_reader(from, at);
@@ -2232,7 +2245,7 @@ static gaddr relocate_level_code(int from, gaddr address) {
             bool same = size >= 8;
             for (std::uint32_t off = 0; same && off < size; off += 4) {
                 std::uint32_t w;
-                std::memcpy(&w, G(place + off), 4);
+                w = word_at(G(place + off));
                 same = without_addresses(w) == without_addresses(level_reader(from, address + off));
             }
             if (same) {
