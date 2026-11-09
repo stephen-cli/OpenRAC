@@ -68,7 +68,7 @@ Its sources, shaders, tools and tests are in [`enhanced/`](enhanced/README.md).
 | [common/](common/README.md) | What every module may use: log, crash report, JSON reader, the PS2's float arithmetic, small helpers |
 | [tests/](tests) | The port's tests |
 | [docs/](docs/CODING_CONVENTIONS.md) | The coding conventions |
-| [tools/](tools) | [conventions](tools/conventions/README.md) and [layering](tools/layering/README.md) checks (CI), [regress](tools/regress) runs, [versionmap](tools/versionmap/README.md), [perf](tools/perf) |
+| [tools/](tools) | [conventions](tools/conventions/README.md) and [layering](tools/layering/README.md) checks (CI), [regress](tools/regress) runs, [versionmap](tools/versionmap/README.md), [perf](tools/perf), the [big-endian boot test](tools/bigendian/README.md) |
 
 ## How a game is built
 

@@ -81,4 +81,5 @@ in [port/](../../port/README.md).
 | [OPENGOAL_NOTES.md](OPENGOAL_NOTES.md) | How OpenGOAL's renderer and platform layer work, and what carries over |
 | [RAC1_PAL_SURVEY.md](RAC1_PAL_SURVEY.md) | The first survey of the game for a native build (2026-10-08) |
 | [RAC1_PAL_CAMPAIGN.md](RAC1_PAL_CAMPAIGN.md) | The rules and dated log of the campaign for a playable Ratchet & Clank (PAL) |
+| [PS3.md](PS3.md) | A native PS3 build: byte order, memory, the RSX, lessons from the 2012 Collection (study, 2026-11-06) |
 | [tools/extractor.py](../../tools/extractor.py) | The disc extractor (OpenGOAL's `extractor`, for OpenRAC) |
