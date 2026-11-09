@@ -23,7 +23,7 @@ Nothing is compiled on the console.
 
 | | The port today | The PS3 | Work |
 |---|---|---|---|
-| Byte order | little-endian everywhere: the console's data in game memory, the asset readers, the renderer's packet readers (`port/game/common/mod_scripts.cpp`: "little-endian, as the console and every host of the port") | the Cell's PPU is big-endian | the largest item (section 3) |
+| Byte order | little-endian everywhere: the console's data in game memory, the asset readers, the renderer's packet readers (`port/game/common/mod_scripts.cpp`: "little-endian, as the console and every host of the port") | the Cell's PPU is big-endian | the largest item (section 3); done for the headless game (section 6) |
 | Game memory | one 4 GB reservation whose offsets are the console's addresses, the uncached and accelerated ranges mapped as views of the same RAM (`port/runtime/memory.cpp`) | a 32-bit address space, 256 MB of main RAM, no reservation without backing | regions packed into a small allocation; `G()` folds the aliases by masking; the 256 MB expanded arena (mods) left out |
 | Textures | converted to RGBA8, several times the console's 4- and 8-bit size | 256 MB of video RAM | measure a level's textures; keep palettised textures if needed |
 | Renderer | OpenGL 4.1 core, OpenGL ES 3.2 or Vulkan; GLSL 4.10 | RSX, a GeForce 7-class GPU: Shader Model 3, no compute; homebrew draws through PSL1GHT's RSX library with Cg programs compiled ahead of time | a new backend and every shader written again; reversed depth checked against the RSX's depth formats |
@@ -89,9 +89,10 @@ desktop builder (`rac-editions/installer`).
 ## 6. The big-endian boot test (2026-11-09)
 
 The test of section 3, run with [port/tools/bigendian](../../port/tools/bigendian/README.md):
-the port built headless for 64-bit big-endian PowerPC Linux with Clang
-and run under QEMU's user mode, beside the same build for x86-64, both
-started straight into Veldin for 1800 frames.
+the port built headless for 64-bit big-endian PowerPC Linux (with Clang
+for this first run, GCC afterwards) and run under QEMU's user mode, beside
+the same build for x86-64, both started straight into Veldin for 1800
+frames.
 
 | | x86-64 | big-endian PowerPC |
 |---|---|---|
@@ -117,14 +118,54 @@ Toolchains: the editions builder's ps3dev image carries GCC 7.2 (C++17,
 not the port's C++20); ps3toolchain's current nightly (2026-10-11) builds
 GCC 13.2, which has it.
 
+### Byte order, done the first way
+
+The same day, game memory was given the console's order on a big-endian
+host as section 3 chooses, and the test run again with GCC in place of
+Clang:
+
+- **The translated C** declares the game's structures under GCC's
+  `#pragma scalar_storage_order little-endian` (`OPENRAC_GUEST_ORDER`,
+  which hostgen emits at the top of every unit), and `GREF` is a field of
+  such a structure, so every load and store through it swaps bytes. No
+  change to hostgen's lowering was needed: a game pointer is already an
+  address, and every access through one already goes through `GREF` or a
+  structure cast of `G()`. Clang has no such pragma, so the big-endian
+  build is GCC's, as the PS3's would be, and for the Cell's PPU
+  (`-mcpu=cell`: GCC 14's generic PowerPC target stops with an internal
+  error on a byte-swapped `volatile` 64-bit load, the game's hardware
+  registers). The game's `long double` is lowered to `double`, the 8 bytes
+  it is on the console (GCC has no reversed storage order for a 16-byte
+  float, and the x86 build read 16 bytes from an 8-byte argument).
+- **The hand-written C** (the libraries in `game/common/lib`, the game's
+  host C in `game/rac1/host`) copied words in and out of game memory with
+  `memcpy` and host pointers: about sixty sites now read and write through
+  `GREF`, `openrac_guest_read_words` and `openrac_guest_write_words`
+  (`guest.h`). Taking the address of a swapped scalar is an error, so three
+  sites that kept a host pointer into game memory keep the address instead.
+  The two image structures of `graph.c` and the card directory entry of
+  `mc.c` are declared under the pragma.
+- **The runtime and the C++ program** read the game's code words through
+  `word_at` (`runtime/guest.cpp`), a level piece's header and the sound
+  engine's command words through `openrac_le32`.
+- **The asset readers** read a number in the console's order whatever the
+  host's (`ByteView::read`, `ByteWriter::put`); a record of several fields
+  is still copied as its bytes are, under `OPENRAC_BIG_ENDIAN_TRIAL`.
+
+With that, the big-endian build (101 MB, GCC 14, `-mcpu=cell`) under QEMU
+passes the card warning, skips the movies, loads both sound banks (10 and
+236 sounds), loads Veldin, and ends frame 1800 with the hero at (132.09,
+115.48, 31.43) heading 0.66, the same level relocation counts and the same
+two reached functions without C as the x86-64 run: its log and its state
+file are the baseline's, line for line, in 31 s. The
+x86-64 build's own state is unchanged by the work, and its 143 tests pass.
+
 ## 7. Next steps
 
-1. Byte order, the way section 3 chooses: hostgen emits byte-reversed
-   loads and stores for game memory; host code reaches game memory through
-   accessors that swap (`guest.h`), starting with the libraries
-   (`lib/cdvd.c` first, then the rest); the asset readers read their
-   fields by size. The boot test above measures each step: the run should
-   get past the disc read, then to the title, then to Veldin's position.
+1. The asset readers' records (about forty `read<Record>` and
+   `read_array<Record>` calls), read field by field, and the guard in
+   `bytes.h` lifted; then the headless run with a renderer's data
+   (`--check-levels`, the extracted levels) on big-endian.
 2. The toolchain: ps3toolchain's GCC 13.2 in the container instead of the
    7.2 prebuilt, and the port's runtime compiled with it against PSL1GHT.
 3. The memory layout for 256 MB (section 2).

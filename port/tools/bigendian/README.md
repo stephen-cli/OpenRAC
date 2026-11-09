@@ -9,8 +9,8 @@ console and no PS3 toolchain.
 
 | File | |
 |---|---|
-| `Containerfile` | Debian with Clang, the PowerPC cross GCC and binutils, and qemu-user |
-| `ppc64be.cmake` | the CMake toolchain file: Clang generating PowerPC code, GCC's cross libraries, GCC's linker (lld has no ELFv1) |
+| `Containerfile` | Debian with Clang (the x86-64 build, and hostgen's reader), the PowerPC cross GCC and binutils, and qemu-user |
+| `ppc64be.cmake` | the CMake toolchain file: the PowerPC cross GCC, for the Cell's PPU (`-mcpu=cell`); Clang has no storage-order pragma, and lld no ELFv1 |
 | `boot.sh` | one headless run of the game, straight into Veldin, with its state and reached functions written beside the data |
 
 ```sh
@@ -29,10 +29,17 @@ sh tools/bigendian/boot.sh be-ppc 1800 qemu-ppc64 -L /usr/powerpc64-linux-gnu
 ```
 
 `OPENRAC_BIG_ENDIAN_TRIAL` builds the asset readers (`assets/bytes.h`) on a
-big-endian host as they are, reading every multi-byte field reversed: the
-build links, and the run shows where the game's data is first read the
-wrong way round. The run's `-k 0` keeps the build going past errors so
-one build lists every file that does not compile.
+big-endian host with their records copied as they are (a number is read in
+the console's order either way): the build links, and the run shows where
+the game's data is first read the wrong way round. The build's `-k 0`
+keeps it going past errors so one build lists every file that does not
+compile.
+
+The game's own memory keeps the console's byte order on every host. On
+the big-endian build the translated C and the hand-written C read and
+write it through GCC's `scalar_storage_order` (`guest.h`: `GREF` and
+`OPENRAC_GUEST_ORDER`), the runtime and the libraries through
+`openrac_le32` and the `openrac_guest_*` accessors.
 
 The game is run without a window, so a scripted press (`OPENRAC_PRESS`)
 gets it through the boot's memory card warning, as the window's does
