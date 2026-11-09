@@ -46,7 +46,7 @@ __extension__ typedef unsigned __int128 openrac_u128;
  * (locals whose address is taken, string literals). Everything else in the
  * reservation is inaccessible, so a stray access stops with its address. */
 #define GUEST_RAM 0x00000000u
-#define GUEST_RAM_SIZE 0x02000000u /* 32 MB */
+#define GUEST_RAM_SIZE 0x02000000u          /* 32 MB */
 #define GUEST_RAM_EXPANDED_SIZE 0x10000000u /* modded arena for virtual streams */
 #define GUEST_RAM_UNCACHED 0x20000000u
 #define GUEST_RAM_UNCACHED_ACCEL 0x30000000u
@@ -120,12 +120,80 @@ static inline gaddr openrac_guest_ram_address(gaddr address) {
     return openrac_guest_ram_address_for_size(address, openrac_guest_ram_size);
 }
 
-/* The host pointer for a game address, and an lvalue of type T there. */
+/* The host pointer for a game address, and an lvalue of type T there.
+ *
+ * Game memory keeps the console's byte order, little-endian. On a big-endian host built with GCC
+ * (the PS3's toolchain is GCC; Clang has no such feature) the lvalue is a field of a structure
+ * whose scalar storage order is little-endian, so each load and store swaps bytes, and the
+ * translated C declares the game's structures under the matching #pragma (OPENRAC_GUEST_ORDER):
+ * their fields swap the same way. Hand-written C that casts G() to a structure of its own does
+ * not swap unless it declares that structure under the pragma too. */
+#if defined(__GNUC__) && !defined(__clang__) && !defined(__cplusplus)                              \
+    && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define OPENRAC_GUEST_ORDER _Pragma("scalar_storage_order little-endian")
+#define OPENRAC_HOST_ORDER _Pragma("scalar_storage_order default")
+#define G(a) ((void*)(openrac_guest_base + (gaddr)(a)))
+#define GREF(T, a)                                                                                 \
+    (((struct __attribute__((scalar_storage_order("little-endian"))) { T v; }*)G(a))->v)
+#else
+#define OPENRAC_GUEST_ORDER
+#define OPENRAC_HOST_ORDER
 #define G(a) ((void*)(openrac_guest_base + (gaddr)(a)))
 #define GREF(T, a) (*(T*)G(a))
+#endif
 
 /* The game address of a host pointer into game memory. */
 #define GADDR(p) ((gaddr)((const uint8_t*)(p) - openrac_guest_base))
+
+/* A word or halfword between the host's order and game memory's (little-endian): the same bytes
+ * both ways. Host code that copies a word out of game memory, or writes one in, passes it through
+ * these; C++ has no GREF that swaps. */
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+static inline uint32_t openrac_le32(uint32_t word) {
+    return __builtin_bswap32(word);
+}
+
+static inline uint16_t openrac_le16(uint16_t half) {
+    return __builtin_bswap16(half);
+}
+#else
+static inline uint32_t openrac_le32(uint32_t word) {
+    return word;
+}
+
+static inline uint16_t openrac_le16(uint16_t half) {
+    return half;
+}
+#endif
+
+/* The word of game memory at A, and one written there, in the host's order. */
+static inline uint32_t openrac_guest_u32(gaddr a) {
+    uint32_t word;
+    memcpy(&word, G(a), 4);
+    return openrac_le32(word);
+}
+
+static inline void openrac_guest_set_u32(gaddr a, uint32_t value) {
+    const uint32_t word = openrac_le32(value);
+    memcpy(G(a), &word, 4);
+}
+
+/* COUNT 32-bit values (words or floats) copied between game memory at A and host memory, each in
+ * the host's order on the host side. A copy of bytes the host does not read as values (one kept
+ * to be put back, or moved within game memory) stays a memcpy. */
+static inline void openrac_guest_read_words(void* host, gaddr a, size_t count) {
+    uint32_t* out = (uint32_t*)host;
+    for (size_t i = 0; i < count; i++) {
+        out[i] = openrac_guest_u32(a + (gaddr)(i * 4));
+    }
+}
+
+static inline void openrac_guest_write_words(gaddr a, const void* host, size_t count) {
+    const uint32_t* in = (const uint32_t*)host;
+    for (size_t i = 0; i < count; i++) {
+        openrac_guest_set_u32(a + (gaddr)(i * 4), in[i]);
+    }
+}
 
 /* The host compiler does not know that RAM and its uncached aliases are the
  * same memory: a write through one alias and a read through another in the
@@ -160,8 +228,8 @@ static inline void openrac_guest_frame_end(gaddr* saved) {
  * (a copy of a 16-byte point into it), whose fourth word lands in the slot's
  * padding on the console, not in the next local. T is a type name. */
 #define OPENRAC_FRAME_BLK(T)                                                                       \
-    (!((sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8 || sizeof(T) == 16) && \
-       _Alignof(T) >= sizeof(T)))
+    (!((sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8 || sizeof(T) == 16)   \
+       && _Alignof(T) >= sizeof(T)))
 #define OPENRAC_FRAME_ALIGN(T) (OPENRAC_FRAME_BLK(T) ? 16 : _Alignof(T))
 #define OPENRAC_FRAME_SIZE(T) (OPENRAC_FRAME_BLK(T) ? (sizeof(T) + 15) & ~(size_t)15 : sizeof(T))
 
@@ -261,13 +329,16 @@ openrac_host_fn openrac_guest_function_named(const char* name);
 #endif
 #endif
 typedef uint64_t (*openrac_regs_thunk)(const uint64_t* ints, const float* floats, float* result);
+
 typedef struct openrac_thunk_entry {
     openrac_host_fn fn;
     openrac_regs_thunk thunk;
 } openrac_thunk_entry;
+
 void openrac_guest_register_thunks(const openrac_thunk_entry* entries, size_t count);
-uint64_t openrac_guest_call_regs(gaddr address, const uint64_t* ints, const float* floats, float* result,
-                                 int float_result);
+uint64_t openrac_guest_call_regs(
+    gaddr address, const uint64_t* ints, const float* floats, float* result, int float_result
+);
 
 /* Which overlay is loaded, asked at each call through a code address when
  * set: the game knows (rac1 keeps its current level in a global). */
@@ -284,8 +355,9 @@ void openrac_guest_set_overlay_source(int (*current)(void));
  * tables are built when a level's code is first used, by pairing the address
  * operands of each function's executable code with its copy in the level's
  * code (the two differ only in addresses), so nothing of the game is stored. */
-void openrac_guest_set_relocation(gaddr low, gaddr high, gaddr gp, const uint8_t* exe_code,
-                                  gaddr exe_base, uint32_t exe_size);
+void openrac_guest_set_relocation(
+    gaddr low, gaddr high, gaddr gp, const uint8_t* exe_code, gaddr exe_base, uint32_t exe_size
+);
 extern OPENRAC_GUEST_GLOBAL gaddr openrac_relocate_low, openrac_relocate_high;
 /* The executable as its loader placed it before the game ran (load_elf keeps a copy, openrac/elf.h):
  * its bytes in [low, high) copied back into memory; returns how many. For a game that loads its boot
@@ -295,11 +367,13 @@ extern OPENRAC_GUEST_GLOBAL gaddr openrac_relocate_low, openrac_relocate_high;
 uint32_t openrac_guest_restore_executable(gaddr low, gaddr high);
 gaddr openrac_relocate_data(gaddr address);
 gaddr openrac_relocate_code(gaddr address);
+
 static inline gaddr OPENRAC_DATA(gaddr a) {
     return a - openrac_relocate_low < openrac_relocate_high - openrac_relocate_low
                ? openrac_relocate_data(a)
                : a;
 }
+
 static inline gaddr OPENRAC_CODE(gaddr a) {
     return openrac_relocate_high != 0 ? openrac_relocate_code(a) : a;
 }
@@ -318,8 +392,9 @@ gaddr openrac_folded_call(const uint32_t* places, int count, gaddr caller, uint3
  * in the program loaded); `fallback` when it forms none (or its size is not known). The places of a
  * folded wrapper call other functions (rac1's Umbris sea: each class registers its own wrapper of
  * the liquid grid's draw), so the address of the first in the level is not the one retail takes. */
-gaddr openrac_folded_address(const uint32_t* places, int count, gaddr caller, uint32_t size, int k,
-                             gaddr fallback);
+gaddr openrac_folded_address(
+    const uint32_t* places, int count, gaddr caller, uint32_t size, int k, gaddr fallback
+);
 
 /* Level to level: a function several levels' programs carry is written with the addresses of the
  * level its name gives (rac1: func_L05_... has level 5's). OPENRAC_LDATA and OPENRAC_LCODE give
@@ -354,9 +429,11 @@ gaddr openrac_relocate_level_code(int from, gaddr address);
  * not form it, it is OPENRAC_LCODE's. */
 extern OPENRAC_GUEST_GLOBAL gaddr openrac_guest_last_entry;
 extern OPENRAC_GUEST_GLOBAL openrac_host_fn openrac_guest_last_fn;
+
 static inline gaddr openrac_guest_entry(openrac_host_fn self) {
     return openrac_guest_last_fn == self ? openrac_guest_last_entry : 0;
 }
+
 gaddr openrac_code_in_copy(int from, gaddr canon, uint32_t size, gaddr self, gaddr target);
 /* The address of a function taken by name in code written for a level, where the name may stand for
  * several places of that level (a function the catalogue folded: one name for the same small code at
@@ -365,7 +442,9 @@ gaddr openrac_code_in_copy(int from, gaddr canon, uint32_t size, gaddr self, gad
  * the same instructions of the copy at `self` (0: the copy of canon in the program loaded; in level
  * `from`'s own program, canon itself). Retail's Suck Cannon (func_L00_002DB810) skips the mobys whose
  * class function is the leaf next to it, a place of that name. `fallback` where no copy forms one. */
-gaddr openrac_code_formed(int from, gaddr canon, uint32_t size, gaddr self, gaddr target, gaddr fallback);
+gaddr openrac_code_formed(
+    int from, gaddr canon, uint32_t size, gaddr self, gaddr target, gaddr fallback
+);
 /* The same for a global: where the copy at `self` reads or writes what the copy at `canon` does at
  * `target` (folded copies of one function in one program, each on its own globals: a lui and the
  * addiu, ori, load or store that completes it, or such an instruction on $gp for a small global,
@@ -385,7 +464,9 @@ gaddr openrac_call_in_copy(int from, gaddr canon, uint32_t size, gaddr self, gad
  * program) calls that level's function at the same instruction; a k past the code's calls (the
  * compiler merged two of the C's into one jal) is its first. In the executable's own program, or
  * where the copy does not call at that place, it is the stub (OPENRAC_CODE's). */
-gaddr openrac_hook_in_copy(gaddr exe_fn, uint32_t size, int home, gaddr home_fn, gaddr stub, uint32_t k);
+gaddr openrac_hook_in_copy(
+    gaddr exe_fn, uint32_t size, int home, gaddr home_fn, gaddr stub, uint32_t k
+);
 
 /* The EE FPU's divide, for the game's float `/`: no infinities or NaNs. A divisor of zero (or a
  * denormal, which the EE reads as zero) gives +-FLT_MAX with the operands' signs XORed, and a
@@ -417,7 +498,7 @@ static inline int32_t openrac_f2i(double x) {
     if (x > -2147483648.0) {
         return (int32_t)x;
     }
-    return (int32_t)-2147483647 - 1;  /* and a NaN, which the EE never makes */
+    return (int32_t)-2147483647 - 1; /* and a NaN, which the EE never makes */
 }
 
 /* To a 32-bit unsigned int, as the console's compiler wrote it: below 2^31 the signed conversion

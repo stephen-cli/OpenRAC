@@ -417,6 +417,9 @@ class Unit:
             "#include \"openrac/guest.h\"",
             "#include \"game_protos.h\"",
             "",
+            "/* The game's structures keep the console's byte order (guest.h, GREF). */",
+            "OPENRAC_GUEST_ORDER",
+            "",
         ]
         statics_protos = []
         bodies = []

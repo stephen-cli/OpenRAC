@@ -237,7 +237,10 @@ def declare(t: Type, name: str) -> str:
         inner = f"({name})" if name.startswith("*") else name
         return declare(t.ret, f"{inner}({params})")
     quals = " ".join(q for q in ("const", "volatile") if q in t.quals)
-    return f"{quals + ' ' if quals else ''}{t.name}{(' ' + name) if name else ''}"
+    # The console's long double is 8 bytes, a double (the game's vfprintf steps its argument list
+    # by 8 for one); a host's may be 16, and a big-endian GCC has no reversed storage order for it.
+    base = "double" if t.name == "long double" else t.name
+    return f"{quals + ' ' if quals else ''}{base}{(' ' + name) if name else ''}"
 
 
 def fn_pointer(t: Func) -> str:
