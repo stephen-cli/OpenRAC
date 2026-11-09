@@ -24,9 +24,14 @@
 
 namespace openrac::assets {
 
+// OPENRAC_BIG_ENDIAN_TRIAL builds the readers on a big-endian host as they are, reading every
+// multi-byte field reversed: for the boot test of a big-endian build (docs/port/PS3.md), which
+// measures what breaks, not for a game anyone plays.
+#ifndef OPENRAC_BIG_ENDIAN_TRIAL
 static_assert(
     std::endian::native == std::endian::little, "the readers assume a little-endian host"
 );
+#endif
 
 using u8 = std::uint8_t;
 using u16 = std::uint16_t;
