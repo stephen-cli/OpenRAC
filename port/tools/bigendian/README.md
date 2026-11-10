@@ -25,7 +25,7 @@ cmake --preset headless -B build/be-ppc -DOPENRAC_PORT_FAST_BUILD=OFF \
 cmake --build build/be-ppc --target openrac-rac1-pal -- -k 0
 sh tools/bigendian/boot.sh be-x86 1800                                         # extracts the disc first
 sh tools/bigendian/boot.sh be-ppc 1800 qemu-ppc64 -L /usr/powerpc64-linux-gnu
-cmake --build build/be-ppc && (cd build/be-ppc && ctest -j4)                   # the tests, under QEMU
+cmake --build build/be-ppc && (cd build/be-ppc && OPENRAC_SCRIPT_BUDGET_MS=100 ctest -j4)  # the tests, under QEMU
 ```
 
 The build's `-k 0` keeps it going past errors so one build lists every
@@ -39,6 +39,13 @@ write it through GCC's `scalar_storage_order` (`guest.h`: `GREF` and
 through `common/byte_order.h`, which swaps a record field by field. The
 port's tests, run under QEMU with the toolchain file's emulator, are the
 readers' check: they read synthetic data through the same readers.
+QEMU runs the mods' Luau scripts some ten times slower than the host, so the
+tests' scripts need a wider time budget than the game's 2 ms
+(`OPENRAC_SCRIPT_BUDGET_MS`); without it the mod tests report scripts
+over their budget.
+QEMU's PowerPC FPU has no non-IEEE mode either, so `runtime`'s check that
+a denormal is zero to the EE fails under it (FPSCR's NI bit, which the
+Cell honours, is set but ignored): the one expected failure.
 
 The game is run without a window, so a scripted press (`OPENRAC_PRESS`)
 gets it through the boot's memory card warning, as the window's does
