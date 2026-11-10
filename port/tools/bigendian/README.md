@@ -21,25 +21,24 @@ podman build --platform linux/amd64 -t openrac-be port/tools/bigendian
 CC=clang CXX=clang++ cmake --preset headless -B build/be-x86 -DOPENRAC_PORT_FAST_BUILD=OFF
 cmake --build build/be-x86 --target openrac-rac1-pal openrac-extractor
 cmake --preset headless -B build/be-ppc -DOPENRAC_PORT_FAST_BUILD=OFF \
-    -DCMAKE_TOOLCHAIN_FILE=/src/port/tools/bigendian/ppc64be.cmake \
-    -DCMAKE_CXX_FLAGS=-DOPENRAC_BIG_ENDIAN_TRIAL -DCMAKE_C_FLAGS=-DOPENRAC_BIG_ENDIAN_TRIAL
+    -DCMAKE_TOOLCHAIN_FILE=/src/port/tools/bigendian/ppc64be.cmake
 cmake --build build/be-ppc --target openrac-rac1-pal -- -k 0
 sh tools/bigendian/boot.sh be-x86 1800                                         # extracts the disc first
 sh tools/bigendian/boot.sh be-ppc 1800 qemu-ppc64 -L /usr/powerpc64-linux-gnu
+cmake --build build/be-ppc && (cd build/be-ppc && ctest -j4)                   # the tests, under QEMU
 ```
 
-`OPENRAC_BIG_ENDIAN_TRIAL` builds the asset readers (`assets/bytes.h`) on a
-big-endian host with their records copied as they are (a number is read in
-the console's order either way): the build links, and the run shows where
-the game's data is first read the wrong way round. The build's `-k 0`
-keeps it going past errors so one build lists every file that does not
-compile.
+The build's `-k 0` keeps it going past errors so one build lists every
+file that does not compile.
 
 The game's own memory keeps the console's byte order on every host. On
 the big-endian build the translated C and the hand-written C read and
 write it through GCC's `scalar_storage_order` (`guest.h`: `GREF` and
 `OPENRAC_GUEST_ORDER`), the runtime and the libraries through
-`openrac_le32` and the `openrac_guest_*` accessors.
+`openrac_le32` and the `openrac_guest_*` accessors, and the asset readers
+through `common/byte_order.h`, which swaps a record field by field. The
+port's tests, run under QEMU with the toolchain file's emulator, are the
+readers' check: they read synthetic data through the same readers.
 
 The game is run without a window, so a scripted press (`OPENRAC_PRESS`)
 gets it through the boot's memory card warning, as the window's does

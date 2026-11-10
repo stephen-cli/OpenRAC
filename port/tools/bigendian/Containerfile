@@ -1,6 +1,6 @@
 # The big-endian boot test's toolchain (README.md): the port built headless for x86-64 (the baseline, and the
-# extractor) and for 64-bit big-endian PowerPC Linux (Clang generating the code, Debian's cross GCC libraries and
-# binutils), the PowerPC binary run under qemu-user.
+# extractor, with Clang) and for 64-bit big-endian PowerPC Linux (Debian's cross GCC, ppc64be.cmake), the PowerPC
+# binaries run under qemu-user.
 #   podman build --platform linux/amd64 -t openrac-be port/tools/bigendian
 FROM --platform=linux/amd64 docker.io/library/debian:trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \

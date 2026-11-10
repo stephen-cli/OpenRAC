@@ -23,7 +23,7 @@ Nothing is compiled on the console.
 
 | | The port today | The PS3 | Work |
 |---|---|---|---|
-| Byte order | little-endian everywhere: the console's data in game memory, the asset readers, the renderer's packet readers (`port/game/common/mod_scripts.cpp`: "little-endian, as the console and every host of the port") | the Cell's PPU is big-endian | the largest item (section 3); done for the headless game (section 6) |
+| Byte order | little-endian everywhere: the console's data in game memory, the asset readers, the renderer's packet readers (`port/game/common/mod_scripts.cpp`: "little-endian, as the console and every host of the port") | the Cell's PPU is big-endian | the largest item (section 3); done for the headless game and the asset readers (section 6); the C++ that reads game memory through host pointers remains |
 | Game memory | one 4 GB reservation whose offsets are the console's addresses, the uncached and accelerated ranges mapped as views of the same RAM (`port/runtime/memory.cpp`) | a 32-bit address space, 256 MB of main RAM, no reservation without backing | regions packed into a small allocation; `G()` folds the aliases by masking; the 256 MB expanded arena (mods) left out |
 | Textures | converted to RGBA8, several times the console's 4- and 8-bit size | 256 MB of video RAM | measure a level's textures; keep palettised textures if needed |
 | Renderer | OpenGL 4.1 core, OpenGL ES 3.2 or Vulkan; GLSL 4.10 | RSX, a GeForce 7-class GPU: Shader Model 3, no compute; homebrew draws through PSL1GHT's RSX library with Cg programs compiled ahead of time | a new backend and every shader written again; reversed depth checked against the RSX's depth formats |
@@ -150,7 +150,8 @@ Clang:
   engine's command words through `openrac_le32`.
 - **The asset readers** read a number in the console's order whatever the
   host's (`ByteView::read`, `ByteWriter::put`); a record of several fields
-  is still copied as its bytes are, under `OPENRAC_BIG_ENDIAN_TRIAL`.
+  was still copied as its bytes are, under `OPENRAC_BIG_ENDIAN_TRIAL`
+  (lifted the next day, below).
 
 With that, the big-endian build (101 MB, GCC 14, `-mcpu=cell`) under QEMU
 passes the card warning, skips the movies, loads both sound banks (10 and
@@ -160,13 +161,57 @@ two reached functions without C as the x86-64 run: its log and its state
 file are the baseline's, line for line, in 31 s. The
 x86-64 build's own state is unchanged by the work, and its 143 tests pass.
 
+### The asset readers' records (2026-11-10)
+
+The readers copy a record (a level header, a moby class header, a
+tie's or a tfrag's) as its bytes are and convert it whole through
+`common/byte_order.h`: `from_little_endian()` swaps a number, an array
+element by element and an aggregate record field by field, through
+nesting, and is its own inverse, so a writer uses it too. C++20 has no
+reflection, so a record's fields are found by testing which aggregate
+initialisations compile (`field_count()`) and bound with a structured
+binding of that many names, generated for 0 to 40 fields
+(`byte_order_fields.h`, from `tools/gen_byte_order_fields.py`). A
+record's arrays must be `std::array` (a C array member elides its braces
+and is counted element by element). The guard in `assets/bytes.h` and
+`OPENRAC_BIG_ENDIAN_TRIAL` are gone: `read<T>`, `read_array<T>` and
+`put<T>` convert for any host.
+
+Besides the readers' `read<T>` calls, about a dozen sites copied a number
+or a record with `memcpy` in the host's order (the WAD size, the title
+world's index, the overlay's, the save game's and the fonts' code words,
+the gameplay and camera fixups, a shrub packet's quadword records, an
+animation's quaternion lanes, a replaced sound's offset), as did the
+tests' synthetic data writers; they convert now.
+
+The readers' check on big-endian is the port's test suite under QEMU
+(the headless build has no renderer, so `--check-levels` is not
+available to it): every test that reads synthetic data through the
+readers passes on big-endian PowerPC as on x86-64. The GCC build's boot
+run is unchanged: the same state as x86-64 at frame 1800, line for line.
+Of the 144 tests, 12 fail on big-endian, in two groups outside the
+readers:
+
+- **C++ and tests that read game memory through host pointers**
+  (`runtime`, `ship_destination`, `mod_scripts`, `mod_boundary`,
+  `graph_dma`, `hero_animation`, `effect_quad`, `world_menu`,
+  `particle53`, and the test-side writers of `moby_fade`, `moby_shadow`,
+  `shrub_proc` and `viewer`): the same work the hand-written C had,
+  through `openrac_guest_*` or `GREF`. The NTSC game's `water.c` took
+  the address of a swapped byte and clears through `G()` now, as the PAL
+  game's host C does; the other games' host C has not been built for
+  big-endian yet.
+- **The lighting probes' float packing** (`lighting_probes`,
+  `lighting_probe_atlas`, `lighting_probe_decode`): the port's own data,
+  packed with host-order bit casts.
+
 ## 7. Next steps
 
-1. The asset readers' records (about forty `read<Record>` and
-   `read_array<Record>` calls), read field by field, and the guard in
-   `bytes.h` lifted; then the headless run with a renderer's data
-   (`--check-levels`, the extracted levels) on big-endian.
+1. The remaining big-endian test failures: the C++ reading game memory
+   through host pointers, and the probes' packing (section 6).
 2. The toolchain: ps3toolchain's GCC 13.2 in the container instead of the
    7.2 prebuilt, and the port's runtime compiled with it against PSL1GHT.
 3. The memory layout for 256 MB (section 2).
-4. The renderer backend, once the game runs headless on the console.
+4. The renderer backend, once the game runs headless on the console; the
+   extracted levels through the readers on big-endian (`--check-levels`)
+   come with it.
