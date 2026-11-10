@@ -27,7 +27,7 @@ Nothing is compiled on the console.
 | Game memory | one 4 GB reservation whose offsets are the console's addresses, the uncached and accelerated ranges mapped as views of the same RAM (`port/runtime/memory.cpp`) | a 32-bit address space, 256 MB of main RAM, no reservation without backing | regions packed into a small allocation; `G()` folds the aliases by masking; the 256 MB expanded arena (mods) left out |
 | Textures | converted to RGBA8, several times the console's 4- and 8-bit size | 256 MB of video RAM | measure a level's textures; keep palettised textures if needed |
 | Renderer | OpenGL 4.1 core, OpenGL ES 3.2 or Vulkan; GLSL 4.10 | RSX, a GeForce 7-class GPU: Shader Model 3, no compute; homebrew draws through PSL1GHT's RSX library with Cg programs compiled ahead of time | a new backend and every shader written again; reversed depth checked against the RSX's depth formats |
-| Toolchain | C++20, CMake, SDL3 | PSL1GHT and its GCC, older than C++20 support needs (version to confirm); no SDL3 | the port's C++ on the toolchain's standard, or a newer GCC for PSL1GHT; pads, sound, files and the display on PSL1GHT's libraries |
+| Toolchain | C++20, CMake, SDL3 | ps3toolchain's GCC 13.2 compiles C++20, but its libstdc++ has no threads and its newlib (1.20, 2012) no fenv and no C99 names in std (section 6); no SDL3 | the toolchain's libraries rebuilt for the port; pads, sound, files and the display on PSL1GHT's libraries |
 | CPU | modern out-of-order cores | the PPU, in order, 3.2 GHz; six SPUs | unmeasured; the Collection shows the game's code fits the Cell |
 
 ## 3. Byte order
@@ -222,10 +222,38 @@ flushed), to be confirmed on the console. With that one check excepted,
 the big-endian build passes the suite, 143 of 144, and the boot run's
 state is x86-64's.
 
+### The toolchain (2026-11-10)
+
+[port/tools/ps3](../../port/tools/ps3/README.md): a container with
+ps3toolchain's 2026-10-11 nightly (GCC 13.2.0 for the PPU, where the
+editions builder's image has 7.2), PSL1GHT and ps3libraries at pinned
+commits, a CMake toolchain file (`ppu.cmake`, PSL1GHT's `ppu_rules`
+flags, `__lv2ppu__` the platform test) and a `ps3` preset without the
+games, the window and the enhanced rendering. The port's common library
+and runtime took the console as a platform: no signals, unwinder, loader,
+`mmap` or `/proc`, so the crash reporter captures no backtrace, no fault
+handler is installed, the process statistics are zero, and game memory
+is main RAM alone until section 2's layout.
+
+The compiler compiles C++20; its libraries do not take the port's. GCC's
+thread model is `single` (libstdc++ built without gthreads, before
+PSL1GHT's pthread existed in ps3toolchain's order), so there is no
+`std::thread`, `std::mutex` or `std::condition_variable`; and newlib is
+1.20.0 of 2012, without `<fenv.h>` and with its C99 names hidden from
+`-std=c++20` and absent from `std::`, which `<string>` and `<format>`
+reach, so no unit of the port compiles as the toolchain ships. The
+measurements and the two routes are in the README: a toolchain of the
+port's own from ps3toolchain's scripts (a current newlib, libstdc++
+configured after PSL1GHT with posix threads; GCC and its PS3 patch as
+they are), or a layer of the port's own, which cannot reach the
+libstdc++ configuration and so is not enough alone.
+
 ## 7. Next steps
 
-1. The toolchain: ps3toolchain's GCC 13.2 in the container instead of the
-   7.2 prebuilt, and the port's runtime compiled with it against PSL1GHT.
+1. The toolchain's libraries (section 6): a current newlib and a
+   libstdc++ with posix threads over PSL1GHT's pthread, built from
+   ps3toolchain's scripts in the port's container; then the runtime and
+   the common library against PSL1GHT.
 2. The memory layout for 256 MB (section 2).
 3. The renderer backend, once the game runs headless on the console; the
    extracted levels through the readers on big-endian (`--check-levels`)
