@@ -235,26 +235,39 @@ and runtime took the console as a platform: no signals, unwinder, loader,
 handler is installed, the process statistics are zero, and game memory
 is main RAM alone until section 2's layout.
 
-The compiler compiles C++20; its libraries do not take the port's. GCC's
-thread model is `single` (libstdc++ built without gthreads, before
-PSL1GHT's pthread existed in ps3toolchain's order), so there is no
-`std::thread`, `std::mutex` or `std::condition_variable`; and newlib is
-1.20.0 of 2012, without `<fenv.h>` and with its C99 names hidden from
-`-std=c++20` and absent from `std::`, which `<string>` and `<format>`
-reach, so no unit of the port compiles as the toolchain ships. The
-measurements and the two routes are in the README: a toolchain of the
-port's own from ps3toolchain's scripts (a current newlib, libstdc++
-configured after PSL1GHT with posix threads; GCC and its PS3 patch as
-they are), or a layer of the port's own, which cannot reach the
-libstdc++ configuration and so is not enough alone.
+The compiler compiles C++20; its libraries, as ps3toolchain ships them,
+did not take the port's. GCC's thread model was `single` (libstdc++
+built without gthreads, before PSL1GHT's pthread existed in
+ps3toolchain's order), so there was no `std::thread`, `std::mutex` or
+`std::condition_variable`; and newlib was 1.20.0 of 2012, without
+`<fenv.h>` and with its C99 names hidden from `-std=c++20` and absent
+from `std::`, which `<string>` and `<format>` reach, so no unit of the
+port compiled.
+
+So the toolchain's libraries are built for the port (the README's
+"Route 1", `toolchain.sh`, the next day): newlib 4.6 from devkitPro's
+fork with the console's pieces carried over from ps3toolchain's 2012
+patch (its configuration, `__getreent` per thread, `dirent`, the
+`__syscalls` table PSL1GHT's librt fills, newlib's retargetable locks
+over lv2's mutexes), GCC 13.2 again on it with posix threads over
+pthreads-embedded (whose headers get C++ linkage and whose struct
+`pthread_t` gets the comparisons `std::thread::id` needs), one fix to
+the compiler (its backend chose out-of-line register saves the target's
+libgcc does not have), the system call glue built by hand, and PSL1GHT
+again on the new C library. What PSL1GHT still expects of newlib 1.20
+(`struct stat`'s layout, `fd_set`, `MAXPATHLEN`, the `_DEFUN` macros) is
+kept for the console. With that, `ppu-g++` reports the posix thread
+model, a C++20 program with threads and `std::format` links, and the
+port's common library and runtime build and archive for the console
+with the `ps3` preset: the first of the port's code compiled for the
+PS3.
 
 ## 7. Next steps
 
-1. The toolchain's libraries (section 6): a current newlib and a
-   libstdc++ with posix threads over PSL1GHT's pthread, built from
-   ps3toolchain's scripts in the port's container; then the runtime and
-   the common library against PSL1GHT.
-2. The memory layout for 256 MB (section 2).
+1. The headless game program for the console: the PAL game's translated
+   C, the mods (Luau) and `main.cpp` built with the `ps3` preset and
+   linked against PSL1GHT, then run under RPCS3 to the first disc read.
+2. The memory layout for 256 MB (section 2), which that run needs.
 3. The renderer backend, once the game runs headless on the console; the
    extracted levels through the readers on big-endian (`--check-levels`)
    come with it.
