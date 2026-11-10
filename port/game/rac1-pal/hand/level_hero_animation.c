@@ -120,14 +120,14 @@ void func_L00_00232EF0(void) {
                 *(int*)(g + 0xAB8) = 0;
                 *(float*)(g + 0xA94) = restart_rate;
                 r->fraction = 0.0f;
-                r->next_key = g[0xAB4];
+                r->next_key = (unsigned char)*(int*)(g + 0xAB4);  /* the word's low byte */
                 r->next_key_data = hero_anim_key(r, r->next_key);
                 hero_anim_restart();
                 hero_anim_rebind();
             } else if (*(int*)(g + 0xAB0) != -1 && *(int*)(g + 0xAB4) < r->next_key) {
                 *(float*)(g + 0xA94) = 0.33333334f;
                 r->fraction = 0.0f;
-                r->next_key = g[0xAB0];
+                r->next_key = (unsigned char)*(int*)(g + 0xAB0);
                 r->next_key_data = hero_anim_key(r, r->next_key);
                 hero_anim_rebind();
             } else {

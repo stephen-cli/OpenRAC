@@ -110,7 +110,7 @@ void func_0020D678__game(gaddr moby) {
 /* The menu's own update: what it does to the camera block (initialize_pause_menu's camera). */
 static void put_menu_camera(void) {
     const float menu[3] = {256.0f, 256.0f, 64.0f};
-    memcpy(G(OPENRAC_DATA(CAMERA_POSITION)), menu, sizeof menu);
+    openrac_guest_write_words(OPENRAC_DATA(CAMERA_POSITION), menu, 3);
 }
 
 /* The menu's update: on its first tick (initialize_pause_menu) its camera, the collision queries
@@ -214,7 +214,7 @@ int main(void) {
     GREF(gaddr, ALT_PLACED_END) = MENU_ARRAY + 4u * MOBY_SIZE;
     GREF(int, CONTEXT) = 0;
     const float level[3] = {132.3f, 112.4f, 34.6f};
-    memcpy(G(OPENRAC_DATA(CAMERA_POSITION)), level, sizeof level);
+    openrac_guest_write_words(OPENRAC_DATA(CAMERA_POSITION), level, 3);
     GREF(uint32_t, COLL_STAMP) = 1000u;
 
     /* Alone, the pause menu runs no level: the collision queries stay off as it turned them. */
@@ -223,7 +223,7 @@ int main(void) {
     CHECK(GREF(uint32_t, COLL_STAMP) == (1000u | COLL_OFF));
     func_L00_00235FF8(0);
     GREF(uint32_t, COLL_STAMP) &= ~COLL_OFF; /* close_pause_menu */
-    memcpy(G(OPENRAC_DATA(CAMERA_POSITION)), level, sizeof level);
+    openrac_guest_write_words(OPENRAC_DATA(CAMERA_POSITION), level, 3);
     rac1_world_keep_running(1);
 
     /* In play: the level's camera. */
@@ -277,7 +277,7 @@ int main(void) {
     GREF(uint32_t, COLL_STAMP) &= ~COLL_OFF;
     func_001FD3E8();
     CHECK(queries_off == 0 && (GREF(uint32_t, COLL_STAMP) & COLL_OFF) == 0);
-    memcpy(G(OPENRAC_DATA(CAMERA_POSITION)), level, sizeof level);
+    openrac_guest_write_words(OPENRAC_DATA(CAMERA_POSITION), level, 3);
     CHECK(rac1_world_camera_position(at));
     CHECK(memcmp(at, level, sizeof at) == 0);
 

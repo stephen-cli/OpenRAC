@@ -1673,8 +1673,7 @@ gaddr search_pair(gaddr address, int overlay) {
             for (std::size_t p = 0; p + length <= n && matches < 2; ++p) {
                 std::size_t k = 0;
                 for (; k < length; ++k) {
-                    std::uint32_t lw;
-                    std::memcpy(&lw, c.bytes.data() + (p + k) * 4, 4);
+                    const std::uint32_t lw = word_at(c.bytes.data() + (p + k) * 4);
                     if (without_addresses(lw) != pattern[k]) {
                         break;
                     }
@@ -2146,8 +2145,7 @@ static gaddr call_in_copy(int from, gaddr canon, uint32_t size, gaddr self, gadd
     for (std::uint32_t i = 0; i * 4 < size; ++i) {
         const std::uint32_t w = canon_word(canon + i * 4);
         if ((w >> 26) == 3 && ((w & 0x03FFFFFFu) << 2) == (target & 0x0FFFFFFFu)) {
-            std::uint32_t mine;
-            std::memcpy(&mine, G(self + i * 4), 4);
+            const std::uint32_t mine = word_at(G(self + i * 4));
             if ((mine >> 26) == 3) {
                 result = (self & 0xF0000000u) | ((mine & 0x03FFFFFFu) << 2);
             }
@@ -2191,8 +2189,7 @@ static gaddr hook_in_copy(
         if ((w >> 26) != 3 || ((w & 0x03FFFFFFu) << 2) != (stub & 0x0FFFFFFFu)) {
             continue;
         }
-        std::uint32_t mine;
-        std::memcpy(&mine, G(self + i * 4), 4);
+        const std::uint32_t mine = word_at(G(self + i * 4));
         const gaddr target = (mine >> 26) == 3 ? (self & 0xF0000000u) | ((mine & 0x03FFFFFFu) << 2) : fallback;
         if (seen == 0) {
             first = target;

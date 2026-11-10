@@ -39,9 +39,8 @@ void func_001F7EF8(gaddr a0, int a1, int a2) {
         return;
     }
     (void)a2;
-    const uint8_t* r = G(a0);
     openrac_game_quad q;
-    memcpy(q.corner, r, sizeof(q.corner));
+    openrac_guest_read_words(q.corner, a0, sizeof(q.corner) / 4);
     if (a1 != 0) {
         float m[16];
         openrac_guest_read_words(m, (gaddr)a1, sizeof(m) / 4);
@@ -52,12 +51,12 @@ void func_001F7EF8(gaddr a0, int a1, int a2) {
             }
         }
     }
-    memcpy(q.rgba, r + 0x40, sizeof(q.rgba));
-    memcpy(q.st, r + 0x50, sizeof(q.st));
-    memcpy(&q.clamp, r + 0x70, 8);
-    memcpy(&q.tex0, r + 0x78, 8);
-    memcpy(&q.tex1, r + 0x80, 8);
-    memcpy(&q.alpha, r + 0x88, 8);
+    openrac_guest_read_words(q.rgba, a0 + 0x40u, sizeof(q.rgba) / 4);
+    openrac_guest_read_words(q.st, a0 + 0x50u, sizeof(q.st) / 4);
+    q.clamp = GREF(uint64_t, a0 + 0x70u);
+    q.tex0 = GREF(uint64_t, a0 + 0x78u);
+    q.tex1 = GREF(uint64_t, a0 + 0x80u);
+    q.alpha = GREF(uint64_t, a0 + 0x88u);
     q.pixels = 0;
     q.clut = 0;
     q.id = rac1_effect_quad_id != 0 ? rac1_effect_quad_id++ : 0;

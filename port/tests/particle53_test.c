@@ -39,9 +39,14 @@ static void reset(int initial,int remaining) {
 static void run(void) {
     unsigned char before[sizeof particle]; memcpy(before,particle,sizeof particle);
     func_L00_00273090((char *)particle);
-    /* Only the retail update fields may change. */
+    /* Only the retail update fields may change: the top byte of the word at 4 (byte 7 on a
+     * little-endian host, 4 on a big-endian one; the test runs the C in the host's order). */
+    const unsigned one = 1;
+    const unsigned top = *(const unsigned char*)&one ? 7 : 4;
     for(unsigned i=0;i<sizeof particle;++i) {
-        if(i==7 || i==8 || (i>=0xA && i<0x1C) || (i>=0x34 && i<0x38)) continue;
+        if (i == top || i == 8 || (i >= 0xA && i < 0x1C) || (i >= 0x34 && i < 0x38)) {
+            continue;
+        }
         CHECK(particle[i]==before[i]);
     }
     CHECK((U(4)&0xFFFFFF)==0x123456 && U(0)==0x12345678);

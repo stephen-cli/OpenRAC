@@ -178,6 +178,18 @@ static inline void openrac_guest_set_u32(gaddr a, uint32_t value) {
     memcpy(G(a), &word, 4);
 }
 
+/* The 16-bit value of game memory at A, and one written there, in the host's order. */
+static inline uint16_t openrac_guest_u16(gaddr a) {
+    uint16_t half;
+    memcpy(&half, G(a), 2);
+    return openrac_le16(half);
+}
+
+static inline void openrac_guest_set_u16(gaddr a, uint16_t value) {
+    const uint16_t half = openrac_le16(value);
+    memcpy(G(a), &half, 2);
+}
+
 /* COUNT 32-bit values (words or floats) copied between game memory at A and host memory, each in
  * the host's order on the host side. A copy of bytes the host does not read as values (one kept
  * to be put back, or moved within game memory) stays a memcpy. */

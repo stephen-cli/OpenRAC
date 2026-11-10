@@ -696,12 +696,22 @@ void func_001FD3E8(void) {
 
 /* The camera: the level's, also while the pause menu's is up (its camera at 256,256,64 is no
  * place in the level), as the run list and the drawing take it under the menu. */
+/* The position in the held camera block, which is kept as the console's bytes. */
+static void held_camera_position(float out[3]) {
+    for (int i = 0; i < 3; i++) {
+        uint32_t word;
+        memcpy(&word, level_view.camera + 0x140 + 4 * i, 4);
+        word = openrac_le32(word);
+        memcpy(&out[i], &word, 4);
+    }
+}
+
 int rac1_world_camera_position(float out[3]) {
     if (!in_level()) {
         return 0;
     }
     if (!main_context() && level_view.load == rac1_program_loads()) {
-        memcpy(out, level_view.camera + 0x140, 3 * sizeof(float));
+        held_camera_position(out);
     } else {
         openrac_guest_read_words(out, OPENRAC_DATA(CAMERA_POSITION), 3);
     }
@@ -724,7 +734,7 @@ int rac1_world_moby_run(int32_t slot, openrac_game_moby_run* out) {
     out->menu_ticks = menu_runs.load == load ? menu_runs.ticks : 0;
     out->menu = menu_runs.load == load ? menu_runs.last : 0;
     if (level_view.load == load) {
-        memcpy(out->level_camera, level_view.camera + 0x140, sizeof out->level_camera);
+        held_camera_position(out->level_camera);
     }
     out->level_mode = GREF(int, LEVEL_MODE);
     out->context = main_context() ? 0 : 1;

@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include "common/byte_order.h"
 #include "enhanced/lighting/environment.h"
 #if OPENRAC_PROBE_COMPRESSION
 #include <astcenc.h>
@@ -269,6 +270,7 @@ void validate_raw(std::span<const std::uint8_t> bytes) {
     for (std::size_t offset = 0; offset < bytes.size(); offset += 4) {
         std::uint32_t pixel = 0;
         std::memcpy(&pixel, bytes.data() + offset, 4);
+        pixel = byte_order::from_little_endian(pixel);  // the words are stored little-endian
 
         // Exponent 31 denotes infinity or NaN in each unsigned packed channel.
         if (((pixel >> 6) & 31) == 31 || ((pixel >> 17) & 31) == 31 || (pixel >> 27) == 31) {
@@ -292,6 +294,7 @@ std::vector<Float3> decode_probe_texture(
         for (std::size_t i = 0; i < result.size(); ++i) {
             std::uint32_t pixel = 0;
             std::memcpy(&pixel, bytes.data() + i * 4, 4);
+            pixel = byte_order::from_little_endian(pixel);
 
             // Exponent 31 denotes a nonfinite unsigned-float channel.
             if (((pixel >> 6) & 31) == 31 || ((pixel >> 17) & 31) == 31 || (pixel >> 27) == 31) {

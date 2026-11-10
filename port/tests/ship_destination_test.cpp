@@ -58,49 +58,49 @@ int main() {
     func_L00_00290030(1);
     CHECK(vanilla_calls == 1 && requested == -1);
     openrac_game_destination_count = 2;
-    GREF(gaddr, 0x001602E0) = old_indices;
-    GREF(gaddr, 0x001D5F74) = page;
-    GREF(gaddr, page + 0x40) = menu;
+    openrac_guest_set_u32(0x001602E0, old_indices);
+    openrac_guest_set_u32(0x001D5F74, page);
+    openrac_guest_set_u32(page + 0x40, menu);
     for (int i = 1; i < 19; ++i) {
-        GREF(int, 0x0013D618 + (i - 1) * 4) = i;
-        GREF(short, 0x001DE0C0 + i * 12) = static_cast<short>(20000 + i);
+        openrac_guest_set_u32(0x0013D618 + (i - 1) * 4, i);
+        openrac_guest_set_u16(0x001DE0C0 + i * 12, static_cast<uint16_t>(20000 + i));
     }
     func_00222848(menu);
-    const gaddr rows = GREF(gaddr, menu + 0x34);
+    const gaddr rows = openrac_guest_u32(menu + 0x34);
     CHECK(rows != 0x001D6648);
-    CHECK(GREF(short, rows + 18 * 12) == 0x7B00);
-    CHECK(GREF(short, rows + 19 * 12) == 0x7B01);
-    CHECK(GREF(short, rows + 20 * 12) == 0);
+    CHECK(static_cast<short>(openrac_guest_u16(rows + 18 * 12)) == 0x7B00);
+    CHECK(static_cast<short>(openrac_guest_u16(rows + 19 * 12)) == 0x7B01);
+    CHECK(static_cast<short>(openrac_guest_u16(rows + 20 * 12)) == 0);
     CHECK(std::strcmp(static_cast<char*>(G(rac1_ship_destination_text(0x7B00))), "Harbor") == 0);
     CHECK(rac1_ship_destination_text(20001) == 0);
-    GREF(int, menu + 0x40) = 18;
-    GREF(int, 0x0013CC04) = 0x40;
+    openrac_guest_set_u32(menu + 0x40, 18);
+    openrac_guest_set_u32(0x0013CC04, 0x40);
     func_0021BB90(menu);
     func_L00_00290030(1);
     CHECK(mount == 0 && requested == 1);  // logical 19 never reaches the guest loader
-    CHECK(GREF(gaddr, 0x001602E0) == old_indices);
+    CHECK(openrac_guest_u32(0x001602E0) == old_indices);
     func_00222848(menu);
-    GREF(int, menu + 0x40) = 19;
+    openrac_guest_set_u32(menu + 0x40, 19);
     func_0021BB90(menu);
     func_L00_00290030(1);
     CHECK(mount == 1 && requested == 1);  // destination 20 shares code, not its world, with 19
     CHECK(std::strcmp(static_cast<char*>(G(rac1_ship_destination_text(0x7B01))), "Arena") == 0);
     func_00222848(menu);
-    GREF(int, menu + 0x40) = 0;
+    openrac_guest_set_u32(menu + 0x40, 0);
     func_0021BB90(menu);
     func_L00_00290030(1);
     CHECK(mount == -1 && requested == 1);  // same template, different world
     func_L00_00290030(2);
     CHECK(vanilla_calls == 2);  // ordinary planet-to-planet travel keeps its original code
-    CHECK(GREF(int, 0x0013D618) == 1);
-    CHECK(GREF(int, 0x0013D618 + 18 * 4) == 0);
+    CHECK(static_cast<int>(openrac_guest_u32(0x0013D618)) == 1);
+    CHECK(static_cast<int>(openrac_guest_u32(0x0013D618 + 18 * 4)) == 0);
     func_00222848(menu);
-    GREF(int, menu + 0x40) = 18;
-    GREF(gaddr, page + 0x40) = 0;  // an unfocused list cannot request a map
+    openrac_guest_set_u32(menu + 0x40, 18);
+    openrac_guest_set_u32(page + 0x40, 0);  // an unfocused list cannot request a map
     func_0021BB90(menu);
     func_L00_00290030(1);
     CHECK(vanilla_calls == 3 && mount == -1);
-    GREF(gaddr, page + 0x40) = menu;
+    openrac_guest_set_u32(page + 0x40, menu);
     func_0021BB90(menu);
     result = -1;  // cancelling must discard a previously selected custom destination
     func_0021BB90(menu);

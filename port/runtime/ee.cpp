@@ -42,6 +42,9 @@ extern "C" void openrac_ee_float_mode(int round_nearest, int keep_denormals) {
     __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
     fpcr |= std::uint64_t{1} << 24;  // FZ: denormal inputs and results are zero
     __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr));
+#elif defined(__powerpc__) || defined(__PPC__)
+    // Non-IEEE mode (FPSCR bit NI, 29): the PPU flushes denormal inputs and results to zero.
+    __asm__ __volatile__("mtfsb1 29");
 #endif
 }
 

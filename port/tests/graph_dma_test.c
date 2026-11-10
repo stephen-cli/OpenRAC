@@ -31,14 +31,16 @@ static void *test_guest(gaddr address) {
 #define G(address) test_guest((gaddr)(address))
 #include "../game/common/lib/graph.c"
 
+/* The registers are game memory, in the console's order. */
 static uint32_t word(const uint8_t *bank, gaddr address) {
     uint32_t value;
     memcpy(&value, bank + address - FIRST_CHANNEL, sizeof value);
-    return value;
+    return openrac_le32(value);
 }
 
 static void set_word(uint8_t *bank, gaddr address, uint32_t value) {
-    memcpy(bank + address - FIRST_CHANNEL, &value, sizeof value);
+    const uint32_t stored = openrac_le32(value);
+    memcpy(bank + address - FIRST_CHANNEL, &stored, sizeof stored);
 }
 
 void openrac_game_dma_send(gaddr channel, gaddr tag) {

@@ -11,6 +11,14 @@ gaddr openrac_relocate_data(gaddr a) { return a+0x100000; }
 static openrac_game_quad captured;
 static int submitted;
 void openrac_game_effect_quad(const openrac_game_quad* q) { captured=*q; ++submitted; }
+/* The record at `at` as the game lays it out: words, then the four 64-bit registers. */
+static void put_quad(gaddr at, const openrac_game_quad* q) {
+    openrac_guest_write_words(at, q->corner, 0x70 / 4);
+    GREF(uint64_t, at + 0x70u) = q->clamp;
+    GREF(uint64_t, at + 0x78u) = q->tex0;
+    GREF(uint64_t, at + 0x80u) = q->tex1;
+    GREF(uint64_t, at + 0x88u) = q->alpha;
+}
 int main(void) {
     openrac_game_quad input={0};
     float matrix[16]={2,0,0,0, 0,3,0,0, 0,0,4,0, 7,11,13,1};
@@ -22,7 +30,10 @@ int main(void) {
     input.tex0=0x8123456000000123ULL;
     input.clamp=0x1122334455667788ULL; input.tex1=0xFF9000000260ULL;
     input.alpha=0x8000000049ULL;
-    memcpy(ram+0x1000,&input,0x90); memcpy(ram+0x2000,matrix,sizeof(matrix));
+    put_quad(0x1000, &input);
+    openrac_guest_write_words(0x2000, matrix, 16);
+    unsigned char image[0x90];
+    memcpy(image, ram + 0x1000, 0x90); /* the record's bytes */
     GREF(int,0x25F558)=1;
     GREF(uint16_t,0x28D14E)=(uint16_t)(input.tex0&0x3FFF);
     GREF(uint16_t,0x28D146)=(uint16_t)((input.tex0>>37)&0x3FFF);
@@ -45,10 +56,11 @@ int main(void) {
         CHECK(captured.corner[k][3]==input.corner[k][3]);
     }
     CHECK(!memcmp(captured.rgba,input.rgba,0x50));
-    CHECK(!memcmp(ram+0x1000,&input,0x90));
+    CHECK(!memcmp(ram + 0x1000, image, 0x90));
     func_001F7EF8(0x1000,0,0);
     CHECK(submitted==3 && !memcmp(&input,&captured,0x90));
-    input.tex0=0x5678; memcpy(ram+0x1000,&input,0x90);
+    input.tex0 = 0x5678;
+    put_quad(0x1000, &input);
     func_L00_001FD1D8(0x1000,0,0);
     CHECK(submitted == 4 && captured.pixels == 0 && captured.clut == 0 && captured.source == 0);
     puts("effect quad: OK"); return 0;

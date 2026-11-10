@@ -26,10 +26,10 @@ static inline uint32_t openrac_effect_texture(
     const uint32_t tbp = (uint32_t)(tex0 & 0x3FFF);
     const uint32_t cbp = (uint32_t)((tex0 >> 37) & 0x3FFF);
     for (int i = 0; i < count && i < 64; ++i) {
-        const uint8_t* r = (const uint8_t*)G(records + (gaddr)i * 16);
-        if (*(const uint16_t*)(r + 0xE) == tbp && *(const uint16_t*)(r + 6) == cbp) {
-            *clut = *(const uint32_t*)(r + 0);
-            *pixels = *(const uint32_t*)(r + 8);
+        const gaddr r = records + (gaddr)i * 16;
+        if (GREF(uint16_t, r + 0xEu) == tbp && GREF(uint16_t, r + 6u) == cbp) {
+            *clut = GREF(uint32_t, r);
+            *pixels = GREF(uint32_t, r + 8u);
             for (int k = 0; k < 256; ++k) {
                 if (known[k].tex0 == tex0) {
                     known[k].pixels = *pixels;

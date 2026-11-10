@@ -62,7 +62,7 @@ void frames_and_strings() {
     CHECK(frame == inside);
     CHECK(frame % 16 == 0);
     CHECK(frame < before && frame >= GUEST_STACK_BOTTOM);
-    CHECK(GREF(int, frame + 4) == 7);
+    CHECK(openrac_guest_u32(frame + 4) == 7);  // written by C, whose GREF has the console's order
     CHECK(openrac_guest_sp == before);  // given back on return
 
     const gaddr s = test_string();
@@ -86,7 +86,7 @@ void guest_allocation_generation() {
 void snapshots_keep_new_guest_allocations() {
     Memory& memory = Memory::get();
     const gaddr old_static = openrac_guest_static(16);
-    *static_cast<std::uint32_t*>(G(old_static)) = 0x12345678u;
+    openrac_guest_set_u32(old_static, 0x12345678u);
     const char old_text[] = "savestate-before-transition";
     const gaddr old_string = openrac_guest_string(old_text, sizeof(old_text));
     openrac_guest_allocation_state allocations{};
@@ -98,7 +98,7 @@ void snapshots_keep_new_guest_allocations() {
     CHECK(memory.save_snapshot(snapshot));
 
     GREF(std::uint32_t, ram_word) = 0xDEADBEEFu;
-    *static_cast<std::uint32_t*>(G(old_static)) = 0x0BADF00Du;
+    openrac_guest_set_u32(old_static, 0x0BADF00Du);
     const gaddr new_static = openrac_guest_static(24);
     std::memset(G(new_static), 0x5A, 24);
     const char new_text[] = "savestate-after-transition";
@@ -106,7 +106,7 @@ void snapshots_keep_new_guest_allocations() {
 
     CHECK(memory.restore_snapshot(snapshot, allocations));
     CHECK(GREF(std::uint32_t, ram_word) == 0xAABBCCDDu);
-    CHECK(*static_cast<std::uint32_t*>(G(old_static)) == 0x12345678u);
+    CHECK(openrac_guest_u32(old_static) == 0x12345678u);
     CHECK(std::strcmp(static_cast<const char*>(G(old_string)), old_text) == 0);
     CHECK(std::strcmp(static_cast<const char*>(G(new_string)), new_text) == 0);
     for (unsigned i = 0; i < 24; ++i) {
@@ -244,15 +244,15 @@ void code_in_copy_jal() {
     const auto jal = [](gaddr target) { return 0x0C000000u | ((target & 0x0FFFFFFFu) >> 2); };
     const std::uint32_t canon[] = {0x27BDFFF0u, jal(0x00310000u), 0, 0x03E00008u};
     const std::uint32_t self[] = {0x27BDFFF0u, jal(0x00330000u), 0, 0x03E00008u};
-    std::memcpy(G(0x00300000u), canon, sizeof canon);
-    std::memcpy(G(0x00320000u), self, sizeof self);
+    openrac_guest_write_words(0x00300000u, canon, std::size(canon));
+    openrac_guest_write_words(0x00320000u, self, std::size(self));
     openrac_guest_set_overlay(5);
     CHECK(openrac_code_in_copy(5, 0x00300000u, sizeof canon, 0x00320000u, 0x00310000u) == 0x00330000u);
     // Formed with lui and addiu, the address is read from the copy's own pair, as before.
     const std::uint32_t formed[] = {0x3C040031u, 0x24840010u, jal(0x00310010u), 0};
     const std::uint32_t own[] = {0x3C040034u, 0x24840020u, jal(0x00340020u), 0};
-    std::memcpy(G(0x00300100u), formed, sizeof formed);
-    std::memcpy(G(0x00320100u), own, sizeof own);
+    openrac_guest_write_words(0x00300100u, formed, std::size(formed));
+    openrac_guest_write_words(0x00320100u, own, std::size(own));
     CHECK(openrac_code_in_copy(5, 0x00300100u, sizeof formed, 0x00320100u, 0x00310010u) == 0x00340020u);
     openrac_guest_set_overlay(OPENRAC_OVERLAY_EXE);
 }
@@ -264,7 +264,7 @@ void folded_address() {
     // lui a0, 0x0035; jal register; addiu a0, a0, -0x7FF0 (0x00348010): the level 5 wrapper at
     // 0x00348010, not the first place 0x00340000. Then a second address, with ori: 0x00350020.
     const std::uint32_t code[] = {0x3C040035u, jal(0x00310000u), 0x24848010u, 0x3C050035u, 0x34A50020u, 0x03E00008u};
-    std::memcpy(G(0x00360000u), code, sizeof code);
+    openrac_guest_write_words(0x00360000u, code, std::size(code));
     const std::uint32_t places[] = {0x01200000u, 0x06340000u, 0x06348010u, 0x06350020u, 0x07340000u};
     openrac_guest_set_overlay(5);
     CHECK(openrac_folded_address(places, 5, 0x00360000u, sizeof code, 0, 0x00340000u) == 0x00348010u);
@@ -273,6 +273,15 @@ void folded_address() {
     CHECK(openrac_folded_address(places, 5, 0x00360000u, sizeof code, 2, 0x00340000u) == 0x00340000u);
     CHECK(openrac_folded_address(places, 5, 0x00360000u, 0, 0, 0x00340000u) == 0x00340000u);
     openrac_guest_set_overlay(OPENRAC_OVERLAY_EXE);
+}
+
+// Words of a program's code stored at `at` as the console's bytes, as a loaded program is.
+template <std::size_t N>
+void program_words(std::uint8_t* at, const std::uint32_t (&words)[N]) {
+    for (std::size_t i = 0; i < N; ++i) {
+        const std::uint32_t stored = openrac_le32(words[i]);
+        std::memcpy(at + i * 4, &stored, 4);
+    }
 }
 
 int folded_measure(int a) {
@@ -290,14 +299,14 @@ int font_printer(int a) {
 // copies were registered or are kept in.
 void relocation_with_folded_copies() {
     const auto words = [](gaddr at, std::initializer_list<std::uint32_t> w) {
-        std::memcpy(G(at), w.begin(), w.size() * 4);
+        openrac_guest_write_words(at, w.begin(), w.size());
     };
     // Executable: the measurer at 0x104000 and the printer at 0x104100, both forming 0x150000.
     std::vector<std::uint8_t> exe(0x200, 0);
     const std::uint32_t measure[] = {0x3C040015u, 0x24840000u, 0x03E00008u, 0};
     const std::uint32_t print[] = {0x3C060015u, 0x24C60000u, 0x03E00008u, 0};
-    std::memcpy(exe.data(), measure, sizeof measure);
-    std::memcpy(exe.data() + 0x100, print, sizeof print);
+    program_words(exe.data(), measure);
+    program_words(exe.data() + 0x100, print);
     // The level: the three measurer copies on 0x160000, 0x160200 and 0x160100 (the regular one's
     // table at 0x160000, the others' after it), the printer's copy on 0x160000.
     words(0x00180000u, {0x3C040016u, 0x24840000u, 0x03E00008u, 0});
@@ -343,15 +352,15 @@ int debris_spawn(int a) {
 // though the loop comes first (openrac_guest_set_level_range: Going Commando's rules).
 void relocation_end_pointer_gives_way() {
     const auto words = [](gaddr at, std::initializer_list<std::uint32_t> w) {
-        std::memcpy(G(at), w.begin(), w.size() * 4);
+        openrac_guest_write_words(at, w.begin(), w.size());
     };
     // Executable: the loop at 0x108000 (lui $s0; addiu $s0; addiu $s1, $s0, 0x100: the end) and the
     // spawner at 0x108100, naming 0x150100 itself.
     std::vector<std::uint8_t> exe(0x200, 0);
     const std::uint32_t loop[] = {0x3C100015u, 0x26100000u, 0x26110100u, 0x03E00008u, 0};
     const std::uint32_t spawn[] = {0x3C040015u, 0x24840100u, 0x03E00008u, 0};
-    std::memcpy(exe.data(), loop, sizeof loop);
-    std::memcpy(exe.data() + 0x100, spawn, sizeof spawn);
+    program_words(exe.data(), loop);
+    program_words(exe.data() + 0x100, spawn);
     // The level: the records at 0x160000 to 0x160100, another block, the debris at 0x160200.
     words(0x00190000u, {0x3C100016u, 0x26100000u, 0x26110100u, 0x03E00008u, 0});
     words(0x00190100u, {0x3C040016u, 0x24840200u, 0x03E00008u, 0});
