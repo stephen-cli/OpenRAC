@@ -59,6 +59,19 @@
         "ANDROID_STL": "c++_shared",
         "OPENRAC_PORT_LTO": "ON"
       }
+    },
+    {
+      "name": "ps3",
+      "displayName": "PlayStation 3 (PSL1GHT) with the ps3dev toolchain at $PS3DEV (tools/ps3/README.md)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/tools/ps3/ppu.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "OPENRAC_PORT_WINDOW": "OFF",
+        "OPENRAC_PORT_GAMES": "OFF",
+        "OPENRAC_ENHANCED_RENDERING": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -67,7 +80,8 @@
     {"name": "standalone", "configurePreset": "standalone"},
     {"name": "debug", "configurePreset": "debug"},
     {"name": "headless", "configurePreset": "headless"},
-    {"name": "android-arm64", "configurePreset": "android-arm64"}
+    {"name": "android-arm64", "configurePreset": "android-arm64"},
+    {"name": "ps3", "configurePreset": "ps3"}
   ],
   "testPresets": [
     {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},

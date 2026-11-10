@@ -20,6 +20,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#elif defined(__lv2ppu__)
+#include <cstdlib>
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -64,6 +66,8 @@ std::uint32_t page_size() {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     return info.dwAllocationGranularity;  // views and placeholders split at 64 KB
+#elif defined(__lv2ppu__)
+    return 0x10000;  // lv2's smallest page
 #else
     return static_cast<std::uint32_t>(sysconf(_SC_PAGESIZE));
 #endif
@@ -182,6 +186,22 @@ void Memory::map_all() {
     aliases_ = false;
     log::warn("this Windows has no memory placeholders (before 10 1803): uncached RAM addresses "
               "are not mapped");
+}
+
+#elif defined(__lv2ppu__)
+
+// The PS3 has no 4 GB reservation to offer (docs/port/PS3.md, section 2): the regions are to
+// be packed into a small allocation, with G() folding the addresses. Until then, main RAM
+// alone is allocated, at address 0 of game memory as the reservation had it, so that the
+// runtime builds for the console; the registers, the scratchpad and the GS are not mapped.
+void Memory::map_all() {
+    static_assert(GUEST_RAM == 0, "main RAM is game memory's first region");
+    base_ = static_cast<std::uint8_t*>(std::aligned_alloc(page_size(), ram_size_));
+    if (base_ == nullptr) {
+        log::fatal("could not allocate game RAM");
+    }
+    aliases_ = false;
+    log::warn("game memory is main RAM alone: the other regions are not mapped yet (PS3.md)");
 }
 
 #else  // POSIX

@@ -33,12 +33,15 @@
 
 #include <sys/stat.h>
 #else
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <sys/stat.h>
+#if !defined(__lv2ppu__)
 #include <dlfcn.h>
 #include <execinfo.h>
-#include <fcntl.h>
 #include <signal.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#endif
 #endif
 
 namespace openrac::crash {
@@ -286,6 +289,8 @@ void capture() {
     g_breadcrumb_count = breadcrumbs().snapshot(g_breadcrumbs);
 #if defined(_WIN32)
     g_frame_count = CaptureStackBackTrace(0, 62, g_frames, nullptr);
+#elif defined(__lv2ppu__)
+    g_frame_count = 0;  // the console's libc has no unwinder
 #else
     g_frame_count = backtrace(g_frames, 64);
 #endif
@@ -300,6 +305,9 @@ const void* module_base(const void* address) {
         return module;
     }
     return nullptr;
+#elif defined(__lv2ppu__)
+    (void)address;
+    return nullptr;  // one program, no libraries
 #else
     Dl_info info{};
     return dladdr(address, &info) != 0 ? info.dli_fbase : nullptr;
@@ -369,6 +377,8 @@ void write_backtrace(Out& out) {
         out.text(t);
     }
     out.flush();
+#elif defined(__lv2ppu__)
+    (void)frames;  // no frames were captured
 #else
     const int count = g_frame_count;
     for (int i = 0; i < out.count(); ++i) {
@@ -611,6 +621,8 @@ void configure(const std::filesystem::path& folder, const std::string& program, 
 #if defined(_WIN32)
     symbols::initialize();
     g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleA(nullptr));
+#elif defined(__lv2ppu__)
+    // Nothing to prepare: no unwinder, and the program's addresses are its symbols'.
 #else
     // The first backtrace() loads what it unwinds with (glibc: libgcc_s), which allocates: here,
     // not in the handler.
@@ -624,7 +636,7 @@ void configure(const std::filesystem::path& folder, const std::string& program, 
 }
 
 void prepare_thread() {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__lv2ppu__)
     thread_local bool done = false;
     if (done) {
         return;

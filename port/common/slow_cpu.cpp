@@ -24,7 +24,7 @@ thread_local double t_unpadded = 0.0;
 
 // This thread's processor time in seconds, or a negative value when it cannot be read.
 double thread_seconds() {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__lv2ppu__)
     return -1.0;
 #else
     timespec now{};

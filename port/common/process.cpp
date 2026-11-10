@@ -16,6 +16,8 @@
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <sys/resource.h>
+#elif defined(__lv2ppu__)
+// The console: lv2 keeps a process's memory and times to itself.
 #else
 #include <cstdio>
 #include <sys/resource.h>
@@ -42,6 +44,8 @@ ProcessMemory process_memory() {
         m.footprint = info.phys_footprint;
         m.peak = info.resident_size_peak;
     }
+#elif defined(__lv2ppu__)
+    // Nothing to read.
 #else
     // /proc/self/statm: sizes in pages; the second is the resident set.
     if (std::FILE* f = std::fopen("/proc/self/statm", "r")) {
@@ -69,6 +73,8 @@ double process_cpu_seconds() {
         return (static_cast<unsigned long long>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
     };
     return static_cast<double>(ticks(kernel) + ticks(user)) * 1.0e-7;  // 100 ns units
+#elif defined(__lv2ppu__)
+    return 0.0;
 #else
     struct rusage usage {};
     if (getrusage(RUSAGE_SELF, &usage) != 0) {

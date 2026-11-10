@@ -38,11 +38,17 @@ include_guard(GLOBAL)
 # MATH.
 function(_openrac_add_test_program subject default_source sources includes definitions libs
          lang_options math)
+  # The PS3 build (tools/ps3) has no host to run a test on: its test programs are registered, so
+  # that the port's CMake reads as on every host, but not built with the rest.
+  set(exclude "")
+  if(OPENRAC_PS3)
+    set(exclude EXCLUDE_FROM_ALL)
+  endif()
   set(target "${subject}_test")
   if(NOT sources)
     set(sources "${default_source}")
   endif()
-  add_executable(${target} ${sources})
+  add_executable(${target} ${exclude} ${sources})
   if(includes)
     target_include_directories(${target} PRIVATE ${includes})
   endif()

@@ -16,6 +16,8 @@
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
+#elif defined(__lv2ppu__)
+// The console: PSL1GHT's newlib has no uname or sysinfo; what the port knows is written in.
 #else
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
@@ -44,7 +46,7 @@ std::string sysctl_text(const char* name) {
 }
 #endif
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__lv2ppu__)
 std::string uname_text() {
     utsname u{};
     if (uname(&u) != 0) {
@@ -124,6 +126,8 @@ std::string os() {
     const std::string device = property("ro.product.manufacturer") + " " + property("ro.product.model");
     return std::format("Android {} (API {}, {}; {})", property("ro.build.version.release"),
                        property("ro.build.version.sdk"), device, uname_text());
+#elif defined(__lv2ppu__)
+    return "PlayStation 3 (PSL1GHT)";
 #else
     std::string name = file_value("/etc/os-release", "PRETTY_NAME", '=');
     if (name.empty()) {
@@ -144,6 +148,8 @@ std::string cpu() {
     }
 #elif defined(__APPLE__)
     name = sysctl_text("machdep.cpu.brand_string");
+#elif defined(__lv2ppu__)
+    name = "Cell Broadband Engine PPU";
 #else
 #if defined(__ANDROID__)
     // The chip, where Android names it (12 on): "QTI SM8650".
@@ -184,6 +190,8 @@ std::string memory() {
     if (sysctlbyname("hw.memsize", &bytes, &size, nullptr, 0) == 0) {
         return gigabytes(bytes);
     }
+#elif defined(__lv2ppu__)
+    return "256 MB (the console's main memory)";
 #else
     struct sysinfo s{};
     if (sysinfo(&s) == 0) {

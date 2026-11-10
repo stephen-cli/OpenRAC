@@ -22,7 +22,7 @@
 #define NOMINMAX
 #include <csignal>
 #include <windows.h>
-#else
+#elif !defined(__lv2ppu__)
 #include <csignal>
 #include <cstring>
 #include <dlfcn.h>
@@ -133,7 +133,7 @@ void on_abort(int) {
     report(nullptr, "the program aborted (abort)", crash::Kind::Signal);
 }
 
-#else
+#elif !defined(__lv2ppu__)
 
 // OPENRAC_GUARD (guard_writes): the guarded range and the pages it lies in, read-only while armed.
 gaddr g_guard_low = 0, g_guard_high = 0;
@@ -306,7 +306,7 @@ void on_fault(int sig, siginfo_t* info, void*) {
 }  // namespace
 
 void rearm_soft_faults() {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__lv2ppu__)
     const auto size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
 
     while (g_soft_open_count > 0) {
@@ -316,7 +316,7 @@ void rearm_soft_faults() {
 }
 
 const SoftFault* soft_fault_at(unsigned index) {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__lv2ppu__)
     return index < g_soft_fault_count ? &g_soft_faults[index] : nullptr;
 #else
     (void)index;
@@ -325,7 +325,7 @@ const SoftFault* soft_fault_at(unsigned index) {
 }
 
 void guard_writes(gaddr address, std::uint32_t bytes, std::uint32_t skip) {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__lv2ppu__)
     const auto page = static_cast<std::uintptr_t>(sysconf(_SC_PAGESIZE));
     const auto first = reinterpret_cast<std::uintptr_t>(openrac_guest_base + address) & ~(page - 1);
     const auto last =
@@ -364,6 +364,9 @@ void install_crash_handler() {
     AddVectoredExceptionHandler(1, on_exception);
     SetUnhandledExceptionFilter(on_unhandled);
     std::signal(SIGABRT, on_abort);
+#elif defined(__lv2ppu__)
+    // The console delivers no signals to a program: a fault ends it, and lv2's own report is
+    // what there is of one.
 #else
     crash::prepare_thread();
     g_soft_faults_on = env::flag(env::Var::SoftFaults);

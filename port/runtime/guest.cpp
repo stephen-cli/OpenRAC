@@ -27,7 +27,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#else
+#elif !defined(__lv2ppu__)
 #include <execinfo.h>
 #endif
 
@@ -860,7 +860,7 @@ void openrac_guest_missing(const char* name) {
         for (unsigned i = 0; i < count; ++i) {
             std::fprintf(stderr, "%p\n", frames[i]);
         }
-#else
+#elif !defined(__lv2ppu__)
         const int count = backtrace(frames, 16);
         backtrace_symbols_fd(frames, count, 2);
 #endif
@@ -1034,7 +1034,7 @@ void openrac_host_caller(int depth, char* text, size_t size) {
     } else {
         std::snprintf(text, size, "%p", frames[0]);
     }
-#else
+#elif !defined(__lv2ppu__)
     if (backtrace(frames, want + 1) <= want) {
         return;
     }

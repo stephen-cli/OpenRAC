@@ -6,6 +6,7 @@
 
 #include "common/json.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <format>
 #include <fstream>
