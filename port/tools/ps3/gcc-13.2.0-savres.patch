@@ -1,0 +1,26 @@
+The PS3 target (powerpc64-ps3-elf, ps3toolchain's patch) builds libgcc without the out-of-line
+register save and restore routines (_savegpr0_*, _savefpr_*, _savevr_*: libgcc's t-savresfgpr is
+not in its configuration), yet the backend may still choose them for a function it optimises for
+size, as an ELF target; it then stops with an internal error in rs6000_savres_routine_name, whose
+assertion knows that AIX-ABI targets other than Linux and FreeBSD have no such routines (newlib
+4.6's vfprintf and vfscanf reached it). The strategy keeps every save in line on such a target.
+Applied on top of ps3toolchain's gcc-13.2.0-PS3.patch (OpenRAC, port/tools/ps3/toolchain.sh).
+
+--- a/gcc/config/rs6000/rs6000-logue.cc
++++ b/gcc/config/rs6000/rs6000-logue.cc
+@@ -382,6 +382,15 @@
+       strategy |= SAVE_INLINE_VRS | REST_INLINE_VRS;
+     }
+
++  /* OpenRAC: no out-of-line save and restore routines in libgcc for an AIX-ABI target that is
++     not Linux or FreeBSD (powerpc64-ps3-elf), as rs6000_savres_routine_name asserts.  */
++#if !defined (POWERPC_LINUX) && !defined (POWERPC_FREEBSD)
++  if (DEFAULT_ABI == ABI_AIX || DEFAULT_ABI == ABI_ELFv2)
++    strategy |= (SAVE_INLINE_FPRS | REST_INLINE_FPRS
++		 | SAVE_INLINE_GPRS | REST_INLINE_GPRS
++		 | SAVE_INLINE_VRS | REST_INLINE_VRS);
++#endif
++
+   /* Don't bother to try to save things out-of-line if r11 is occupied
+      by the static chain.  It would require too much fiddling and the
+      static chain is rarely used anyway.  FPRs are saved w.r.t the stack

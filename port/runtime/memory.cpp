@@ -196,7 +196,8 @@ void Memory::map_all() {
 // runtime builds for the console; the registers, the scratchpad and the GS are not mapped.
 void Memory::map_all() {
     static_assert(GUEST_RAM == 0, "main RAM is game memory's first region");
-    base_ = static_cast<std::uint8_t*>(std::aligned_alloc(page_size(), ram_size_));
+    // newlib declares aligned_alloc in C, not in std (libstdc++ was built without it).
+    base_ = static_cast<std::uint8_t*>(::aligned_alloc(page_size(), ram_size_));
     if (base_ == nullptr) {
         log::fatal("could not allocate game RAM");
     }

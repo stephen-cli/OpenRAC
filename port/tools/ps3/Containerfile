@@ -1,6 +1,8 @@
 # The PS3 toolchain for the port (README.md): ps3dev's layout with ps3toolchain's prebuilt nightly (GCC
-# 13.2 for the Cell's PPU and SPU, newlib, C++20) and PSL1GHT and ps3libraries built from source, at pinned
-# commits, on Ubuntu 24.04 (the prebuilt toolchain needs its glibc). Build with podman or docker:
+# 13.2 for the Cell's PPU and SPU) and PSL1GHT and ps3libraries built from source, at pinned commits, on Ubuntu
+# 24.04 (the prebuilt toolchain needs its glibc); then the libraries built for the port over it (toolchain.sh:
+# newlib 4.6 with the console's pieces, GCC again with posix threads over pthreads-embedded, the system call
+# glue, PSL1GHT again). Build with podman or docker, in two to three hours:
 #
 #   podman build -t openrac-ps3 port/tools/ps3
 #
@@ -30,5 +32,11 @@ RUN git clone https://github.com/ps3dev/ps3dev.git /opt/ps3dev \
     && PINNED_TOOLCHAIN_RELEASE=$TOOLCHAIN_RELEASE PSL1GHT_REF=$PSL1GHT_COMMIT \
        PS3LIBRARIES_REF=$PS3LIBRARIES_COMMIT ./build-all.sh \
     && rm -rf /opt/ps3dev/build
+
+# The libraries for the port (README.md, "Route 1"); the sources and build trees are removed after.
+COPY toolchain.sh newlib-lv2.py gcc-13.2.0-savres.patch /opt/openrac-ps3/
+COPY newlib-lv2 /opt/openrac-ps3/newlib-lv2
+RUN PSL1GHT_REF=$PSL1GHT_COMMIT PS3LIBRARIES_REF=$PS3LIBRARIES_COMMIT bash /opt/openrac-ps3/toolchain.sh \
+    && rm -rf /opt/openrac-toolchain /opt/ps3dev/build
 
 WORKDIR /src

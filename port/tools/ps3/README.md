@@ -9,7 +9,7 @@ games, the renderer and the window come after (section 7's order).
 ## The container
 
 ```sh
-podman build -t openrac-ps3 port/tools/ps3        # 30 to 40 minutes: PSL1GHT and ps3libraries from source
+podman build -t openrac-ps3 port/tools/ps3        # two to three hours: ps3dev, then the port's libraries
 ```
 
 `Containerfile` takes ps3dev's layout at a pinned commit, with the
@@ -26,7 +26,7 @@ local Debian tags may be i386.
 ```sh
 podman run --rm -it -v "$PWD:/src" -w /src/port openrac-ps3
 cmake --preset ps3                                # tools/ps3/ppu.cmake, no games, no window
-cmake --build build/ps3 --target openrac_runtime -- -k 0   # does not build yet: see below
+cmake --build build/ps3 --target openrac_common openrac_runtime
 ```
 
 `ppu.cmake` is the CMake toolchain file: `ppu-gcc` and `ppu-g++` from
@@ -89,3 +89,79 @@ section 7):
    BC decoders) would need the same, and `std::format` and `std::string`
    would still not compile without the libstdc++ configuration, so this
    route is not enough on its own.
+
+## Route 1: the toolchain's libraries, built for the port
+
+`toolchain.sh`, run inside the openrac-ps3 container, builds over
+ps3toolchain's prebuilt compiler:
+
+1. **newlib 4.6**, devkitPro's fork at a pinned commit (it carries the
+   PowerPC `fenv` and the C99 names in `std`), with the console's pieces
+   put in by `newlib-lv2.py` from `newlib-lv2/`: the host configuration
+   of `powerpc64-ps3-elf` (`configure.host`), the reentrancy structure
+   from a function per thread and malloc's 16-byte alignment
+   (`sys/config.h`), 64-bit file offsets (`machine/_types.h`), and the
+   `dirent`, `utime` and `__syscalls` headers, with newlib's `libc/syscalls`
+   wrappers (the plain `open`, `write` and the rest over the reentrant
+   ones). newlib's own pthread types and POSIX thread feature macros are
+   left out for the console (its pthread is pthreads-embedded's), and
+   devkitPro's Wii headers in its PowerPC machine directory (`sys/lock.h`,
+   `sys/stdio.h`, `sys/dirent.h`) are dropped for newlib's generic ones
+   with retargetable locks. What PSL1GHT's headers and sources still take
+   from newlib 1.20 is kept for the console: `struct stat` with `time_t`
+   fields (its file system structure names fields `st_atime`, which 4.6's
+   macros would rewrite), `fd_set`, `NFDBITS` and `howmany` in
+   `sys/types.h`, `MAXPATHLEN` from `unistd.h`, the declaration macros
+   `_DEFUN` and `_AND` in `_ansi.h`, and `sys/select.h` left to PSL1GHT's
+   own. Nothing touches newlib's `configure.ac` or `Makefile.am`, so no
+   autotools run.
+2. **GCC 13.2 again on it**, ps3toolchain's step with
+   `--enable-threads=posix` (its bare `--enable-threads` leaves this
+   target on the single model), newlib's retargetable locks, and
+   newlib's own libm in place of mathfp; and one fix to the compiler
+   (`gcc-13.2.0-savres.patch`): the target's libgcc has no out-of-line
+   register save routines, yet the backend chose them for a function
+   optimised for size and stopped with an internal error (newlib 4.6's
+   vfprintf), so every save stays in line. pthreads-embedded's headers
+   (`pthread.h`, `pte_types.h`, `sched.h`, `semaphore.h`, which
+   ps3libraries installs into `ppu/include`) are copied in beside the
+   in-tree newlib headers, so that libstdc++'s `gthr-posix.h` and libgcc
+   are built against the pthread the console has. Those headers have no
+   C++ linkage of their own (a C++ include got mangled names), so each is
+   wrapped in `extern "C"` around the original, renamed `*.pte.h`; and
+   pthreads-embedded's `pthread_t` is a struct (a pointer and a reuse
+   count), which libstdc++ compares as a scalar in `std::thread::id`'s
+   `==`, `<` and `<=>`, so the wrapper of `pthread.h` defines those for
+   it in C++.
+3. **libsysbase**, the system call glue (`newlib-lv2/sysbase`,
+   `make install`): newlib's `_open_r` and the rest over the
+   `__syscalls` table that PSL1GHT's librt fills, `__getreent` in
+   thread-local storage, `realpath`, and newlib's retargetable locks over
+   lv2's lightweight mutexes (`retarget_lock.c`: newlib's named locks,
+   created on first use under one meta lock). The sources are
+   ps3toolchain's `libgloss/libsysbase` and `libc/sys/lv2` for newlib
+   1.20, with the declaration macros that newlib dropped since given
+   back by `ansi_compat.h`; GCC's link spec for the target names the
+   library (`-lsysbase -lc -lrt -llv2`).
+4. **PSL1GHT again**, on the new C library, and of ps3libraries zlib and
+   pthreads-embedded only (ps3dev's stages 2 and 3, `PS3LIBRARIES_STAGES`):
+   the other forty are old ports (libunrar, polarssl) that do not compile
+   against newlib 4.6, and the port has no use for them.
+
+`Containerfile` runs the script as its second step, so `podman build`
+gives the whole toolchain; while a step is being worked on, the script
+runs by hand in a container of the first step's image and resumes (each
+step is skipped when its result is there), the container started again
+after a fix (`podman start -a`), and snapshotted with `podman commit`
+when a probe needs its state. A change to `configure.host` needs
+newlib's build directory under the GCC build removed, so that it
+configures again; a change to a newlib header needs `make clean` there,
+as GCC's build runs without dependency tracking.
+
+**Result (2026-11-11):** `ppu-g++ -v` reports `Thread model: posix` and
+newlib 4.6.0; a C++20 program with `std::thread`, `std::mutex`,
+`std::condition_variable` and `std::format` links; and the port's
+common library and runtime build and archive for the console with the
+`ps3` preset (`libopenrac_common.a`, `libopenrac_runtime.a`), the first
+of the port's code to compile for the PS3. The game programs, the mods
+and the renderer come next (docs/port/PS3.md, section 7).
