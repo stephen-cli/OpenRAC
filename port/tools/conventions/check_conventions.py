@@ -26,8 +26,10 @@ Three kinds of rule (CODING_CONVENTIONS.md, "What the machines check"):
   The port's C is on its way into games/ and the gate for it is the one above.
 
 Scope: every C and C++ file git tracks (or is about to add) under port/, except a game's
-hand C (port/game/*/hand/), build trees and generated files (a "Do not edit" in the first two
-lines). Prints `path:line: rule: message` and exits 1 when a gating rule fails.
+hand C (port/game/*/hand/), the vendored sources VENDORED names (another project's code as
+taken, credited in THIRD_PARTY_NOTICES.md), build trees and generated files (a "Do not edit"
+in the first two lines). Prints `path:line: rule: message` and exits 1 when a gating rule
+fails.
 """
 import argparse
 import os
@@ -107,6 +109,12 @@ class Finding:
         return f"{self.path}:{self.line}: {self.rule}{kind}: {self.message}"
 
 
+# Another project's sources kept as taken (THIRD_PARTY_NOTICES.md), in their own style.
+VENDORED = (
+    "port/tools/ps3/newlib-lv2/",  # ps3toolchain's C library glue for the PS3
+)
+
+
 def in_scope(path):
     """True for a port C or C++ file the conventions cover (a repository-relative path)."""
     if not path.startswith("port/") or not path.endswith(SOURCE_SUFFIXES):
@@ -115,6 +123,9 @@ def in_scope(path):
 
     # A game's hand C follows the games' style: it is on its way into games/.
     if len(parts) > 3 and parts[1] == "game" and parts[3] == "hand":
+        return False
+
+    if path.startswith(VENDORED):
         return False
 
     # Build trees and fetched dependencies are not the port's source.

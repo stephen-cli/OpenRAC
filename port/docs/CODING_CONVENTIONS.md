@@ -69,6 +69,7 @@ count.
 | The port's own C | the C contracts (`port/runtime/include/openrac/`, `port/game/common/include/openrac/`), `port/game/common/lib/*.c`, `port/game/*/host/*.c`, `port/tests/*.c`, `port/android/compat/` | sections 5, 6, 7, 8 (C names), 14, 15, 23: layout, comments, documentation, the C boundary, per-game tables, licence lines. Not the C++-only rules |
 | A game's hand C | `port/game/*/hand/` | not this page: it is the game's C on its way into `games/` ([LAYOUT.md](../../docs/LAYOUT.md)) and keeps the decompilation's style |
 | Generated C | hostgen's output in build trees, `port/game/rac1/script_binding.c` | not this page: change the generator, never the output |
+| Vendored sources | `port/tools/ps3/newlib-lv2/` (ps3toolchain's C library glue for the PS3, [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)) | not this page: another project's code as taken, in its style, so that its upstream can be followed |
 | The decompilations | `games/` | never edited from port work |
 | Python | `port/tools/` | the repository's Python habits: licence lines (23.1), a module docstring with the usage, `unittest` tests beside the tool |
 | The mod SDK | `sdk/include/` | its own rules ([MODS.md](../../docs/port/MODS.md)): `openrac_mod.h` is a C ABI, `mod.hpp` a C++17 layer compiled into mods |

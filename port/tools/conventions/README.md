@@ -29,8 +29,9 @@ that gates fails. An advisory is printed with `(advisory)` and does not fail.
 
 In scope: every C and C++ file under `port/` that git tracks or would add,
 except a game's hand C (`port/game/*/hand/`, which keeps the decompilation's
-style), build trees and generated files (a "Do not edit" in their first two
-lines). A `.h` is C++ when its code opens a namespace; the C contracts are the
+style), the vendored sources the checker's `VENDORED` names
+(`port/tools/ps3/newlib-lv2/`, another project's code as taken), build trees
+and generated files (a "Do not edit" in their first two lines). A `.h` is C++ when its code opens a namespace; the C contracts are the
 headers of `port/runtime/include/openrac/` and
 `port/game/common/include/openrac/` that do not.
 

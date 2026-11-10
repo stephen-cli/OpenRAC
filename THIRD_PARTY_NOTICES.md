@@ -240,6 +240,21 @@ pointer) follow OpenGOAL's renderer as
 [docs/port/OPENGOAL_NOTES.md](docs/port/OPENGOAL_NOTES.md) describes it; no
 code from OpenGOAL or from any emulator is in the port.
 
+## The PS3 toolchain
+
+The port's PS3 toolchain ([port/tools/ps3](port/tools/ps3/README.md)) is built
+in a container from these, at pinned commits; of them, only ps3toolchain's C
+library glue is copied into OpenRAC (`port/tools/ps3/newlib-lv2/`, kept as
+taken, in its own style):
+
+| Project | Version | License | Used as |
+|---|---|---|---|
+| [ps3toolchain](https://github.com/ps3dev/ps3toolchain) | nightly 2026-10-11 (master de85d7d) | BSD-2-Clause | the compiler for the PPU and SPU (its GCC and binutils patches), and its `newlib-1.20.0-PS3.patch`'s `libgloss/libsysbase` and `libc/sys/lv2` sources, carried in `port/tools/ps3/newlib-lv2/` (`sysbase/`, `include/sys/`) and built as the console's system call glue against newlib 4.6 |
+| [newlib](https://sourceware.org/newlib/), [devkitPro's fork](https://github.com/devkitPro/newlib) | 4.6.0 (branch devkitPro, 57bd8e1) | newlib's licences (its `COPYING.NEWLIB`, a collection of BSD-style notices) | the C library, its headers amended for the console by `port/tools/ps3/newlib-lv2.py` |
+| [GCC](https://gcc.gnu.org/) | 13.2.0 | GPL-3.0-or-later with the GCC Runtime Library Exception | the compiler, with ps3toolchain's patch and OpenRAC's `port/tools/ps3/gcc-13.2.0-savres.patch` |
+| [ps3dev](https://github.com/ps3dev/ps3dev), [PSL1GHT](https://github.com/ps3dev/PSL1GHT), [ps3libraries](https://github.com/ps3dev/ps3libraries) | ae86d7c, dd4e8c9, f671e11 | their own (PSL1GHT: MIT; ps3libraries: each library's) | the console's runtime, start files and libraries; of ps3libraries, zlib and pthreads-embedded |
+| pthreads-embedded (ps3libraries' `pthread-emb-ps3`) | as ps3libraries pins it | LGPL-2.1-or-later (Copyright (C) 2008 Jason Schmidlapp; from Pthreads-win32, Copyright (C) 1998 John E. Bossom, 1999-2005 Pthreads-win32 contributors) | the pthread libstdc++'s threads are built over; its headers are wrapped for C++ linkage by `toolchain.sh`, the originals kept beside them |
+
 ## Tracy
 
 Optional development builds (`OPENRAC_TRACY=ON`) link the Tracy profiler client,
