@@ -111,7 +111,7 @@ void game_FUN_L01_002b7fe0(gaddr tiles, int count) {
     /* All three buffers must be flat, including pre-existing waves when toggled on.
      * Keep the tile metadata, UV scrolling and draw callback active. */
     for (int i = 0; i < count; ++i) {
-        memset(&GREF(unsigned char, tiles + (unsigned)i * 0x1190u + 0x50u), 0, 3u * 0x5C0u);
+        memset(G(tiles + (unsigned)i * 0x1190u + 0x50u), 0, 3u * 0x5C0u);
     }
 }
 

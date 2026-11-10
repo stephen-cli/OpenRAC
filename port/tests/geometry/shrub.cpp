@@ -14,6 +14,7 @@
 #include <cstring>
 
 #include "assets/geometry/tfrag.h"
+#include "common/byte_order.h"
 #include "tests/check.h"
 
 using namespace openrac::assets;
@@ -33,7 +34,8 @@ bool throws(F&& f) {
 
 template <typename T>
 void append(std::vector<u8>& v, const T& value) {
-    const auto* p = reinterpret_cast<const u8*>(&value);
+    const T stored = openrac::byte_order::from_little_endian(value);
+    const auto* p = reinterpret_cast<const u8*>(&stored);
     v.insert(v.end(), p, p + sizeof(T));
 }
 
@@ -53,7 +55,8 @@ ShrubGifTag tag(u32 nloop, bool eop, u64 prim, s32 slot) {
 
 ShrubAdGifs adgif(s32 slot, s32 tex) {
     ShrubAdGifs a;
-    std::memcpy(a.tex1.pad.data() + 3, &slot, 4);
+    const s32 stored = openrac::byte_order::from_little_endian(slot);
+    std::memcpy(a.tex1.pad.data() + 3, &stored, 4);
     a.tex0.data_lo = tex;
     return a;
 }
@@ -250,7 +253,7 @@ void malformed() {
     }));
     // ...but not where nothing was written.
     std::vector<u8> bad = sample();
-    const s32 fifty = 50;
+    const s32 fifty = openrac::byte_order::from_little_endian(50);
     std::memcpy(bad.data() + 4 * 4 + 12, &fifty, 4);
     CHECK(throws([&] { read_shrub_packet(bad, ShrubPacketEntry{}, texture); }));
 }
@@ -361,10 +364,10 @@ void instances() {
     CHECK((inst.ambient_rgba() == std::array<u8, 4>{10, 20, 30, 0x80}));
     CHECK((inst.light_sets() == ShrubInstance::LightSets{1, 2, 0x40}));
     std::vector<u8> gp(0x40, 0);
-    const u32 classes_at = 0x40;
+    const u32 classes_at = openrac::byte_order::from_little_endian(0x40u);
     std::memcpy(gp.data() + kGameplayShrubClasses, &classes_at, 4);
     gp.insert(gp.end(), {1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
-    const auto at = static_cast<u32>(gp.size());
+    const auto at = openrac::byte_order::from_little_endian(static_cast<u32>(gp.size()));
     std::memcpy(gp.data() + kGameplayShrubInstances, &at, 4);
     gp.insert(gp.end(), {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
     append(gp, inst);

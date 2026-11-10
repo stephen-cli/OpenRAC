@@ -176,7 +176,7 @@ std::array<s16, 4> MobyFrame::quat_at(std::size_t j) const {
 
         // A short payload leaves the lane at zero instead of reading past it.
         if (o + 2 <= payload.size()) {
-            std::memcpy(&q[k], payload.data() + o, 2);
+            q[k] = ByteView(payload).read<s16>(o, "quaternion lane");
         }
     }
 

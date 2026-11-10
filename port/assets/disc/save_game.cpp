@@ -383,8 +383,7 @@ u32 find_item_definitions(std::span<const OverlaySection> sections, ByteView ven
             continue;
         }
 
-        std::vector<u32> w(s.data.size() / 4);
-        std::memcpy(w.data(), s.data.data(), w.size() * 4);
+        const auto w = ByteView(s.data).read_array<u32>(0, s.data.size() / 4, "code");
         const std::size_t n = w.size();
 
         // Look at every word for the first instruction of the pattern.

@@ -6,9 +6,11 @@
 
 #include "assets/world/font.h"
 
+#include <cstddef>
 #include <cstring>
 #include <string>
 
+#include "common/byte_order.h"
 #include "tests/check.h"
 
 using namespace openrac::assets;
@@ -46,7 +48,10 @@ void wrapper(std::vector<u32>& code, u32 face, u32 table) {
 
 std::vector<u8> words_to_bytes(const std::vector<u32>& code) {
     std::vector<u8> b(code.size() * 4);
-    std::memcpy(b.data(), code.data(), b.size());
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        const u32 stored = openrac::byte_order::from_little_endian(code[i]);
+        std::memcpy(b.data() + i * 4, &stored, 4);
+    }
     return b;
 }
 
@@ -72,7 +77,8 @@ std::vector<u8> program(const std::array<u32, 3>& tables, std::optional<u32> sec
         if (tables[f] < kData || tables[f] + sizeof(GlyphTable) > kData + data.size()) {
             continue;  // a table the test puts outside the program
         }
-        const GlyphTable t = table_with(static_cast<u8>(10 + f));
+        const GlyphTable t =
+            openrac::byte_order::from_little_endian(table_with(static_cast<u8>(10 + f)));
         std::memcpy(data.data() + (tables[f] - kData), t.data(), sizeof t);
     }
     ByteWriter w;

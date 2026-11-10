@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "assets/world/cameras.h"
+#include "common/byte_order.h"
 #include "tests/check.h"
 
 using namespace openrac::assets;
@@ -186,7 +187,7 @@ void pvars() {
     auto word = [](const std::vector<u8>& b, std::size_t at) {
         s32 v;
         std::memcpy(&v, b.data() + at, 4);
-        return v;
+        return openrac::byte_order::from_little_endian(v);
     };
     // Everything created: instance 2 is runtime moby 2.
     const auto all = read_pvars(file);

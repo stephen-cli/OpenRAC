@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "assets/bytes.h"
+#include "common/byte_order.h"
 
 namespace openrac::test {
 
@@ -35,7 +36,10 @@ struct IsoFile {
 };
 
 inline void both_endian32(u8* b, u32 v) {
-    std::memcpy(b, &v, 4);
+    b[0] = static_cast<u8>(v);
+    b[1] = static_cast<u8>(v >> 8);
+    b[2] = static_cast<u8>(v >> 16);
+    b[3] = static_cast<u8>(v >> 24);
     b[4] = static_cast<u8>(v >> 24);
     b[5] = static_cast<u8>(v >> 16);
     b[6] = static_cast<u8>(v >> 8);
@@ -56,7 +60,7 @@ inline std::vector<u8> dir_record(u32 lba, u32 size, bool dir, std::string_view 
 
 template <typename T>
 inline void put32(std::vector<u8>& img, std::size_t at, T value) {
-    const s32 v = static_cast<s32>(value);
+    const s32 v = byte_order::from_little_endian(static_cast<s32>(value));
     std::memcpy(img.data() + at, &v, 4);
 }
 
@@ -160,8 +164,10 @@ inline std::vector<u8> bytes_of(std::string_view s) {
 }
 
 inline std::vector<u8> fake_elf(std::string_view tag, std::size_t size = 5000) {
-    std::vector<u8> e = bytes_of("\x7f"
-                                 "ELF");
+    std::vector<u8> e = bytes_of(
+        "\x7f"
+        "ELF"
+    );
     const std::string t = std::format("..{}..", tag);
     e.insert(e.end(), t.begin(), t.end());
     e.resize(size, 0x11);

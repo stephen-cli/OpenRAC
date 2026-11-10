@@ -19,6 +19,7 @@
 #include "assets/disc/transition.h"
 #include "assets/disc/volumes.h"
 #include "assets/disc/wad.h"
+#include "common/byte_order.h"
 #include "tests/check.h"
 
 using namespace openrac::assets;
@@ -347,15 +348,17 @@ void overlay_masking() {
     // lui at,0x3f80; lw t0,8(a0); lw t1,-0x10(gp)
     const u32 w[] =
         {0x3c020017, 0x245142c0, 0x0040902d, 0x265142c0, 0x3c013f80, 0x8c880008, 0x8f89fff0};
-    CHECK((
-        mask_code(w, kRac1NtscGp)
-        == std::vector<
-            u32>{0x3c020000, 0x24510000, 0x0040902d, 0x26510000, 0x3c013f80, 0x8c880008, 0x8f890000}
-    ));
+    CHECK(
+        (mask_code(w, kRac1NtscGp)
+         == std::vector<u32>{
+             0x3c020000, 0x24510000, 0x0040902d, 0x26510000, 0x3c013f80, 0x8c880008, 0x8f890000
+         })
+    );
     CHECK(
         (address_refs(w, kRac1NtscGp)
-         == std::vector<
-             std::pair<std::size_t, u32>>{{1, 0x1742c0}, {3, 0x1742c0}, {6, kRac1NtscGp - 0x10}})
+         == std::vector<std::pair<std::size_t, u32>>{
+             {1, 0x1742c0}, {3, 0x1742c0}, {6, kRac1NtscGp - 0x10}
+         })
     );
     const u32 neg[] = {0x3c04001b, 0x2484f000};
     CHECK(
@@ -434,16 +437,21 @@ void core_index() {
     for (const CoreBlock& b : core.blocks) {
         names.push_back(std::format("{}@{:x}+{:x}", b.name, b.offset, b.size));
     }
-    CHECK((
-        names
-        == std::vector<
-            std::
-                string>{"tfrags@100+300", "sky@400+100", "collision@500+100", "moby_class/0042@600+200", "moby_class/0007@800+800"}
-    ));
+    CHECK(
+        (names
+         == std::vector<std::string>{
+             "tfrags@100+300",
+             "sky@400+100",
+             "collision@500+100",
+             "moby_class/0042@600+200",
+             "moby_class/0007@800+800"
+         })
+    );
     std::vector<u8> data(0x1000);
     data[0x900] = 2;
     data[0x904] = 1;
-    const f32 low = 0, high = 255;
+    const f32 low = openrac::byte_order::from_little_endian(0.0f);
+    const f32 high = openrac::byte_order::from_little_endian(255.0f);
     std::memcpy(data.data() + 0x908, &low, 4);
     std::memcpy(data.data() + 0x90c, &high, 4);
     data[0x911] = 255;

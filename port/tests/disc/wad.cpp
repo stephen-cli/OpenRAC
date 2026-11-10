@@ -10,6 +10,7 @@
 
 #include <random>
 
+#include "common/byte_order.h"
 #include "tests/check.h"
 
 using namespace openrac::assets;
@@ -20,7 +21,7 @@ namespace {
 std::vector<u8> wad(std::initializer_list<u8> packets) {
     std::vector<u8> v = {'W', 'A', 'D', 0, 0, 0, 0, 'T', 'E', 'S', 'T', 0, 0, 0, 0, 0};
     v.insert(v.end(), packets);
-    const u32 size = static_cast<u32>(v.size());
+    const u32 size = openrac::byte_order::from_little_endian(static_cast<u32>(v.size()));
     std::memcpy(v.data() + 3, &size, 4);
     return v;
 }

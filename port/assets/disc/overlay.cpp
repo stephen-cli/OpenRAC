@@ -323,8 +323,7 @@ LevelOverlay::LevelOverlay(std::vector<OverlaySection> sections, u32 gp)
     if (m_sections.size() > kTextSection) {
         const OverlaySection& t = m_sections[kTextSection];
         m_text_start = t.dest;
-        m_text.resize(t.data.size() / 4);
-        std::memcpy(m_text.data(), t.data.data(), m_text.size() * 4);
+        m_text = ByteView(t.data).read_array<u32>(0, t.data.size() / 4, "overlay text");
     }
 
     const u32 end = text_end();

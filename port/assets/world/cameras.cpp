@@ -13,6 +13,8 @@
 
 #include <cstring>
 
+#include "common/byte_order.h"
+
 namespace openrac::assets {
 
 // A level with no camera section has no cameras, which is not an error.
@@ -93,6 +95,7 @@ void remap_camera_moby_links(
 
             s32 value;
             std::memcpy(&value, block.data() + f.offset, 4);
+            value = byte_order::from_little_endian(value);
 
             // A negative value is the file's "no moby"; leave it as it is.
             if (value < 0) {
@@ -100,7 +103,7 @@ void remap_camera_moby_links(
             }
 
             const auto moby = instance_to_moby(static_cast<std::size_t>(value));
-            const s32 runtime = moby ? static_cast<s32>(*moby) : -1;
+            const s32 runtime = byte_order::from_little_endian(moby ? static_cast<s32>(*moby) : -1);
             std::memcpy(block.data() + f.offset, &runtime, 4);
         }
     }

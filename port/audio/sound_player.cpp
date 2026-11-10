@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "audio/pitch.h"
+#include "common/byte_order.h"
 
 namespace openrac::audio {
 
@@ -127,7 +128,7 @@ void replace_sound_sample(
             continue;
         }
 
-        const auto offset = static_cast<std::uint32_t>(at);
+        const auto offset = byte_order::from_little_endian(static_cast<std::uint32_t>(at));
         g.data[2] = static_cast<std::uint8_t>(static_cast<std::int8_t>(-60));
         g.data[3] = 0;
         std::memcpy(g.data.data() + 16, &offset, sizeof offset);

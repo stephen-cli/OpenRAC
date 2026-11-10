@@ -15,6 +15,7 @@
 #include "assets/geometry/moby.h"
 #include "assets/geometry/sky.h"
 #include "assets/geometry/tie_lighting.h"
+#include "common/byte_order.h"
 #include "common/ps2_float.h"
 #include "tests/check.h"
 
@@ -146,7 +147,8 @@ void tie_point_lights() {
 
 template <typename T>
 void put(std::vector<u8>& b, std::size_t at, const T& v) {
-    std::memcpy(b.data() + at, &v, sizeof(T));
+    const T stored = openrac::byte_order::from_little_endian(v);
+    std::memcpy(b.data() + at, &stored, sizeof(T));
 }
 
 // One 2x2 texture, a textured shell and a gouraud shell of one cluster each.
@@ -298,11 +300,13 @@ void moby_vertex_cache() {
     // the ids of vertices 0..3, the epilogue's bytes 4.. the other six.
     std::vector<std::array<u8, 16>> recs(11);
     for (std::size_t i = 7; i < 11; ++i) {
-        const auto id = static_cast<u16>((0x100 + i) | 0xfe00);
+        const auto id =
+            openrac::byte_order::from_little_endian(static_cast<u16>((0x100 + i) | 0xfe00));
         std::memcpy(recs[i].data(), &id, 2);
     }
     for (std::size_t k = 0; k < 6; ++k) {
-        const auto id = static_cast<u16>((0x1f0 + k) | 0x200);
+        const auto id =
+            openrac::byte_order::from_little_endian(static_cast<u16>((0x1f0 + k) | 0x200));
         std::memcpy(recs[10].data() + 4 + 2 * k, &id, 2);
     }
     CHECK(

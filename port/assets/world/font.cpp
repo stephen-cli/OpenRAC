@@ -87,8 +87,7 @@ std::array<u32, 3> locate_glyph_tables(std::span<const disc::OverlaySection> sec
         if (s.kind != 1) {
             continue;
         }
-        std::vector<u32> words(s.data.size() / 4);
-        std::memcpy(words.data(), s.data.data(), words.size() * 4);
+        const auto words = ByteView(s.data).read_array<u32>(0, s.data.size() / 4, "code");
 
         // Try every word as the start of a call site.
         for (std::size_t i = 0; i < words.size(); ++i) {
@@ -142,7 +141,7 @@ LevelFonts read_level_fonts(ByteView overlay) {
                 "font {}: glyph table {:#x} is not in the level program", f + 1, fonts.addresses[f]
             );
         }
-        std::memcpy(fonts.tables[f].data(), bytes->data(), kGlyphCount * sizeof(GlyphCell));
+        fonts.tables[f] = ByteView(*bytes).read<GlyphTable>(0, "glyph table");
 
         // Every face has an 'A': a cheap proof the call sites led to tables.
         if (!fonts.tables[f]['A'].present()) {

@@ -23,6 +23,7 @@
 
 #include "assets/geometry/texture.h"
 #include "assets/geometry/vif.h"
+#include "common/byte_order.h"
 
 namespace openrac::assets::rac1 {
 
@@ -76,14 +77,18 @@ public:
         return m_qw[a];
     }
 
-    // The quadword at `a` as a 16-byte record type.
+    // The quadword at `a` as a 16-byte record type. The lanes are laid out as the console's
+    // bytes first, so a record's fields of any width (a GIF tag's 64 bits) read right.
     template <typename T>
     T record(std::size_t a, std::string_view what) const {
         static_assert(sizeof(T) == 16);
-        const auto q = at(a, what);
+        auto lanes = at(a, what);
+        for (u32& lane : lanes) {
+            lane = byte_order::from_little_endian(lane);
+        }
         T value;
-        std::memcpy(&value, q.data(), sizeof(T));
-        return value;
+        std::memcpy(&value, lanes.data(), sizeof(T));
+        return byte_order::from_little_endian(value);
     }
 
     // The four lanes truncated to 16 bits: the V4_16 view of a vertex.

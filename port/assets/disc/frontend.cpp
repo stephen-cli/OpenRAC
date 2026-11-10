@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "assets/disc/wad.h"
+#include "common/byte_order.h"
 
 namespace openrac::assets::disc {
 
@@ -134,7 +135,8 @@ TitleWorld TitleWorld::parse(ByteView lump) {
     w.data.assign(bytes.begin() + base, bytes.end());
     hd.assets_decompressed_size = static_cast<s32>(w.data.size());
     w.index.assign(kIndexTables, 0);
-    std::memcpy(w.index.data(), &hd, sizeof hd);
+    const auto stored = byte_order::from_little_endian(hd);  // the index is the console's bytes
+    std::memcpy(w.index.data(), &stored, sizeof stored);
     w.index.insert(w.index.end(), bytes.begin(), bytes.begin() + base);
     w.core = parse_level_core(w.index, w.data.size());
     const auto gs_at = static_cast<std::size_t>(h(0));

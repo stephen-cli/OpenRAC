@@ -11,6 +11,7 @@
 
 #include <cstring>
 
+#include "common/byte_order.h"
 #include "tests/check.h"
 
 using namespace openrac::assets;
@@ -36,7 +37,8 @@ void pad16(std::vector<u8>& v) {
 
 template <typename T>
 void append(std::vector<u8>& v, const T& value) {
-    const auto* p = reinterpret_cast<const u8*>(&value);
+    const T stored = openrac::byte_order::from_little_endian(value);
+    const auto* p = reinterpret_cast<const u8*>(&stored);
     v.insert(v.end(), p, p + sizeof(T));
 }
 
@@ -144,7 +146,8 @@ void walker_follows_vu1_rules() {
     CHECK((pk.vertices[1].uv() == std::array<f32, 2>{1.0f, -1.0f}));
     // Strip A uses ad-gif 1 (block 0's source is 0x50), strip B ad-gif 0.
     CHECK((pk.draws == std::vector<TieDraw>{{1, 0, {4, 3, 1}}, {0, 0, {5, 5, 0, 2}}}));
-    CHECK((tie_triangles(pk) == std::vector<TieTriangle>{{4, 3, 1, 1}, {5, 5, 0, 0}, {2, 0, 5, 0}})
+    CHECK(
+        (tie_triangles(pk) == std::vector<TieTriangle>{{4, 3, 1, 1}, {5, 5, 0, 0}, {2, 0, 5, 0}})
     );
 }
 
@@ -218,7 +221,7 @@ void instances() {
     section[0] = 1;
     append(section, inst);
     std::vector<u8> gameplay(0x40, 0);
-    const u32 at = 0x40;
+    const u32 at = openrac::byte_order::from_little_endian(0x40u);
     std::memcpy(gameplay.data() + kGameplayTieInstances, &at, 4);
     gameplay.insert(gameplay.end(), section.begin(), section.end());
     const auto got = parse_tie_instances(gameplay);

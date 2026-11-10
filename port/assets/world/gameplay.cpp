@@ -18,6 +18,7 @@
 #include <cstring>
 
 #include "assets/world/known_games.h"
+#include "common/byte_order.h"
 
 namespace openrac::assets {
 
@@ -510,11 +511,12 @@ std::vector<std::optional<std::vector<u8>>> read_pvars(
 
         s32 value;
         std::memcpy(&value, p, 4);
+        value = byte_order::from_little_endian(value);
 
         // A negative value is the file's "no moby"; leave it.
         if (value >= 0) {
             const auto i = static_cast<std::size_t>(value);
-            const s32 r = i < runtime.size() ? runtime[i] : -1;
+            const s32 r = byte_order::from_little_endian(i < runtime.size() ? runtime[i] : -1);
             std::memcpy(p, &r, 4);
         }
     }
@@ -528,7 +530,8 @@ std::vector<std::optional<std::vector<u8>>> read_pvars(
     for (const PvarSharedRecord& r : read_pvar_shared_records(file)) {
         // Only blocks that exist take a patch.
         if (u8* p = field(r.pvar_index, r.offset)) {
-            std::memcpy(p, &r.data_offset, 4);
+            const s32 offset = byte_order::from_little_endian(r.data_offset);
+            std::memcpy(p, &offset, 4);
         }
     }
 

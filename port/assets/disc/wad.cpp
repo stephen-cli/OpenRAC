@@ -22,6 +22,8 @@
 #include <array>
 #include <cstring>
 
+#include "common/byte_order.h"
+
 namespace openrac::assets::disc {
 
 namespace {
@@ -270,7 +272,7 @@ public:
     }
 
     std::vector<u8> finish() {
-        const u32 total = static_cast<u32>(m_out.size());
+        const u32 total = byte_order::from_little_endian(static_cast<u32>(m_out.size()));
         std::memcpy(m_out.data() + 3, &total, sizeof total);
         return std::move(m_out);
     }
