@@ -24,6 +24,7 @@ Library `openrac_common`. Each header has a namespace of its own under `openrac`
 | [`staged_file.h`](staged_file.h) | `openrac::StagedFile`: exclusive staging and atomic publication for authored metadata |
 | [`json.h`](json.h) | `openrac::json`: a JSON reader (a tree of values, parsed whole) for the editor's exports, mod manifests and the tools' files |
 | [`ps2_float.h`](ps2_float.h) | `openrac::ps2`: the PS2's FPU and vector-unit float arithmetic on raw bit patterns, for the asset readers, the world renderers and the runtime's C entry points (`openrac/ps2float.h`) |
+| [`byte_order.h`](byte_order.h) | `openrac::byte_order`: the console's little-endian numbers and records in the host's order on any host; a record's fields are counted by aggregate initialisation and bound by the generated `byte_order_fields.h` (`tools/gen_byte_order_fields.py`) |
 | [`float_encoding.h`](float_encoding.h) | `openrac::float_encoding`: IEEE floats packed to the small float formats of half-float metadata and irradiance channels |
 | [`joining_thread.h`](joining_thread.h) | `openrac::JoiningThread`: a thread its owner joins when it goes (`std::jthread` without the stop token) |
 | [`result.h`](result.h) | `openrac::Result<T>` and `openrac::Error`: what a public function that can fail returns, a value or an error message; the port's own `std::expected` (C++23) under its names, `Result<void>` included |

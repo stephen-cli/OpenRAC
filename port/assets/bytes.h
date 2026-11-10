@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 the OpenRAC contributors
 //
-// Bounds-checked reads of the console's little-endian data. Every reader in
+// Bounds-checked reads of the console's little-endian data, in the host's
+// byte order whatever it is (common/byte_order.h). Every reader in
 // openrac_assets takes its input as a ByteView and throws AssetError when a
 // record runs past the end, so a damaged or unexpected file is reported with
 // what was being read and where, never read out of bounds.
@@ -10,7 +11,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -22,16 +22,9 @@
 #include <type_traits>
 #include <vector>
 
-namespace openrac::assets {
+#include "common/byte_order.h"
 
-// OPENRAC_BIG_ENDIAN_TRIAL builds the readers on a big-endian host as they are, reading every
-// multi-byte field reversed: for the boot test of a big-endian build (docs/port/PS3.md), which
-// measures what breaks, not for a game anyone plays.
-#ifndef OPENRAC_BIG_ENDIAN_TRIAL
-static_assert(
-    std::endian::native == std::endian::little, "the readers assume a little-endian host"
-);
-#endif
+namespace openrac::assets {
 
 using u8 = std::uint8_t;
 using u16 = std::uint16_t;
@@ -100,16 +93,15 @@ public:
         return {m_data + offset, m_size - offset};
     }
 
-    // A trivially copyable record, read unaligned. A number is read in the console's order
-    // (little-endian) whatever the host's; a record of several fields is copied as its bytes are,
-    // which on a big-endian host (OPENRAC_BIG_ENDIAN_TRIAL) leaves its fields reversed.
+    // A trivially copyable record, read unaligned: a number, or an aggregate of numbers, arrays and
+    // such records, every number of which is read in the console's order whatever the host's.
     template <typename T>
     T read(std::size_t offset, std::string_view what = "value") const {
         static_assert(std::is_trivially_copyable_v<T>);
         check(offset, sizeof(T), what);
         T value;
         std::memcpy(&value, m_data + offset, sizeof(T));
-        return from_little_endian(value);
+        return byte_order::from_little_endian(value);
     }
 
     // `count` records of T, one after the other.
@@ -131,32 +123,13 @@ public:
         if (count != 0) {
             std::memcpy(values.data(), m_data + offset, count * sizeof(T));
         }
-        if constexpr (std::endian::native == std::endian::big && std::is_arithmetic_v<T>) {
+        if constexpr (!byte_order::kHostIsLittleEndian) {
             for (T& value : values) {
-                value = from_little_endian(value);
+                byte_order::swap_in_place(value);
             }
         }
 
         return values;
-    }
-
-    // VALUE, a number read from the console's bytes, in the host's order; a record or a byte as it
-    // is.
-    template <typename T>
-    static T from_little_endian(T value) {
-        if constexpr (std::endian::native == std::endian::big
-                      && std::is_arithmetic_v<T> && sizeof(T) > 1) {
-            if constexpr (sizeof(T) == 2) {
-                return std::bit_cast<T>(__builtin_bswap16(std::bit_cast<std::uint16_t>(value)));
-            } else if constexpr (sizeof(T) == 4) {
-                return std::bit_cast<T>(__builtin_bswap32(std::bit_cast<std::uint32_t>(value)));
-            } else {
-                static_assert(sizeof(T) == 8);
-                return std::bit_cast<T>(__builtin_bswap64(std::bit_cast<std::uint64_t>(value)));
-            }
-        } else {
-            return value;
-        }
     }
 
     u8 u8_at(std::size_t o) const { return read<u8>(o, "u8"); }
@@ -200,12 +173,12 @@ public:
 
     std::size_t size() const { return m_bytes.size(); }
 
-    // A number goes out in the console's order (little-endian) whatever the host's; a record of
-    // several fields as its bytes are (ByteView::read).
+    // A record as ByteView::read takes one, every number of it in the console's order whatever the
+    // host's.
     template <typename T>
     void put(const T& value) {
         static_assert(std::is_trivially_copyable_v<T>);
-        const T stored = ByteView::from_little_endian(value);  // the same swap either way
+        const T stored = byte_order::from_little_endian(value);  // the same swap either way
         const auto* p = reinterpret_cast<const u8*>(&stored);
         m_bytes.insert(m_bytes.end(), p, p + sizeof(T));
     }
@@ -219,7 +192,7 @@ public:
             m_bytes.resize(offset + sizeof(T));
         }
 
-        const T stored = ByteView::from_little_endian(value);
+        const T stored = byte_order::from_little_endian(value);
         std::memcpy(m_bytes.data() + offset, &stored, sizeof(T));
     }
 

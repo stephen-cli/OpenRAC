@@ -142,6 +142,8 @@ openrac_add_test(latency_sleep INCLUDES .)
 openrac_add_test(swapchain_images INCLUDES .)
 # HDR output's arithmetic and choices (renderer/hdr.h); no GPU.
 openrac_add_test(hdr INCLUDES .)
+# The console's byte order on any host, and the readers' records walked (common/byte_order.h).
+openrac_add_test(byte_order INCLUDES .)
 openrac_add_test(frame_counter INCLUDES .)
 openrac_add_test(render_worker SOURCES tests/render_worker_test.cpp
   game/common/frontend/render_worker.cpp INCLUDES . LIBS openrac_common Threads::Threads)

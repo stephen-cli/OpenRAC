@@ -23,7 +23,7 @@ template <typename T>
 T grain_field(const std::array<u8, 32>& data, std::size_t offset) {
     T value;
     std::memcpy(&value, data.data() + offset, sizeof(T));
-    return ByteView::from_little_endian(value);
+    return byte_order::from_little_endian(value);
 }
 
 }  // namespace
