@@ -262,12 +262,44 @@ port's common library and runtime build and archive for the console
 with the `ps3` preset: the first of the port's code compiled for the
 PS3.
 
+### The headless program on the console (2026-11-11)
+
+The whole port but the window and the renderer, built for the PS3 with
+the `ps3` preset and `OPENRAC_PORT_GAMES=ON`
+([port/tools/ps3](../../port/tools/ps3/README.md)): the PAL game's
+1,090 translated units, the mods and Luau, the asset readers, the sound
+engine and `main.cpp`, linked against PSL1GHT into a 108 MB ELF. What
+the console needed of the port is small and listed in the README: the
+game's own libc defines four of newlib's names, Luau and the runtime's
+loader of native mods each wanted a line, the stuck watch's signal has
+no console, and a program there starts with no command line or
+environment, so it reads both from a file beside it.
+
+Run under RPCS3 (0.0.42) with the data on the host's disk through its
+`/host_root` mount, the program boots, sets its session log up from the
+PS3 side ("PlayStation 3 (PSL1GHT), 256 MB of memory"; "Cell Broadband
+Engine PPU, 2 threads"), allocates main RAM and then stops at the
+first write outside it, the one region it mapped (a `memset` to an
+address 512 MB past where the console puts a program's heap: RAM's
+uncached alias at `0x20000000`, by the look of it, which the 4 GB
+reservation of the other platforms maps and the console cannot):
+section 2's layout for 256 MB, which the next step is. Three
+things stood between the build and that point, none in the port's
+code: PSL1GHT's `sprxlinker` runs after every link (the stub table's
+import count is zero without it, so no system call resolves); RPCS3
+itself crashes with more than two arguments after `--`, which the file
+beside the program is for; and its `sys_fs_rmdir` throws for a path
+that is not there, which newlib's `remove()` tries after a failed
+unlink, so the console's newlib stops at the first. Its `unlink` on a
+`/host_root` path fails too (it moves the file to the mount's root
+first, which that mount has not), so the port's log rotation keeps its
+old logs there; the game's data belongs under `/dev_hdd0` as on the
+console, which a junction can give it.
+
 ## 7. Next steps
 
-1. The headless game program for the console: the PAL game's translated
-   C, the mods (Luau) and `main.cpp` built with the `ps3` preset and
-   linked against PSL1GHT, then run under RPCS3 to the first disc read.
-2. The memory layout for 256 MB (section 2), which that run needs.
-3. The renderer backend, once the game runs headless on the console; the
+1. The memory layout for 256 MB (section 2), which the headless run on
+   the console needs: it stops at the first write beyond main RAM.
+2. The renderer backend, once the game runs headless on the console; the
    extracted levels through the readers on big-endian (`--check-levels`)
    come with it.

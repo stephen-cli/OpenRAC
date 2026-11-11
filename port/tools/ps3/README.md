@@ -33,7 +33,8 @@ cmake --build build/ps3 --target openrac_common openrac_runtime
 `$PS3DEV`, PSL1GHT's `ppu_rules` flags (`-mcpu=cell -mhard-float
 -fmodulo-sched -ffunction-sections -fdata-sections`), its headers and
 libraries, a bare-metal system (`Generic`) whose compiler checks build a
-static library. `OPENRAC_PS3` is set for the port's CMake: no test
+static library, and `sprxlinker` after every program's link, as
+`ppu_rules` has it. `OPENRAC_PS3` is set for the port's CMake: no test
 programs (there is no host to run them on), and `OPENRAC_PS3_LIBRARIES`
 names what a program links (`-lsysfs -lsysutil -lsysmodule -lpthread
 -lrt -llv2 -lm`).
@@ -113,7 +114,14 @@ ps3toolchain's prebuilt compiler:
    macros would rewrite), `fd_set`, `NFDBITS` and `howmany` in
    `sys/types.h`, `MAXPATHLEN` from `unistd.h`, the declaration macros
    `_DEFUN` and `_AND` in `_ansi.h`, and `sys/select.h` left to PSL1GHT's
-   own. Nothing touches newlib's `configure.ac` or `Makefile.am`, so no
+   own. `openat` and `fdopendir` are declared for every target but the
+   console, which has no directory-relative open: libstdc++'s configure
+   decides `std::filesystem`'s ways by what the headers declare, and its
+   directory iteration would otherwise call them and never link. newlib's
+   `remove()` retries a failed unlink as rmdir whatever the failure; the
+   console's stops at a path that is not there (RPCS3 throws on the rmdir
+   of one, and the port removes its old logs by name without looking).
+   Nothing touches newlib's `configure.ac` or `Makefile.am`, so no
    autotools run.
 2. **GCC 13.2 again on it**, ps3toolchain's step with
    `--enable-threads=posix` (its bare `--enable-threads` leaves this
@@ -132,17 +140,23 @@ ps3toolchain's prebuilt compiler:
    pthreads-embedded's `pthread_t` is a struct (a pointer and a reuse
    count), which libstdc++ compares as a scalar in `std::thread::id`'s
    `==`, `<` and `<=>`, so the wrapper of `pthread.h` defines those for
-   it in C++.
+   it in C++, inside its include guard (a program includes `<pthread.h>`
+   itself, then libstdc++'s `<thread>` includes it again).
 3. **libsysbase**, the system call glue (`newlib-lv2/sysbase`,
    `make install`): newlib's `_open_r` and the rest over the
    `__syscalls` table that PSL1GHT's librt fills, `__getreent` in
    thread-local storage, `realpath`, and newlib's retargetable locks over
    lv2's lightweight mutexes (`retarget_lock.c`: newlib's named locks,
-   created on first use under one meta lock). The sources are
-   ps3toolchain's `libgloss/libsysbase` and `libc/sys/lv2` for newlib
-   1.20, with the declaration macros that newlib dropped since given
-   back by `ansi_compat.h`; GCC's link spec for the target names the
-   library (`-lsysbase -lc -lrt -llv2`).
+   created on first use under one meta lock), and what libstdc++'s
+   `std::filesystem` links that lv2 has not (`posix_extra.c`: `lstat` as
+   `stat`, `unlinkat` over `unlink` and `rmdir` for a plain path,
+   `pathconf`'s path length, and `symlink`, `readlink`, `fchmod` and
+   `statvfs` answering `ENOSYS`; and `rename` removing a destination
+   that exists, as POSIX has it, where lv2 refuses with `EEXIST`). The sources are ps3toolchain's
+   `libgloss/libsysbase` and `libc/sys/lv2` for newlib 1.20, with the
+   declaration macros that newlib dropped since given back by
+   `ansi_compat.h`; GCC's link spec for the target names the library
+   (`-lsysbase -lc -lrt -llv2`).
 4. **PSL1GHT again**, on the new C library, and of ps3libraries zlib and
    pthreads-embedded only (ps3dev's stages 2 and 3, `PS3LIBRARIES_STAGES`):
    the other forty are old ports (libunrar, polarssl) that do not compile
@@ -165,3 +179,54 @@ common library and runtime build and archive for the console with the
 `ps3` preset (`libopenrac_common.a`, `libopenrac_runtime.a`), the first
 of the port's code to compile for the PS3. The game programs, the mods
 and the renderer come next (docs/port/PS3.md, section 7).
+
+## The headless game program (2026-11-11)
+
+```sh
+cmake --preset ps3 -DOPENRAC_PORT_GAMES=ON   # hostgen needs clang and python3, which the image has
+cmake --build build/ps3 --target openrac-rac1-pal
+```
+
+`build/ps3/openrac-rac1-pal` is the PAL game's translated C, the mods
+(Luau) and `main.cpp` linked against PSL1GHT: a 108 MB ELF, most of it
+the game's registration tables and the decompilation's data. What the
+console needed of the port, each with its reason at the place:
+
+- `include/` ([README](include/README.md)): headers newlib has under
+  another name, on every unit's system include path.
+- `_reent`, `_Bigint`, `__sbuf` and `__Long`: the game's own libc
+  (`src/core/libc`, translated with the rest) defines them as the PS2's
+  libc had them, and newlib's `<math.h>` defines the same names, so
+  hostgen renames newlib's around a unit's includes (`lower.py`,
+  `LIBC_NAMES_HEAD`).
+- Luau's VM uses `LLONG_MIN` without `<climits>` (`cmake/Luau.cmake`);
+  `CMAKE_DL_LIBS` is emptied, as CMake names `-ldl` for every GNU target
+  (`port/CMakeLists.txt`); the console loads no native mod
+  (`mod_library.cpp`) and has no signal for the stuck watch
+  (`program/tools.cpp`).
+- The console starts a program with no command line and no environment:
+  `main.cpp` reads both from `/app_home/openrac.args`, a file beside the
+  program (`program/options.h`, `console_arguments`).
+- `sprxlinker` after the link (`ppu.cmake`): the linker leaves the count
+  of the system libraries' imports at zero in the stub table
+  (`.lib.stub`), so the loader resolved none and the program's first
+  system call, in librt's `sbrk_init`, jumped into its own stub's code
+  (RPCS3: "access violation executing location 0x7c0802a6", the stub's
+  first instruction read as an address). With it, 119 imports.
+
+### Running under RPCS3
+
+RPCS3 boots the ELF as it is (`File > Boot ELF`, or `rpcs3 --no-gui
+--config FILE program.elf` from a script; `--headless` crashed at start
+in the builds tried, 0.0.42). A config copy with `Enable /host_root/:
+true` and the Null video and audio renderers runs it headless; the data
+folder is then `/host_root/C:/.../port-data` and `/app_home` is the
+ELF's folder, where `openrac.args` holds the command line. More than two
+arguments after `--` crashed RPCS3 at start, hence the file. The first
+boot compiles the program's PowerPC code with LLVM for minutes and caches
+the result by the ELF's hash; the port's own log is in the data folder
+as on the other platforms, and RPCS3's in its `log` folder. RPCS3's
+`unlink` of a `/host_root` file fails with `ENOENT` on Windows (it moves
+the file to the mount's root first, which that mount has not), so the
+port's log rotation leaves its old logs there; a data folder under
+`/dev_hdd0`, as on the console, has none of that.
