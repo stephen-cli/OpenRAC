@@ -23,7 +23,8 @@ PTE_HEADERS="pthread.h pthread.pte.h pte_types.h sched.h sched.pte.h semaphore.h
 # that includes them (libstdc++'s gthr-posix.h, the port) gets mangled names. Each is wrapped, the
 # original kept beside it as *.pte.h, the wrapper written afresh each run. pthread_t is a struct (a
 # pointer and a reuse count), which libstdc++ compares as a scalar in std::thread::id's ==, < and
-# <=>: the wrapper of pthread.h defines those for it in C++.
+# <=>: the wrapper of pthread.h defines those for it in C++, inside its include guard (a program
+# includes <pthread.h> itself, then libstdc++'s <thread> includes it again).
 wrap_for_cxx() {
     local header="$1"
     local inner="${header%.h}.pte.h"
@@ -42,7 +43,6 @@ extern "C" {
 #include "$(basename "$inner")"
 #ifdef __cplusplus
 }
-#endif
 #endif
 EOF
     if [ "$(basename "$header")" = pthread.h ]; then
@@ -71,6 +71,7 @@ inline std::strong_ordering operator<=>(const pte_handle_t& a, const pte_handle_
 #endif
 EOF
     fi
+    echo "#endif" >> "$header"
 }
 
 wrap_pte_headers() {

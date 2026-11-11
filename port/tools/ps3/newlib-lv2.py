@@ -198,6 +198,40 @@ replace_once(
     "int pthread_kill (pthread_t, int);\n",
 )
 
+# libstdc++'s filesystem opens a subdirectory relative to its parent's descriptor, through openat
+# and fdopendir, when the headers declare them (its configure compiles a test, the build being a
+# cross one), and through the subdirectory's path otherwise. lv2 has no directory-relative open, so
+# the console's headers leave the two out.
+replace_once(
+    include / "dirent.h",
+    "DIR\t*fdopendir(int);\n",
+    "#ifndef __lv2ppu__  /* lv2 has no directory-relative open */\n"
+    "DIR\t*fdopendir(int);\n"
+    "#endif\n",
+)
+replace_once(
+    include / "sys" / "_default_fcntl.h",
+    "#if __ATFILE_VISIBLE\nextern int openat (int, const char *, int, ...);\n",
+    "#if __ATFILE_VISIBLE && !defined(__lv2ppu__)  /* lv2 has no directory-relative open */\n"
+    "extern int openat (int, const char *, int, ...);\n",
+)
+
+# newlib's remove() retries a failed unlink as rmdir whatever the failure, so a path that is not
+# there is asked for twice; and RPCS3's sys_fs_rmdir throws on it (Windows calls removing a
+# directory that is not there an invalid argument, which it does not expect). The console's keeps
+# to the paths that exist: a directory is the one thing unlink refuses that rmdir takes.
+replace_once(
+    tree / "newlib" / "libc" / "stdio" / "remove.c",
+    "  if (_unlink_r (ptr, filename) == -1) {\n"
+    "    errno = 0;\n",
+    "  if (_unlink_r (ptr, filename) == -1) {\n"
+    "#ifdef __lv2ppu__\n"
+    "    if (_REENT_ERRNO(ptr) == ENOENT)  /* not there: not a directory either */\n"
+    "      return -1;\n"
+    "#endif\n"
+    "    errno = 0;\n",
+)
+
 for name in ["sys/dirent.h", "sys/utime.h", "sys/syscalls.h"]:
     shutil.copyfile(pieces / "include" / name, include / name)
 
