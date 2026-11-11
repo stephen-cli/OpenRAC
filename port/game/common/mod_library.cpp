@@ -9,7 +9,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#else
+#elif !defined(__lv2ppu__)
 #include <dlfcn.h>
 #endif
 #if defined(__ANDROID__)
@@ -55,6 +55,31 @@ const void* base_of(const void* address) {
                            static_cast<LPCSTR>(address), &module) != 0) {
         return module;
     }
+    return nullptr;
+}
+
+#elif defined(__lv2ppu__)
+
+// The PS3 runs what its program holds: no library is loaded after it starts (docs/port/PS3.md), so
+// script mods are the mods it runs.
+void* open(const std::filesystem::path& path, std::string& error) {
+    (void)path;
+    error = "the PS3 loads no native mod";
+    return nullptr;
+}
+
+void* symbol(void* library, const char* name) {
+    (void)library;
+    (void)name;
+    return nullptr;
+}
+
+void close(void* library) {
+    (void)library;
+}
+
+const void* base_of(const void* address) {
+    (void)address;
     return nullptr;
 }
 

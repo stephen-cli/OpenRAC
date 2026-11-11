@@ -49,6 +49,11 @@ if(NOT TARGET openrac_luau)
       endif()
     endif()
   endforeach()
+  # The VM's builtins use LLONG_MIN without including <climits> (glibc's <math.h> brings it, the
+  # console's newlib does not).
+  if(OPENRAC_PS3)
+    target_compile_options(Luau.VM PRIVATE -include climits)
+  endif()
   add_library(openrac_luau INTERFACE)
   target_link_libraries(openrac_luau INTERFACE Luau.Compiler Luau.VM)
   # Its headers as the system's: the port's warnings are not for them.

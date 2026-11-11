@@ -32,7 +32,10 @@
 #include "frontend.h"
 #endif
 
-#if !defined(_WIN32)
+// OPENRAC_STUCK's watch interrupts the game's thread with a signal: on the systems that have them
+// (not Windows, not the PS3).
+#if !defined(_WIN32) && !defined(__lv2ppu__)
+#define OPENRAC_STUCK_SIGNAL 1
 #include <csignal>
 #include <pthread.h>
 #endif
@@ -135,7 +138,7 @@ std::int64_t now_ms() {
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-#if !defined(_WIN32)
+#if defined(OPENRAC_STUCK_SIGNAL)
 pthread_t g_game_thread;
 
 // On the game's thread, wherever it spins: the report's backtrace is the function that does.
@@ -150,7 +153,7 @@ void on_stuck(int) {
 // Starts the watch over the blanks, once, from the game's thread. A pause (F5) holds the game
 // inside a blank, which looks the same: the switch is for scripted runs.
 void watch_blanks() {
-#if !defined(_WIN32)
+#if defined(OPENRAC_STUCK_SIGNAL)
     g_game_thread = pthread_self();
     struct sigaction action{};
     action.sa_handler = on_stuck;

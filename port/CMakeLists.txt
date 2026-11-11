@@ -27,6 +27,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+# The PS3 (tools/ps3/ppu.cmake) has no dlopen: a program holds what it runs
+# (game/common/mod_library.cpp). CMake names -ldl for it as for every GNU target, after the
+# toolchain file.
+if(OPENRAC_PS3)
+  set(CMAKE_DL_LIBS "")
+endif()
+
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "The port is 64-bit only: game memory is a 4 GB reservation.")
 endif()
@@ -112,6 +119,9 @@ if(UNIX AND NOT APPLE)
 endif()
 if(ANDROID)
   target_link_libraries(openrac_common PUBLIC openrac_android_compat)  # backtrace below API 33
+endif()
+if(OPENRAC_PS3)
+  target_link_libraries(openrac_common PUBLIC ${OPENRAC_PS3_LIBRARIES})  # the console's system libraries
 endif()
 openrac_warnings(openrac_common)
 

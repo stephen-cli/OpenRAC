@@ -22,11 +22,22 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 # ppu_rules' MACHDEP and CXXFLAGS_INIT, with the PSL1GHT headers.
 set(ppu_flags "-mcpu=cell -mhard-float -fmodulo-sched -ffunction-sections -fdata-sections")
 set(ppu_flags "${ppu_flags} -I${PSL1GHT}/ppu/include -I${PSL1GHT}/ppu/include/simdmath")
+# What newlib has under another name (tools/ps3/include/README.md).
+set(ppu_flags "${ppu_flags} -isystem ${CMAKE_CURRENT_LIST_DIR}/include")
 set(CMAKE_C_FLAGS_INIT "${ppu_flags}")
 # ppu_rules' CXXFLAGS_INIT. What this toolchain's C and C++ libraries lack for the port is in
 # tools/ps3/README.md: the configuration is for measuring that, not yet for building the port.
 set(CMAKE_CXX_FLAGS_INIT "${ppu_flags} -D_GLIBCXX11_USE_C99_STDIO")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "-L${PSL1GHT}/ppu/lib -L${PS3DEV}/portlibs/ppu/lib -Wl,--gc-sections")
+
+# ppu_rules runs sprxlinker on every linked program: it writes the count of the system libraries'
+# imports into the stub table (.lib.stub), which the linker leaves at zero, so the console's loader
+# (and RPCS3's) resolves none of them and the first system call jumps into its own stub's code.
+foreach(lang C CXX)
+  set(CMAKE_${lang}_LINK_EXECUTABLE
+      "<CMAKE_${lang}_COMPILER> <FLAGS> <CMAKE_${lang}_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>"
+      "${PS3DEV}/bin/sprxlinker <TARGET>")
+endforeach()
 
 set(CMAKE_FIND_ROOT_PATH "${PS3DEV}/ppu" "${PSL1GHT}/ppu" "${PS3DEV}/portlibs/ppu")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
@@ -40,6 +51,7 @@ set(CMAKE_HAVE_THREADS_LIBRARY 1)
 set(CMAKE_USE_PTHREADS_INIT 1)
 set(Threads_FOUND TRUE)
 
-# What a PS3 program links beyond libc: PSL1GHT's lv2 syscalls, file system, modules and utilities.
+# What a PS3 program links beyond libc: PSL1GHT's lv2 syscalls, file system, modules and utilities
+# (openrac_common carries them to every program, port/CMakeLists.txt).
 set(OPENRAC_PS3_LIBRARIES -lsysfs -lsysutil -lsysmodule -lpthread -lrt -llv2 -lm)
 set(OPENRAC_PS3 ON)

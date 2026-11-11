@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "custom_map.h"
 
@@ -71,6 +72,15 @@ fs::path default_levels(const fs::path& data);
 // folder. --no-card and --level set game_host.h's openrac_game_no_card and
 // openrac_game_start_level.
 Options parse(int argc, char** argv);
+
+#if defined(__lv2ppu__)
+// The console starts a program with no command line and no environment: both come from
+// /app_home/openrac.args, a file beside the program (RPCS3 and the homebrew loaders map /app_home
+// to its folder), one line each: an option, its value on the next line, or NAME=VALUE (a line
+// without -- in front and with = in it), which sets the environment variable (common/env.h); #
+// starts a comment. Returns the command line, `program` first, with the variables set.
+std::vector<std::string> console_arguments(const char* program);
+#endif
 
 // The command line as it was typed, quoted where needed, with the home folder as ~.
 std::string command_line(int argc, char** argv);

@@ -517,6 +517,19 @@ int main(int argc, char** argv) {
     // 20 ms tick would overshoot by up to a step, and the frames stagger.
     timeBeginPeriod(1);
 #endif
+#if defined(__lv2ppu__)
+    // The console's command line and environment come from a file (program/options.h), read
+    // before anything reads either: these pointers stay for the session's log.
+    static const std::vector<std::string> console_arguments =
+        program::console_arguments(argc > 0 ? argv[0] : nullptr);
+    static std::vector<char*> console_argv;
+    for (const std::string& argument : console_arguments) {
+        console_argv.push_back(const_cast<char*>(argument.c_str()));
+    }
+    console_argv.push_back(nullptr);
+    argc = static_cast<int>(console_arguments.size());
+    argv = console_argv.data();
+#endif
     g_options = parse(argc, argv);
     static struct openrac_map_config map_config{};
 

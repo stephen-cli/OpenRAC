@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "common/env.h"
 #include "common/json.h"
@@ -333,6 +334,33 @@ Options parse(int argc, char** argv) {
 
     return o;
 }
+
+#if defined(__lv2ppu__)
+std::vector<std::string> console_arguments(const char* program) {
+    std::vector<std::string> arguments{program == nullptr ? "" : program};
+    std::ifstream file("/app_home/openrac.args");
+    std::string line;
+
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+
+        const std::size_t equals = line.find('=');
+        if (!line.starts_with("--") && equals != std::string::npos) {
+            setenv(line.substr(0, equals).c_str(), line.c_str() + equals + 1, 1);
+            continue;
+        }
+
+        arguments.push_back(line);
+    }
+
+    return arguments;
+}
+#endif
 
 std::string command_line(int argc, char** argv) {
     std::string line;
