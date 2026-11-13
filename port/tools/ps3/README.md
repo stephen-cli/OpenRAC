@@ -253,3 +253,11 @@ as on the other platforms, and RPCS3's in its `log` folder. RPCS3's
 the file to the mount's root first, which that mount has not), so the
 port's log rotation leaves its old logs there; a data folder under
 `/dev_hdd0`, as on the console, has none of that.
+
+## The RSX probe (2026-11-13)
+
+[rsx-probe/](rsx-probe/README.md) is the first program here that draws:
+a clear and one triangle through PSL1GHT's `librsx`, with programs
+assembled by `cgcomp -a` (no Cg toolkit), and the picture read back from
+the RSX's memory into a file. It runs under RPCS3 with a real renderer
+and `Write Color Buffers: true`.
