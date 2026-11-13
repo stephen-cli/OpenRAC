@@ -121,6 +121,10 @@ ps3toolchain's prebuilt compiler:
    `remove()` retries a failed unlink as rmdir whatever the failure; the
    console's stops at a path that is not there (RPCS3 throws on the rmdir
    of one, and the port removes its old logs by name without looking).
+   Its table of exit handlers grows past the first 32 only where the
+   system provides malloc; the console's grows it with newlib's own (a
+   C++ program fills 32 with its statics' destructors, and the port's
+   `atexit` for the end of a run was refused).
    Nothing touches newlib's `configure.ac` or `Makefile.am`, so no
    autotools run.
 2. **GCC 13.2 again on it**, ps3toolchain's step with
@@ -205,8 +209,13 @@ console needed of the port, each with its reason at the place:
   (`mod_library.cpp`) and has no signal for the stuck watch
   (`program/tools.cpp`).
 - The console starts a program with no command line and no environment:
-  `main.cpp` reads both from `/app_home/openrac.args`, a file beside the
-  program (`program/options.h`, `console_arguments`).
+  both come from `/app_home/openrac.args`, a file beside the program.
+  `common/env` reads it before its first read of a variable, which code
+  that runs before `main` makes (`env.h`, `console_file`); `main.cpp`
+  takes the command line from there (`program/options.h`).
+- Game memory is packed into one allocation (`runtime/memory.cpp`,
+  `OPENRAC_PACKED_MEMORY`; docs/port/PS3.md, section 6): the console
+  has no 4 GB of address space to reserve.
 - `sprxlinker` after the link (`ppu.cmake`): the linker leaves the count
   of the system libraries' imports at zero in the stub table
   (`.lib.stub`), so the loader resolved none and the program's first

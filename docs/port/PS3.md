@@ -24,7 +24,7 @@ Nothing is compiled on the console.
 | | The port today | The PS3 | Work |
 |---|---|---|---|
 | Byte order | little-endian everywhere: the console's data in game memory, the asset readers, the renderer's packet readers (`port/game/common/mod_scripts.cpp`: "little-endian, as the console and every host of the port") | the Cell's PPU is big-endian | the largest item (section 3); done for the headless game, the asset readers and the port's tests (section 6); the other games' host C and the renderer remain |
-| Game memory | one 4 GB reservation whose offsets are the console's addresses, the uncached and accelerated ranges mapped as views of the same RAM (`port/runtime/memory.cpp`) | a 32-bit address space, 256 MB of main RAM, no reservation without backing | regions packed into a small allocation; `G()` folds the aliases by masking; the 256 MB expanded arena (mods) left out |
+| Game memory | one 4 GB reservation whose offsets are the console's addresses, the uncached and accelerated ranges mapped as views of the same RAM (`port/runtime/memory.cpp`) | a 32-bit address space, 256 MB of main RAM, no reservation without backing | done (section 6): the regions packed into one 48 MB allocation, `G()` through a table of 256 offsets, the aliases onto the one RAM; the 256 MB expanded arena (mods) left out |
 | Textures | converted to RGBA8, several times the console's 4- and 8-bit size | 256 MB of video RAM | measure a level's textures; keep palettised textures if needed |
 | Renderer | OpenGL 4.1 core, OpenGL ES 3.2 or Vulkan; GLSL 4.10 | RSX, a GeForce 7-class GPU: Shader Model 3, no compute; homebrew draws through PSL1GHT's RSX library with Cg programs compiled ahead of time | a new backend and every shader written again; reversed depth checked against the RSX's depth formats |
 | Toolchain | C++20, CMake, SDL3 | ps3toolchain's GCC 13.2 compiles C++20, but its libstdc++ has no threads and its newlib (1.20, 2012) no fenv and no C99 names in std (section 6); no SDL3 | the toolchain's libraries rebuilt for the port; pads, sound, files and the display on PSL1GHT's libraries |
@@ -279,11 +279,11 @@ Run under RPCS3 (0.0.42) with the data on the host's disk through its
 `/host_root` mount, the program boots, sets its session log up from the
 PS3 side ("PlayStation 3 (PSL1GHT), 256 MB of memory"; "Cell Broadband
 Engine PPU, 2 threads"), allocates main RAM and then stops at the
-first write outside it, the one region it mapped (a `memset` to an
-address 512 MB past where the console puts a program's heap: RAM's
-uncached alias at `0x20000000`, by the look of it, which the 4 GB
-reservation of the other platforms maps and the console cannot):
-section 2's layout for 256 MB, which the next step is. Three
+first write outside it, the one region it mapped (the `memset` that
+clears the EE's register page, `0x10000000` past the allocation, which
+the 4 GB reservation of the other platforms maps and the console
+cannot): section 2's layout for 256 MB, which the next subsection has.
+Three
 things stood between the build and that point, none in the port's
 code: PSL1GHT's `sprxlinker` runs after every link (the stub table's
 import count is zero without it, so no system call resolves); RPCS3
@@ -296,10 +296,59 @@ first, which that mount has not), so the port's log rotation keeps its
 old logs there; the game's data belongs under `/dev_hdd0` as on the
 console, which a junction can give it.
 
+### Game memory, packed (2026-11-13)
+
+On the console game memory is one allocation of 48 MB: main RAM, then
+the register pages, the scratchpad and the port's own region side by
+side (`OPENRAC_PACKED_MEMORY`, `port/runtime/memory.cpp`). `G()` adds to
+a game address the entry of a table that its top eight bits pick
+(`openrac_guest_fold`, `guest.h`): 256 entries, one for each 16 MB of
+game addresses. Main RAM's entries and those of its two uncached
+aliases lead to the one copy of RAM, so the aliases work, which the
+reservation gives only where the system can map pages twice. Every
+entry with no region behind it leads into 256 MB of address space
+reserved with nothing mapped (`sys_mmapper_allocate_address`), so a
+stray access still stops the program at its address. Against the
+reservation a memory access costs one more instruction and a load
+that depends on the address; what that is on the PPU is unmeasured.
+The 256 MB expanded arena has no room and is refused. Any host builds
+this way with `-DOPENRAC_PACKED_MEMORY` in the compiler's flags, which
+is how it was checked before the console: the big-endian GCC build
+under QEMU, packed, passes the runtime's memory test and boots Veldin
+to the same state at frame 1800 as the build with the reservation.
+
+Under RPCS3 the headless program now goes through the boot: the
+executable loaded, the movies skipped, both sound banks read from the
+disc image, level 0's program relocated, "now playing level 0", and
+Ratchet standing on Veldin at 132.09, 115.48, 31.43, where the Linux
+builds have him. Two things beside memory stood in the way. The
+variables of the arguments file were set in `main`, after code that
+runs before it had read the environment, the one time the port reads
+it: `common/env` reads the file itself now, before its first read.
+And newlib's table of exit handlers stopped at 32, which a C++ program
+fills with its statics' destructors, so the handler that writes the
+end of a run was refused: the console's newlib grows the table.
+
+The run stops at frame 958, at the sound engine's first thread (the
+reader of a music track): `std::thread` throws "Enable multithreading
+to use std::thread". libstdc++ reaches the thread library through
+weak references, which pull nothing out of a static library, and
+takes the missing functions to mean a program without threads.
+Linking all of `libpthread` makes them present, and then the program
+stops before `main`: libgcc's registration of the exception tables
+locks a mutex from the start-up code, and pthreads-embedded creates a
+mutex on its first lock with locks of its own that `pthread_init`
+makes, which nothing has called yet, on a heap whose system calls
+PSL1GHT wires in a constructor that has not run either. The thread
+library has to be usable from the first instruction, or its locks
+must do nothing until it is.
+
 ## 7. Next steps
 
-1. The memory layout for 256 MB (section 2), which the headless run on
-   the console needs: it stops at the first write beyond main RAM.
+1. Threads on the console (section 6): pthreads-embedded initialised
+   before the start-up code's first lock, all of it linked, then
+   `std::thread` under the sound engine and the rest of the 1800
+   frames.
 2. The renderer backend, once the game runs headless on the console; the
    extracted levels through the readers on big-endian (`--check-levels`)
    come with it.
