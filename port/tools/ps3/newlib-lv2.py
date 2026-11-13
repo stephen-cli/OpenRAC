@@ -242,6 +242,17 @@ replace_once(
     "#if !defined (_ATEXIT_DYNAMIC_ALLOC) || (!defined (MALLOC_PROVIDED) && !defined (__lv2ppu__))\n",
 )
 
+# exit() closes every stream after the exit handlers have run, and closing one frees its buffer.
+# PSL1GHT's librt gives the heap back to the system from .fini, which is one of those handlers: the
+# free then read a heap that was gone (a program that had printed stopped in _free_r on its way
+# out). The console's streams are flushed at exit and not closed, as newlib's "lite exit" has it;
+# the system closes the files of a process that ends.
+replace_once(
+    tree / "newlib" / "libc" / "stdio" / "findfp.c",
+    "#ifdef _LITE_EXIT\n#define CLEANUP_FILE _fflush_r\n",
+    "#if defined (_LITE_EXIT) || defined (__lv2ppu__)\n#define CLEANUP_FILE _fflush_r\n",
+)
+
 for name in ["sys/dirent.h", "sys/utime.h", "sys/syscalls.h"]:
     shutil.copyfile(pieces / "include" / name, include / name)
 
