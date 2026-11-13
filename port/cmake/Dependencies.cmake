@@ -70,6 +70,30 @@ else()
   if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
     list(APPEND openrac_sdl_options EXCLUDE_FROM_ALL)
   endif()
+  # The PS3: SDL has no platform for it. It is built as a Unix without a desktop (pthreads, the
+  # dummy video and audio drivers, which the window asks for by name), with its source changed in
+  # five places (tools/ps3/sdl3-lv2.py). The toolchain file's checks compile without linking, so a
+  # function that newlib declares and lv2 has not is taken as there: those are answered here.
+  if(OPENRAC_PS3)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    list(APPEND openrac_sdl_options PATCH_COMMAND
+         "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../tools/ps3/sdl3-lv2.py" <SOURCE_DIR>)
+    foreach(option SDL_UNIX_CONSOLE_BUILD SDL_PTHREADS SDL_DUMMYVIDEO SDL_DUMMYAUDIO)
+      set(${option} ON CACHE BOOL "" FORCE)
+    endforeach()
+    foreach(option SDL_X11 SDL_WAYLAND SDL_KMSDRM SDL_OPENGL SDL_OPENGLES SDL_VULKAN SDL_GPU
+            SDL_RENDER SDL_CAMERA SDL_HIDAPI SDL_DIALOG SDL_TRAY SDL_DBUS SDL_IBUS SDL_LIBUDEV
+            SDL_OSS SDL_ALSA SDL_PULSEAUDIO SDL_PIPEWIRE SDL_JACK SDL_SNDIO SDL_OFFSCREEN
+            SDL_POWER SDL_SENSOR SDL_HAPTIC SDL_LIBURING SDL_ASSEMBLY SDL_SYSTEM_ICONV
+            SDL_CLOCK_GETTIME)
+      set(${option} OFF CACHE BOOL "" FORCE)
+    endforeach()
+    foreach(function FDATASYNC GETHOSTNAME GETPAGESIZE SIGACTION SYSCONF PTHREAD_SETNAME_NP
+            POSIX_SPAWN)
+      set(HAVE_${function} 0 CACHE INTERNAL "lv2 has no such function")
+    endforeach()
+    set(UNIX 1)  # for SDL's own CMake alone: unset below
+  endif()
   FetchContent_Declare(SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
     GIT_TAG ${openrac_sdl_tag}
@@ -77,6 +101,9 @@ else()
     ${openrac_sdl_options}
   )
   FetchContent_MakeAvailable(SDL3)
+  if(OPENRAC_PS3)
+    unset(UNIX)
+  endif()
 endif()
 
 # One name for either kind, so the port's targets need not care.
@@ -145,6 +172,10 @@ if(NOT TARGET openrac_imgui)
     target_link_libraries(openrac_imgui PRIVATE GLESv3)
   elseif(UNIX AND NOT APPLE)
     target_link_libraries(openrac_imgui PRIVATE ${CMAKE_DL_LIBS})  # the backend's loader opens libGL
+  endif()
+  if(OPENRAC_PS3)
+    # ImGui's own way of opening a link runs a program (fork, execvp), which the console cannot.
+    target_compile_definitions(openrac_imgui PRIVATE IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS)
   endif()
   if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(openrac_imgui PRIVATE /w)

@@ -8,3 +8,5 @@ expects glibc's compiles unchanged. Each says what it stands in for.
 | File | Stands in for |
 |---|---|
 | `endian.h` | glibc's `<endian.h>`: newlib's is `<sys/endian.h>` (FreeBSD's) |
+| `dlfcn.h` | POSIX's `<dlfcn.h>`: the console loads no shared object, so every load fails (SDL's Unix code looks for GTK with it) |
+| `poll.h` | POSIX's `<poll.h>`: a wait that fails, for SDL's Unix code, which the console's build never calls |

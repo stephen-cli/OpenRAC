@@ -72,6 +72,16 @@
         "OPENRAC_PORT_GAMES": "OFF",
         "OPENRAC_ENHANCED_RENDERING": "OFF"
       }
+    },
+    {
+      "name": "ps3-window",
+      "displayName": "PlayStation 3 with the window and the renderer (docs/port/PS3.md, section 7)",
+      "inherits": "ps3",
+      "cacheVariables": {
+        "OPENRAC_PORT_WINDOW": "ON",
+        "OPENRAC_PORT_GAMES": "ON",
+        "OPENRAC_VULKAN": "OFF"
+      }
     }
   ],
   "buildPresets": [
