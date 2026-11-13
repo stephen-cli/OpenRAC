@@ -43,7 +43,8 @@ void memory_map() {
     CHECK(m.mapped(0x12000000, 0x100));  // GS privileged registers
 
     GREF(std::uint32_t, 0x00137C80) = 0x12345678u;
-    CHECK(*reinterpret_cast<std::uint32_t*>(m.base() + 0x00137C80) == 0x12345678u);
+    // Game memory holds the console's order, whichever language wrote it.
+    CHECK(openrac_le32(*reinterpret_cast<std::uint32_t*>(m.base() + 0x00137C80)) == 0x12345678u);
     if (m.has_aliases()) {
         // The same RAM through its uncached addresses.
         CHECK(GREF(std::uint32_t, 0x20137C80) == 0x12345678u);

@@ -154,13 +154,78 @@ gaddr openrac_guest_address(const void* host);
  * whose scalar storage order is little-endian, so each load and store swaps bytes, and the
  * translated C declares the game's structures under the matching #pragma (OPENRAC_GUEST_ORDER):
  * their fields swap the same way. Hand-written C that casts G() to a structure of its own does
- * not swap unless it declares that structure under the pragma too. */
+ * not swap unless it declares that structure under the pragma too.
+ *
+ * C++ has no storage order to declare. There, on a big-endian host, GREF is a small object that
+ * stands for the number at the address (openrac_guest_ref below): reading it and assigning to it
+ * swap, so `GREF(std::uint32_t, a) = v`, `x = GREF(float, a)` and `GREF(int, a) |= m` mean what
+ * they do in C. It is not an lvalue: its address is not the number's, and it binds to no T&. */
 #if defined(__GNUC__) && !defined(__clang__) && !defined(__cplusplus)                              \
     && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define OPENRAC_GUEST_ORDER _Pragma("scalar_storage_order little-endian")
 #define OPENRAC_HOST_ORDER _Pragma("scalar_storage_order default")
 #define GREF(T, a)                                                                                 \
     (((struct __attribute__((scalar_storage_order("little-endian"))) { T v; }*)G(a))->v)
+#elif defined(__cplusplus) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define OPENRAC_GUEST_ORDER
+#define OPENRAC_HOST_ORDER
+} /* extern "C": a template has no C linkage */
+
+/* The number of type T at a host address of game memory, in the console's byte order. */
+template <typename T>
+class openrac_guest_ref {
+public:
+    explicit openrac_guest_ref(void* at) : at_(static_cast<unsigned char*>(at)) {}
+
+    /* NOLINTNEXTLINE(google-explicit-constructor): it reads as the T it stands for. */
+    operator T() const {
+        unsigned char bytes[sizeof(T)];
+        for (size_t i = 0; i < sizeof(T); ++i) {
+            bytes[i] = at_[sizeof(T) - 1 - i];
+        }
+        T value;
+        memcpy(&value, bytes, sizeof(T));
+        return value;
+    }
+
+    openrac_guest_ref& operator=(T value) {
+        unsigned char bytes[sizeof(T)];
+        memcpy(bytes, &value, sizeof(T));
+        for (size_t i = 0; i < sizeof(T); ++i) {
+            at_[i] = bytes[sizeof(T) - 1 - i];
+        }
+        return *this;
+    }
+
+    /* One game number assigned to another: the value, not the place it is read from. */
+    openrac_guest_ref& operator=(const openrac_guest_ref& other) {
+        return *this = static_cast<T>(other);
+    }
+
+    openrac_guest_ref(const openrac_guest_ref&) = default;
+
+    openrac_guest_ref& operator+=(T value) { return *this = static_cast<T>(*this + value); }
+
+    openrac_guest_ref& operator-=(T value) { return *this = static_cast<T>(*this - value); }
+
+    openrac_guest_ref& operator*=(T value) { return *this = static_cast<T>(*this * value); }
+
+    openrac_guest_ref& operator|=(T value) { return *this = static_cast<T>(*this | value); }
+
+    openrac_guest_ref& operator&=(T value) { return *this = static_cast<T>(*this & value); }
+
+    openrac_guest_ref& operator^=(T value) { return *this = static_cast<T>(*this ^ value); }
+
+    openrac_guest_ref& operator++() { return *this += 1; }
+
+    openrac_guest_ref& operator--() { return *this -= 1; }
+
+private:
+    unsigned char* at_;
+};
+
+extern "C" {
+#define GREF(T, a) (openrac_guest_ref<T>(G(a)))
 #else
 #define OPENRAC_GUEST_ORDER
 #define OPENRAC_HOST_ORDER
@@ -169,7 +234,7 @@ gaddr openrac_guest_address(const void* host);
 
 /* A word or halfword between the host's order and game memory's (little-endian): the same bytes
  * both ways. Host code that copies a word out of game memory, or writes one in, passes it through
- * these; C++ has no GREF that swaps. */
+ * these. */
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 static inline uint32_t openrac_le32(uint32_t word) {
     return __builtin_bswap32(word);

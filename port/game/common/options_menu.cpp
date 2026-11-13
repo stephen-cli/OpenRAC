@@ -596,11 +596,11 @@ bool update(const openrac_front_end& fe) {
         GREF(std::uint32_t, fe.video_page + 0x44 + 4 * 4) = fe.sound_hint;
     }
     // The cursor, as the game moved it this tick.
-    std::int32_t& cursor = GREF(std::int32_t, fe.video_list + 0x38);
-    cursor = std::clamp(cursor, 0, kShown - 1);
+    decltype(auto) cursor = GREF(std::int32_t, fe.video_list + 0x38);
+    cursor = std::clamp<std::int32_t>(cursor, 0, kShown - 1);
     bool changed = false;
     for (int i = 0; i < kShown; ++i) {
-        std::uint8_t& pressed = GREF(std::uint8_t, n.flags + static_cast<gaddr>(i));
+        decltype(auto) pressed = GREF(std::uint8_t, n.flags + static_cast<gaddr>(i));
         if (pressed != 0) {
             pressed = 0;
             step_value(n.top + i, 1);
@@ -955,15 +955,15 @@ bool update(gaddr page_menu, gaddr pad) {
     page::build();
     bool changed = false;
     for (int i = 0; i < kShownHere; ++i) {
-        std::int32_t& v = GREF(std::int32_t, m.values + 4 * static_cast<gaddr>(i));
+        decltype(auto) v = GREF(std::int32_t, m.values + 4 * static_cast<gaddr>(i));
         if (v != 1) {
             step_value(m.top + i, v > 1 ? 1 : -1);
             v = 1;
             changed = true;
         }
     }
-    std::int32_t& cursor = GREF(std::int32_t, m.list + 0x38);
-    cursor = std::clamp(cursor, 0, kShownHere - 1);
+    decltype(auto) cursor = GREF(std::int32_t, m.list + 0x38);
+    cursor = std::clamp<std::int32_t>(cursor, 0, kShownHere - 1);
     // Left and Right step the setting too (the widget itself steps on Cross).
     const std::uint32_t pressed = GREF(std::uint32_t, pad + 0x1C4);
     if ((pressed & (page::kPadLeft | page::kPadRight)) != 0) {

@@ -552,7 +552,7 @@ gaddr panel(const openrac_front_end& fe, int slot) {
 }
 
 // The seq page `page` gives slot `slot` in a switch.
-std::int32_t& page_seq(gaddr page, int slot) {
+decltype(auto) page_seq(gaddr page, int slot) {
     return GREF(std::int32_t, page + kSeqs + 4 * static_cast<gaddr>(slot));
 }
 
@@ -582,7 +582,7 @@ void follow_switch(const openrac_front_end& fe) {
         const gaddr page = out ? next : back ? current : 0;
 
         for (int r = 0; page != 0 && r < s.extra_rows; ++r) {
-            std::int32_t& seq = page_seq(page, kRowSlots[static_cast<std::size_t>(kGameRows + r)]);
+            decltype(auto) seq = page_seq(page, kRowSlots[static_cast<std::size_t>(kGameRows + r)]);
             s.follow_seqs[static_cast<std::size_t>(r)] = seq;
             seq = page_seq(page, options);
         }
@@ -804,7 +804,7 @@ float target(const openrac_front_end& fe, int game) {
     std::array<menu_fit::Frame, kFitSlots.size()> frames{};
 
     for (std::size_t i = 0; i < kFitSlots.size(); ++i) {
-        const auto seq = GREF(std::int32_t, seqs + 4 * static_cast<gaddr>(kFitSlots[i]));
+        const std::int32_t seq = GREF(std::int32_t, seqs + 4 * static_cast<gaddr>(kFitSlots[i]));
 
         if (seq >= 0 && seq < static_cast<std::int32_t>(s.fit.bases.size())) {
             const Base& b = s.fit.bases[static_cast<std::size_t>(seq)];
@@ -822,7 +822,8 @@ void learn(const openrac_front_end& fe, gaddr page) {
         Stretched& st = s.fit.slots[i];
         const gaddr moby = panel(fe, kFitSlots[i]);
         const gaddr frame = moby != 0 ? word(moby + kMobyFrame) : 0;
-        const auto seq = GREF(std::int32_t, page + kSeqs + 4 * static_cast<gaddr>(kFitSlots[i]));
+        const std::int32_t seq =
+            GREF(std::int32_t, page + kSeqs + 4 * static_cast<gaddr>(kFitSlots[i]));
 
         if (frame == 0 || st.moby != 0 || seq < 0
             || seq >= static_cast<std::int32_t>(s.fit.bases.size())
@@ -1584,7 +1585,7 @@ void input(const openrac_front_end& fe, const options_menu::PauseRows& rows) {
     }
     int crossed = -1;
     for (int i = 0; i < kRows; ++i) {
-        std::int32_t& v = GREF(std::int32_t, rows.values + 4 * static_cast<gaddr>(i));
+        decltype(auto) v = GREF(std::int32_t, rows.values + 4 * static_cast<gaddr>(i));
         if (v != kAtRest) {
             crossed = p.top + i;
             v = kAtRest;
@@ -1592,8 +1593,8 @@ void input(const openrac_front_end& fe, const options_menu::PauseRows& rows) {
     }
     const std::uint16_t taken = std::exchange(p.taken, 0);
     const int count = p.asking ? 2 : static_cast<int>(page->items.size());
-    std::int32_t& cursor = GREF(std::int32_t, rows.list + kCursorAt);
-    cursor = std::clamp(cursor, 0, std::max(std::min(count - p.top, kRows) - 1, 0));
+    decltype(auto) cursor = GREF(std::int32_t, rows.list + kCursorAt);
+    cursor = std::clamp<std::int32_t>(cursor, 0, std::max(std::min(count - p.top, kRows) - 1, 0));
     if (p.asking) {
         if (crossed >= 0 || (taken & kTriangle) != 0) {
             answer(crossed == 0 && (taken & kTriangle) == 0);
@@ -1617,8 +1618,11 @@ void input(const openrac_front_end& fe, const options_menu::PauseRows& rows) {
     if ((taken & kTriangle) != 0) {
         tell(OPENRAC_UI_BACK);
     }
-    pause_scroll(p.top, cursor, count, kRows);
-    mods::ui_set_cursor(p.shown, p.top + cursor);
+    // The cursor is a number of the game's (GREF): scrolled as a number of the host's.
+    std::int32_t scrolled = cursor;
+    pause_scroll(p.top, scrolled, count, kRows);
+    cursor = scrolled;
+    mods::ui_set_cursor(p.shown, p.top + scrolled);
 }
 
 // What the mod asked for during the tick's events: a question, a page in this one's place, back.
