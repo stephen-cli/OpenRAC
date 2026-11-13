@@ -232,6 +232,16 @@ replace_once(
     "    errno = 0;\n",
 )
 
+# newlib grows its table of exit handlers past the first 32 only where the system provides malloc
+# (MALLOC_PROVIDED); with its own malloc, as here, the 33rd atexit fails. A C++ program registers
+# one for each static it destroys, so the port's own handler (the report at the end of a run) found
+# the table full. The console's grows it with newlib's malloc.
+replace_once(
+    tree / "newlib" / "libc" / "stdlib" / "__atexit.c",
+    "#if !defined (_ATEXIT_DYNAMIC_ALLOC) || !defined (MALLOC_PROVIDED)\n",
+    "#if !defined (_ATEXIT_DYNAMIC_ALLOC) || (!defined (MALLOC_PROVIDED) && !defined (__lv2ppu__))\n",
+)
+
 for name in ["sys/dirent.h", "sys/utime.h", "sys/syscalls.h"]:
     shutil.copyfile(pieces / "include" / name, include / name)
 
