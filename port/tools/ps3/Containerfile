@@ -35,7 +35,7 @@ RUN git clone https://github.com/ps3dev/ps3dev.git /opt/ps3dev \
     && rm -rf /opt/ps3dev/build
 
 # The libraries for the port (README.md, "Route 1"); the sources and build trees are removed after.
-COPY toolchain.sh newlib-lv2.py gcc-13.2.0-savres.patch /opt/openrac-ps3/
+COPY toolchain.sh newlib-lv2.py pthread-emb-lv2.py gcc-13.2.0-savres.patch /opt/openrac-ps3/
 COPY newlib-lv2 /opt/openrac-ps3/newlib-lv2
 RUN PSL1GHT_REF=$PSL1GHT_COMMIT PS3LIBRARIES_REF=$PS3LIBRARIES_COMMIT bash /opt/openrac-ps3/toolchain.sh \
     && rm -rf /opt/openrac-toolchain /opt/ps3dev/build

@@ -45,13 +45,17 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# PSL1GHT's threads are its own library, not found as a system's.
-set(CMAKE_THREAD_LIBS_INIT "-lpthread")
+# PSL1GHT's threads are its own library, not found as a system's; OPENRAC_PS3_LIBRARIES links it.
+set(CMAKE_THREAD_LIBS_INIT "")
 set(CMAKE_HAVE_THREADS_LIBRARY 1)
 set(CMAKE_USE_PTHREADS_INIT 1)
 set(Threads_FOUND TRUE)
 
 # What a PS3 program links beyond libc: PSL1GHT's lv2 syscalls, file system, modules and utilities
-# (openrac_common carries them to every program, port/CMakeLists.txt).
-set(OPENRAC_PS3_LIBRARIES -lsysfs -lsysutil -lsysmodule -lpthread -lrt -llv2 -lm)
+# (openrac_common carries them to every program, port/CMakeLists.txt). The thread library goes in
+# whole: libstdc++ reaches it through weak references, which pull nothing out of a static library,
+# and takes a function it finds missing to mean a program without threads (std::thread then
+# throws "Enable multithreading to use std::thread").
+set(OPENRAC_PS3_LIBRARIES -lsysfs -lsysutil -lsysmodule
+    "-Wl,--whole-archive,-lpthread,--no-whole-archive" -lrt -llv2 -lm)
 set(OPENRAC_PS3 ON)

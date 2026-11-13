@@ -162,6 +162,11 @@ make -C "$HERE/newlib-lv2/sysbase" BUILD="$WORK/sysbase" clean install
 # pthread libstdc++ was built over. The other forty are old ports (libunrar, polarssl) that do not
 # compile against newlib 4.6, and the port has no use for them.
 (cd /opt/ps3dev && PSL1GHT_REF="$PSL1GHT_REF" PS3LIBRARIES_REF="$PS3LIBRARIES_REF"     PS3LIBRARIES_STAGES="1 32" ./build-all.sh 2 3)
+# pthreads-embedded again with the port's changes (pthread-emb-lv2.py: usable from a program's first
+# instruction), from the source ps3libraries left unpacked.
+PTE=/opt/ps3dev/build/ps3libraries/build/pthread-emb-ps3
+python3 "$HERE/pthread-emb-lv2.py" "$PTE"
+make -C "$PTE/platform/psl1ght" install
 # ps3libraries installed pthread-emb's headers again, unwrapped: wrapped once more, and the target
 # include directory (where newlib's install put the in-tree copies) kept the same.
 wrap_pte_headers
