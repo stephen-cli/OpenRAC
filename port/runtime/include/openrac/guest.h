@@ -120,7 +120,34 @@ static inline gaddr openrac_guest_ram_address(gaddr address) {
     return openrac_guest_ram_address_for_size(address, openrac_guest_ram_size);
 }
 
-/* The host pointer for a game address, and an lvalue of type T there.
+/* Where a game address is in the host. With the 4 GB reservation it is the base plus the address.
+ * The PS3 has no address space to reserve without memory behind it (docs/port/PS3.md, section 2):
+ * there the backed regions sit side by side in one allocation, packed (OPENRAC_PACKED_MEMORY), and
+ * openrac_guest_fold holds, for each 16 MB of game addresses, what added to an address there gives
+ * its host address: main RAM's entries, and its aliases', lead to the one copy of RAM, and an
+ * entry with no region behind it leads to address space that stops the program. The host's
+ * pointers are wider than a game address there or not: the sum is taken in the host's width. */
+#if defined(__lv2ppu__) && !defined(OPENRAC_PACKED_MEMORY)
+#define OPENRAC_PACKED_MEMORY 1
+#endif
+#if defined(OPENRAC_PACKED_MEMORY)
+#define OPENRAC_GUEST_FOLD_SHIFT 24
+extern OPENRAC_GUEST_GLOBAL uintptr_t openrac_guest_fold[1u << (32 - OPENRAC_GUEST_FOLD_SHIFT)];
+
+static inline void* openrac_guest_host(gaddr address) {
+    return (void*)(openrac_guest_fold[address >> OPENRAC_GUEST_FOLD_SHIFT] + address);
+}
+
+/* The game address of a host pointer into game memory. */
+gaddr openrac_guest_address(const void* host);
+#define G(a) openrac_guest_host((gaddr)(a))
+#define GADDR(p) openrac_guest_address(p)
+#else
+#define G(a) ((void*)(openrac_guest_base + (gaddr)(a)))
+#define GADDR(p) ((gaddr)((const uint8_t*)(p) - openrac_guest_base))
+#endif
+
+/* An lvalue of type T at a game address.
  *
  * Game memory keeps the console's byte order, little-endian. On a big-endian host built with GCC
  * (the PS3's toolchain is GCC; Clang has no such feature) the lvalue is a field of a structure
@@ -132,18 +159,13 @@ static inline gaddr openrac_guest_ram_address(gaddr address) {
     && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define OPENRAC_GUEST_ORDER _Pragma("scalar_storage_order little-endian")
 #define OPENRAC_HOST_ORDER _Pragma("scalar_storage_order default")
-#define G(a) ((void*)(openrac_guest_base + (gaddr)(a)))
 #define GREF(T, a)                                                                                 \
     (((struct __attribute__((scalar_storage_order("little-endian"))) { T v; }*)G(a))->v)
 #else
 #define OPENRAC_GUEST_ORDER
 #define OPENRAC_HOST_ORDER
-#define G(a) ((void*)(openrac_guest_base + (gaddr)(a)))
 #define GREF(T, a) (*(T*)G(a))
 #endif
-
-/* The game address of a host pointer into game memory. */
-#define GADDR(p) ((gaddr)((const uint8_t*)(p) - openrac_guest_base))
 
 /* A word or halfword between the host's order and game memory's (little-endian): the same bytes
  * both ways. Host code that copies a word out of game memory, or writes one in, passes it through

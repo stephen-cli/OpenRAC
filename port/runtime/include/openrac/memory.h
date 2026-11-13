@@ -3,6 +3,8 @@
 //
 // Game memory: the 4 GB reservation whose offsets are the console's
 // addresses (guest.h has the map). One per process.
+// Packed (OPENRAC_PACKED_MEMORY, the PS3) it is one allocation instead, the
+// regions side by side, reached through guest.h's fold table.
 
 #pragma once
 
@@ -26,12 +28,14 @@ public:
     Memory(const Memory&) = delete;
     Memory& operator=(const Memory&) = delete;
 
+    // Where main RAM starts in the host. The other regions are at G() of their addresses: at
+    // base() plus the address only with the reservation.
     std::uint8_t* base() const { return base_; }
 
     std::uint32_t ram_size() const { return ram_size_; }
 
     // True when main RAM is visible at its uncached addresses as well
-    // (Linux and macOS; Windows 10 1803 and later).
+    // (Linux and macOS; Windows 10 1803 and later; packed memory).
     bool has_aliases() const { return aliases_; }
 
     // The host bytes at [address, address + size). Ends the program if the
