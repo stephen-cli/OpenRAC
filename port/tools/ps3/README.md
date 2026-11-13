@@ -124,7 +124,10 @@ ps3toolchain's prebuilt compiler:
    Its table of exit handlers grows past the first 32 only where the
    system provides malloc; the console's grows it with newlib's own (a
    C++ program fills 32 with its statics' destructors, and the port's
-   `atexit` for the end of a run was refused).
+   `atexit` for the end of a run was refused). Its `exit` flushes the
+   streams and does not close them: closing frees their buffers, after
+   PSL1GHT's librt has given the heap back from `.fini`, and a program
+   that had printed stopped in `free` on its way out.
    Nothing touches newlib's `configure.ac` or `Makefile.am`, so no
    autotools run.
 2. **GCC 13.2 again on it**, ps3toolchain's step with
@@ -253,6 +256,25 @@ as on the other platforms, and RPCS3's in its `log` folder. RPCS3's
 the file to the mount's root first, which that mount has not), so the
 port's log rotation leaves its old logs there; a data folder under
 `/dev_hdd0`, as on the console, has none of that.
+
+## SDL3 for the console (2026-11-14)
+
+The windowed program (preset `ps3-window`) links SDL 3.4, which has no
+PS3 platform. `cmake/Dependencies.cmake` builds the SDL it fetches as
+a Unix without a desktop (pthreads, the dummy video and audio
+drivers, nothing of X11, Wayland, GL, HIDAPI or processes), runs
+`sdl3-lv2.py` on its source (the thread ID out of pthreads-embedded's
+structure in two places, no signal mask for a new thread, `usleep`
+for the delay, no `tm_gmtoff`, the dynamic API off) and answers the
+checks the toolchain file cannot make by linking (`fdatasync`,
+`gethostname`, `getpagesize`, `sigaction`, `sysconf`,
+`pthread_setname_np` and `posix_spawn` are declared and not there).
+`include/` gained `dlfcn.h` and `poll.h` for SDL's Unix code. SDL's
+dummy drivers are used only when asked for by name, which the window
+does on the console (`platform/window.cpp`); the picture goes to the
+RSX beside SDL's window ([renderer/rsx](../../renderer/rsx/README.md)).
+ImGui's default way of opening a link forks a program and is compiled
+out there.
 
 ## The RSX probe (2026-11-13)
 

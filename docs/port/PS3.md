@@ -368,6 +368,47 @@ program text by itself. And a console program can hand a script its
 own picture, which is how the backend's pictures will be compared
 with the other platforms'.
 
+### The window on the console (2026-11-14)
+
+The windowed program builds for the console (preset `ps3-window`) and
+runs under RPCS3: the frontend, the debug interface, the sound engine
+over SDL and the renderer, with the RSX behind the renderer's GL. It
+draws nothing yet but the clear, and the port's own screenshots
+(`OPENRAC_SHOT`) come out of it as PNGs. How it got there:
+
+- **SDL3 itself, built for the console.** SDL reaches 45 files of the
+  platform layer, the frontend and the debug interface; cutting it out
+  of them would have forked the port. SDL 3.4 has no PS3 platform, and
+  builds as a Unix without a desktop: pthreads, its dummy video and
+  audio drivers, six places of its source changed
+  (`tools/ps3/sdl3-lv2.py`) and nine answers its configure got wrong
+  given to it (`cmake/Dependencies.cmake`; the toolchain file's checks
+  compile without linking). Every other source of the windowed program
+  compiled for the console unchanged.
+- **GL carried out with the RSX** ([renderer/rsx](../../port/renderer/rsx/README.md)):
+  the window opens the RSX for `GlApi::Rsx` and hands the layer's
+  loader to the renderer, as it does the Vulkan layer's. Every GL
+  function is answered; the clear, the flip and the read-back are
+  carried out.
+- **Byte order in C++.** The first frame stopped in the mods' menu
+  code, which reads the game's numbers through `GREF`: in C that swaps
+  on a big-endian host, in C++ it did not, and a pointer read backwards
+  sent a copy to nowhere. `GREF` in C++ is now an object that swaps on
+  reading and assigning (`guest.h`, `openrac_guest_ref`), which
+  corrected all 202 uses at once; seven places that bound a `T&` to one
+  were respelled to compile both ways.
+- **Two faults of the console's C library**, found by a small SDL
+  program before the game met them: a program that had printed stopped
+  in `free` on its way out (PSL1GHT gives the heap back before newlib
+  closes its streams; the console's are flushed and not closed), and
+  SDL's delay returned at once (lv2's `select` does not wait; the
+  console sleeps with `usleep`).
+
+Still wrong in that run: the frontend's log repeats "camera usable
+again after N refused frame(s)", so something the frontend reads of
+the camera is not yet in the host's order. The renderer's own readers
+of the game's packets are the rest of section 3's work.
+
 ## 7. Next steps
 
 The renderer backend, now that the game runs headless on the console.
@@ -379,12 +420,14 @@ lines (`renderer/shaders`, `scene/shaders`); the enhanced renderer's 39
 more, with compute, are beyond a GeForce 7 and stay off the console.
 The proposal, in the order that gives a picture soonest:
 
-1. **The window without SDL**: the console's video mode, pad and the
-   flip behind `platform/`'s window, so that the windowed program
-   builds for the console with a renderer that draws nothing.
+1. **The window on the console**: done (section 6), with SDL built
+   for the console instead of taken out. Left of it: the pad (SDL has
+   no joystick driver there; PSL1GHT's `io/pad` behind SDL's virtual
+   gamepad) and sound (the dummy device plays nothing).
 2. **GL carried out with the RSX**, a layer beside the Vulkan one for
-   the functions the classic renderer calls: textures, buffers and
-   vertex layouts in RSX memory, state, framebuffers, draws.
+   the functions the classic renderer calls: begun (the display, the
+   clear, the flip, the read-back); next textures, buffers and vertex
+   layouts in RSX memory, state, framebuffers, draws.
 3. **The shaders written again** as RSX programs, kept beside their
    GLSL and chosen by the program's name instead of compiled at run
    time: first the direct renderer's pair (the 2D path: menus, the
