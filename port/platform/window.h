@@ -112,14 +112,17 @@ void install_app_menus(bool developer);
 // Which OpenGL the window's context is: the desktop's 4.1 core profile, OpenGL ES 3.2 (Android,
 // whose drivers have only ES; renderer/gl.h and renderer/shader.h adapt to it), or the renderer's
 // GL carried out with Vulkan (renderer/vulkan/vkgl.h), where the build has it; a window that
-// cannot have Vulkan opens with the system's OpenGL instead.
+// cannot have Vulkan opens with the system's OpenGL instead. On the PlayStation 3 it is the
+// renderer's GL carried out with the RSX (renderer/rsx/rsxgl.h), the one kind there: the window
+// is the whole screen in the console's video mode.
 enum class GlApi {
     Desktop,
     ES,
     Vulkan,
+    Rsx,
 };
 
-// ES on Android, the desktop's elsewhere; OPENRAC_GL_API=es, =desktop or =vulkan in the
+// ES on Android, the RSX's on the PlayStation 3, the desktop's elsewhere; OPENRAC_GL_API=es, =desktop or =vulkan in the
 // environment chooses (es on a desktop draws through its driver's ES context, which is how the ES
 // path is checked without a phone).
 GlApi default_gl_api();
@@ -238,9 +241,13 @@ private:
     // Opens the window for GlApi::Vulkan; false (and nothing left open) when Vulkan cannot be had.
     bool open_vulkan(const WindowConfig& config, std::string& error);
 
+    // Opens the window for GlApi::Rsx; false (and nothing left open) when the RSX cannot be had.
+    bool open_rsx(const WindowConfig& config, std::string& error);
+
     SDL_Window* m_window = nullptr;
     SDL_GLContextState* m_context = nullptr;
     bool m_vulkan = false;
+    bool m_rsx = false;
     bool m_low_latency = false;
     bool m_hdr_window = false;        // Android: the window's colour mode asked for HDR
     float m_hdr_headroom = 0.0f;      // Android: the headroom the window asked for

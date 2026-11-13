@@ -201,6 +201,15 @@ if(OPENRAC_VULKAN)
   target_link_libraries(openrac_platform PRIVATE openrac_renderer_vulkan)
   target_compile_definitions(openrac_platform PRIVATE OPENRAC_VULKAN=1)
 endif()
+# The PlayStation 3's renderer: renderer/gl.h carried out with the RSX (renderer/rsx/rsxgl.h),
+# through PSL1GHT's librsx, which the window opens there.
+if(OPENRAC_PS3)
+  add_library(openrac_renderer_rsx STATIC renderer/rsx/rsxgl.cpp)
+  target_link_libraries(openrac_renderer_rsx PUBLIC openrac_common -lrsx -lgcm_sys)
+  openrac_warnings(openrac_renderer_rsx)
+  target_link_libraries(openrac_platform PRIVATE openrac_renderer_rsx)
+  target_compile_definitions(openrac_platform PRIVATE OPENRAC_RSX=1)
+endif()
 # macOS: the menu bar's name and menus (platform/macos_app.mm).
 if(APPLE)
   target_sources(openrac_platform PRIVATE platform/macos_app.mm)

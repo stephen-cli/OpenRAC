@@ -26,6 +26,9 @@
 
 #include "renderer/vulkan/vkgl.h"
 #endif
+#if defined(OPENRAC_RSX)
+#include "renderer/rsx/rsxgl.h"
+#endif
 #if defined(OPENRAC_VULKAN) && defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -282,6 +285,13 @@ Platform::Platform(unsigned subsystems) {
     if ((subsystems & kAudio) != 0) {
         flags |= SDL_INIT_AUDIO;
     }
+#if defined(__lv2ppu__)
+    // SDL has no drivers for the console (cmake/Dependencies.cmake): its window and its sound
+    // device are the dummy ones, which it uses only when asked for by name. The picture goes to
+    // the RSX beside it (open_rsx).
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+#endif
     m_ok = SDL_Init(flags);
     if (!m_ok) {
         m_error = std::format("SDL could not start: {}", SDL_GetError());
@@ -331,6 +341,8 @@ GlApi default_gl_api() {
     }
 #if defined(__ANDROID__)
     return GlApi::ES;
+#elif defined(OPENRAC_RSX)
+    return GlApi::Rsx;
 #else
     return GlApi::Desktop;
 #endif
@@ -497,8 +509,46 @@ bool Window::open_vulkan(const WindowConfig& config, std::string& error) {
 #endif
 }
 
+bool Window::open_rsx([[maybe_unused]] const WindowConfig& config, std::string& error) {
+#if defined(OPENRAC_RSX)
+    rsxgl::Config rsx;
+    rsx.vsync = config.vsync;
+    if (!rsxgl::open(rsx, error)) {
+        return false;
+    }
+    // SDL's window is the dummy driver's, for the events and the sizes the program asks it: as
+    // big as the screen the RSX draws.
+    m_window = SDL_CreateWindow(config.title.c_str(), rsxgl::width(), rsxgl::height(), 0);
+    if (m_window == nullptr) {
+        error = std::format("no window: {}", SDL_GetError());
+        rsxgl::close();
+        return false;
+    }
+    m_rsx = true;
+    m_gl_api = GlApi::Rsx;
+    m_gl_version = "RSX";
+    m_gl_renderer = rsxgl::device_name();
+    m_gl_vendor = "PSL1GHT librsx";
+    m_mode = DisplayMode::Borderless;
+    log::info("graphics: {}, the renderer's GL carried out with the RSX", m_gl_renderer);
+    log::header(std::format("graphics  {} ({}), hardware", m_gl_renderer, m_gl_vendor), false);
+    return true;
+#else
+    error = "this build has no RSX renderer";
+    return false;
+#endif
+}
+
 std::unique_ptr<Window> Window::open(const WindowConfig& asked, std::string& error) {
     WindowConfig config = asked;
+    if (config.gl_api == GlApi::Rsx) {
+        // The console has no other graphics to fall back on.
+        std::unique_ptr<Window> window(new Window());
+        if (!window->open_rsx(config, error)) {
+            return nullptr;
+        }
+        return window;
+    }
     if (config.gl_api == GlApi::Vulkan) {
         std::unique_ptr<Window> window(new Window());
         std::string why;
@@ -690,6 +740,11 @@ std::unique_ptr<Window> Window::open(const WindowConfig& asked, std::string& err
 }
 
 Window::~Window() {
+#if defined(OPENRAC_RSX)
+    if (m_rsx) {
+        rsxgl::close();
+    }
+#endif
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan) {
         vkgl::close();
@@ -913,6 +968,12 @@ bool Window::focused() const {
 }
 
 void Window::swap() {
+#if defined(OPENRAC_RSX)
+    if (m_rsx) {
+        rsxgl::present();
+        return;
+    }
+#endif
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan) {
         vkgl::present();
@@ -933,6 +994,11 @@ void Window::drawable_size(int& width, int& height) const {
 }
 
 GlLoader Window::gl_loader() {
+#if defined(OPENRAC_RSX)
+    if (rsxgl::active()) {
+        return rsxgl::get_proc;
+    }
+#endif
 #if defined(OPENRAC_VULKAN)
     if (vkgl::active()) {
         return vkgl::get_proc;
