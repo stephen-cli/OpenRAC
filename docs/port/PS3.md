@@ -329,26 +329,35 @@ And newlib's table of exit handlers stopped at 32, which a C++ program
 fills with its statics' destructors, so the handler that writes the
 end of a run was refused: the console's newlib grows the table.
 
-The run stops at frame 958, at the sound engine's first thread (the
-reader of a music track): `std::thread` throws "Enable multithreading
-to use std::thread". libstdc++ reaches the thread library through
-weak references, which pull nothing out of a static library, and
-takes the missing functions to mean a program without threads.
-Linking all of `libpthread` makes them present, and then the program
-stops before `main`: libgcc's registration of the exception tables
-locks a mutex from the start-up code, and pthreads-embedded creates a
-mutex on its first lock with locks of its own that `pthread_init`
-makes, which nothing has called yet, on a heap whose system calls
-PSL1GHT wires in a constructor that has not run either. The thread
-library has to be usable from the first instruction, or its locks
-must do nothing until it is.
+That run stopped at frame 958, at the sound engine's first thread (the
+reader of a music track), which the next subsection has.
+
+### Threads on the console (2026-11-13)
+
+`std::thread` threw "Enable multithreading to use std::thread".
+libstdc++ reaches the thread library through weak references, which
+pull nothing out of a static library, and takes the missing functions
+to mean a program without threads: the console's programs link all of
+`libpthread` (`ppu.cmake`). With that alone the program stopped before
+`main`: libgcc's registration of the exception tables locks a mutex
+from the start-up code, and pthreads-embedded creates a mutex on its
+first lock with locks of its own that `pthread_init` makes, which
+nothing had called, on a heap whose system calls PSL1GHT wires in a
+constructor that had not run either. The toolchain's pthreads-embedded
+is changed in two places (`pthread-emb-lv2.py`): it initialises itself
+in a constructor that runs after PSL1GHT's and before every one of the
+program's, and until then its mutex calls do nothing and succeed, the
+program having one thread.
+
+With it the headless run under RPCS3 goes the whole 1800 frames and
+ends by itself, with the sound engine's reader threads started, and
+its state at the last frame is that of the Linux builds to the last
+digit: level 0, Veldin, the hero at 132.09, 115.48, 31.426617 turned
+0.6627015. The headless game runs on the console's side of the
+emulator; no real console has run it yet.
 
 ## 7. Next steps
 
-1. Threads on the console (section 6): pthreads-embedded initialised
-   before the start-up code's first lock, all of it linked, then
-   `std::thread` under the sound engine and the rest of the 1800
-   frames.
-2. The renderer backend, once the game runs headless on the console; the
-   extracted levels through the readers on big-endian (`--check-levels`)
-   come with it.
+1. The renderer backend, now that the game runs headless on the console;
+   the extracted levels through the readers on big-endian
+   (`--check-levels`) come with it.

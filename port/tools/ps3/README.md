@@ -165,6 +165,16 @@ ps3toolchain's prebuilt compiler:
    pthreads-embedded only (ps3dev's stages 2 and 3, `PS3LIBRARIES_STAGES`):
    the other forty are old ports (libunrar, polarssl) that do not compile
    against newlib 4.6, and the port has no use for them.
+   pthreads-embedded is then built again with two changes
+   (`pthread-emb-lv2.py`, on the source ps3libraries left unpacked): it
+   calls its own `pthread_init` in a constructor of priority 105, after
+   PSL1GHT's that wires the heap's system calls (104) and before the
+   program's; and until then `pthread_mutex_lock`, `_trylock`,
+   `_timedlock` and `_unlock` do nothing and succeed. A program that
+   links all of the library has libgcc lock a mutex from the start-up
+   code (the registration of the exception tables), before any
+   constructor: the library made that mutex on the spot, with locks and
+   a heap it did not have yet, and the program stopped before `main`.
 
 `Containerfile` runs the script as its second step, so `podman build`
 gives the whole toolchain; while a step is being worked on, the script
@@ -216,6 +226,10 @@ console needed of the port, each with its reason at the place:
 - Game memory is packed into one allocation (`runtime/memory.cpp`,
   `OPENRAC_PACKED_MEMORY`; docs/port/PS3.md, section 6): the console
   has no 4 GB of address space to reserve.
+- All of `libpthread` is linked (`ppu.cmake`, `--whole-archive`):
+  libstdc++ reaches it through weak references, which pull nothing out
+  of a static library, and `std::thread` then throws "Enable
+  multithreading to use std::thread".
 - `sprxlinker` after the link (`ppu.cmake`): the linker leaves the count
   of the system libraries' imports at zero in the stub table
   (`.lib.stub`), so the loader resolved none and the program's first
