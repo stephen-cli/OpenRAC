@@ -356,8 +356,42 @@ digit: level 0, Veldin, the hero at 132.09, 115.48, 31.426617 turned
 0.6627015. The headless game runs on the console's side of the
 emulator; no real console has run it yet.
 
+### The first picture (2026-11-13)
+
+[rsx-probe](../../port/tools/ps3/rsx-probe/README.md) draws through
+PSL1GHT's `librsx` under RPCS3: a cleared 1280x720 screen and one
+triangle with a colour at each corner, read back from the RSX's memory
+into a file. Two things it settles for the backend. The RSX's programs
+need no Cg toolkit (NVIDIA's, proprietary, which PSL1GHT's `cgcomp`
+loads to compile Cg): `cgcomp -a` assembles ARB vertex and fragment
+program text by itself. And a console program can hand a script its
+own picture, which is how the backend's pictures will be compared
+with the other platforms'.
+
 ## 7. Next steps
 
-1. The renderer backend, now that the game runs headless on the console;
-   the extracted levels through the readers on big-endian
-   (`--check-levels`) come with it.
+The renderer backend, now that the game runs headless on the console.
+What it has to carry, measured in the tree: the renderer speaks OpenGL
+through 106 functions (`renderer/gl.h`), which the Vulkan build already
+answers with a layer of its own (`renderer/vulkan`, GL carried out with
+Vulkan); the classic picture is 23 GLSL 4.10 shaders, about 1,060
+lines (`renderer/shaders`, `scene/shaders`); the enhanced renderer's 39
+more, with compute, are beyond a GeForce 7 and stay off the console.
+The proposal, in the order that gives a picture soonest:
+
+1. **The window without SDL**: the console's video mode, pad and the
+   flip behind `platform/`'s window, so that the windowed program
+   builds for the console with a renderer that draws nothing.
+2. **GL carried out with the RSX**, a layer beside the Vulkan one for
+   the functions the classic renderer calls: textures, buffers and
+   vertex layouts in RSX memory, state, framebuffers, draws.
+3. **The shaders written again** as RSX programs, kept beside their
+   GLSL and chosen by the program's name instead of compiled at run
+   time: first the direct renderer's pair (the 2D path: menus, the
+   HUD, the title screen), whose picture is compared with the other
+   platforms' through the probe's read-back; then terrain and ties,
+   whose vertex shaders lean on integers and instancing that Shader
+   Model 3 has not, so part of their work moves to the CPU.
+4. Textures within 256 MB of video memory (section 2), and the
+   extracted levels through the readers on big-endian
+   (`--check-levels`).
