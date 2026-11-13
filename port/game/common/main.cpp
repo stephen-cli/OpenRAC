@@ -518,8 +518,8 @@ int main(int argc, char** argv) {
     timeBeginPeriod(1);
 #endif
 #if defined(__lv2ppu__)
-    // The console's command line and environment come from a file (program/options.h), read
-    // before anything reads either: these pointers stay for the session's log.
+    // The console's command line comes from a file (program/options.h): these pointers stay
+    // for the session's log.
     static const std::vector<std::string> console_arguments =
         program::console_arguments(argc > 0 ? argv[0] : nullptr);
     static std::vector<char*> console_argv;

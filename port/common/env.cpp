@@ -10,6 +10,9 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdlib>
+#if defined(__lv2ppu__)
+#include <fstream>
+#endif
 
 namespace openrac::env {
 namespace {
@@ -530,8 +533,39 @@ static_assert(rows_in_order(), "each row of kVariables is at the place of its Va
 // The value of each variable as the program found it, in the table's order; nothing when unset.
 using Snapshot = std::array<std::optional<std::string>, kVariableCount>;
 
+#if defined(__lv2ppu__)
+// Reads the console's file (env.h, console_file): sets its variables, returns its other lines.
+std::vector<std::string> read_console_file() {
+    std::vector<std::string> lines;
+    std::ifstream file("/app_home/openrac.args");
+    std::string line;
+
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+
+        const std::size_t equals = line.find('=');
+        if (!line.starts_with("--") && equals != std::string::npos) {
+            setenv(line.substr(0, equals).c_str(), line.c_str() + equals + 1, 1);
+            continue;
+        }
+
+        lines.push_back(line);
+    }
+
+    return lines;
+}
+#endif
+
 // Reads every variable of the table from the environment.
 Snapshot read_environment() {
+#if defined(__lv2ppu__)
+    console_file();  // the console's environment is in its file
+#endif
     Snapshot values;
     for (const Variable& row : kVariables) {
         // std::getenv wants the name ending in a NUL, which a view need not have.
@@ -608,6 +642,15 @@ double number(Var var, double fallback) {
     assert(variable(var).kind == Kind::Number);
     return read_number(value(var), fallback);
 }
+
+#if defined(__lv2ppu__)
+const std::vector<std::string>& console_file() {
+    // Never destroyed, as the snapshot is not: the command line's pointers are into it.
+    static const std::vector<std::string>* const lines =
+        new std::vector<std::string>(read_console_file());
+    return *lines;
+}
+#endif
 
 std::optional<std::string> system_variable(const char* name) {
     const char* found = std::getenv(name);

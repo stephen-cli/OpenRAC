@@ -74,11 +74,8 @@ fs::path default_levels(const fs::path& data);
 Options parse(int argc, char** argv);
 
 #if defined(__lv2ppu__)
-// The console starts a program with no command line and no environment: both come from
-// /app_home/openrac.args, a file beside the program (RPCS3 and the homebrew loaders map /app_home
-// to its folder), one line each: an option, its value on the next line, or NAME=VALUE (a line
-// without -- in front and with = in it), which sets the environment variable (common/env.h); #
-// starts a comment. Returns the command line, `program` first, with the variables set.
+// The console starts a program with no command line: it is the option lines of the file beside
+// the program (common/env.h, console_file, which has the file's format), `program` first.
 std::vector<std::string> console_arguments(const char* program);
 #endif
 

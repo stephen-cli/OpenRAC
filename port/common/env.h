@@ -22,6 +22,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace openrac::env {
 
@@ -251,6 +252,16 @@ struct Variable {
 // Returns the value of a variable the port does not own (DISPLAY, VULKAN_SDK), or nothing when it
 // is unset. Read at each call and not kept, since the port sets some of them itself (DRI_PRIME).
 [[nodiscard]] std::optional<std::string> system_variable(const char* name);
+
+#if defined(__lv2ppu__)
+// The console starts a program with no command line and no environment: both come from
+// /app_home/openrac.args, a file beside the program (RPCS3 and the homebrew loaders map /app_home
+// to its folder), one line each: an option, its value on the next line, or NAME=VALUE (a line
+// without -- in front and with = in it), which sets the environment variable; # starts a
+// comment. The file is read once, before the variables are (code that runs before main reads
+// them): returns its other lines, the command line's (program/options.h, console_arguments).
+[[nodiscard]] const std::vector<std::string>& console_file();
+#endif
 
 // Returns whether `value` (nothing for an unset variable) turns on a flag read by `truth`; a
 // NotAFlag is never on. The reading behind flag, declared for the tests that pin it.
