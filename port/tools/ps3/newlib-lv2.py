@@ -253,6 +253,16 @@ replace_once(
     "#if defined (_LITE_EXIT) || defined (__lv2ppu__)\n#define CLEANUP_FILE _fflush_r\n",
 )
 
+# newlib's own retargetable locks do nothing: they are there to be replaced, and libsysbase has the
+# console's (newlib-lv2/sysbase/retarget_lock.c). In one group of archives the linker took libc's
+# all the same, since malloc's reference to them comes up while it is reading libc, and the
+# allocator ran unlocked under every thread. The console's libc has none of its own.
+replace_once(
+    tree / "newlib" / "libc" / "misc" / "lock.c",
+    "#ifndef __SINGLE_THREAD__\n",
+    "#if !defined (__SINGLE_THREAD__) && !defined (__lv2ppu__)\n",
+)
+
 for name in ["sys/dirent.h", "sys/utime.h", "sys/syscalls.h"]:
     shutil.copyfile(pieces / "include" / name, include / name)
 

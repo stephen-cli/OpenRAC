@@ -162,6 +162,12 @@ make -C "$HERE/newlib-lv2/sysbase" BUILD="$WORK/sysbase" clean install
 # pthread libstdc++ was built over. The other forty are old ports (libunrar, polarssl) that do not
 # compile against newlib 4.6, and the port has no use for them.
 (cd /opt/ps3dev && PSL1GHT_REF="$PSL1GHT_REF" PS3LIBRARIES_REF="$PS3LIBRARIES_REF"     PS3LIBRARIES_STAGES="1 32" ./build-all.sh 2 3)
+# PSL1GHT's librsx again with the port's change (psl1ght-lv2.py: the command buffer's callback
+# called so that GCC 13 knows what it does), from the source ps3dev left checked out.
+PSL=/opt/ps3dev/build/PSL1GHT
+python3 "$HERE/psl1ght-lv2.py" "$PSL"
+make -C "$PSL/ppu/librsx" install
+cp "$PSL/ppu/include/rsx/rsx_function_macros.h" "$PS3DEV/ppu/include/rsx/rsx_function_macros.h"
 # pthreads-embedded again with the port's changes (pthread-emb-lv2.py: usable from a program's first
 # instruction), from the source ps3libraries left unpacked.
 PTE=/opt/ps3dev/build/ps3libraries/build/pthread-emb-ps3
