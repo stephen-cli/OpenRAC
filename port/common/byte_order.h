@@ -18,6 +18,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 #include <utility>
 
@@ -109,6 +110,26 @@ T from_little_endian(T value) {
         return value;
     } else {
         return byte_swapped(value);
+    }
+}
+
+// A T copied from the console's little-endian bytes at FROM, in the host's order: how the
+// port reads a number out of the game's memory or one of its packets.
+template <typename T>
+T read_little_endian(const void* from) {
+    T value;
+    std::memcpy(&value, from, sizeof value);
+    return from_little_endian(value);
+}
+
+// COUNT numbers of the console's at FROM into TO, each in the host's order.
+template <typename T>
+void copy_little_endian(T* to, const void* from, std::size_t count) {
+    std::memcpy(to, from, count * sizeof(T));
+    if constexpr (!kHostIsLittleEndian && sizeof(T) > 1) {
+        for (std::size_t i = 0; i < count; ++i) {
+            to[i] = swapped(to[i]);
+        }
     }
 }
 

@@ -34,6 +34,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "common/byte_order.h"
 #include "common/env.h"
 #include "common/log.h"
 #include "common/parallel.h"
@@ -104,7 +105,7 @@ std::uint32_t word_at(std::span<const std::uint8_t> ram, std::uint32_t at) {
     std::uint32_t w = 0;
     at = openrac_guest_ram_address_for_size(at, static_cast<std::uint32_t>(ram.size()));
     if (at + 4 <= ram.size()) {
-        std::memcpy(&w, ram.data() + at, 4);
+        w = byte_order::read_little_endian<std::uint32_t>(ram.data() + at);
     }
     return w;
 }
@@ -294,9 +295,8 @@ std::vector<std::uint8_t> direct_packets(
             p = bytes;
         }
         while (p + 16 <= size) {
-            std::uint64_t lo, hi;
-            std::memcpy(&lo, d + p, 8);
-            std::memcpy(&hi, d + p + 8, 8);
+            const auto lo = byte_order::read_little_endian<std::uint64_t>(d + p);
+            const auto hi = byte_order::read_little_endian<std::uint64_t>(d + p + 8);
             p += 16;
             const std::uint32_t nloop = static_cast<std::uint32_t>(lo & 0x7FFF);
             const std::uint32_t flg = static_cast<std::uint32_t>((lo >> 58) & 3);
@@ -308,9 +308,8 @@ std::vector<std::uint8_t> direct_packets(
                     if (((hi >> (4 * (i % nreg))) & 0xF) != 0xE) {
                         continue;
                     }
-                    std::uint64_t value, address;
-                    std::memcpy(&value, d + p, 8);
-                    std::memcpy(&address, d + p + 8, 8);
+                    const auto value = byte_order::read_little_endian<std::uint64_t>(d + p);
+                    const auto address = byte_order::read_little_endian<std::uint64_t>(d + p + 8);
                     switch (address & 0xFF) {
                         case 0x7F:
                             if ((value >> 48) == renderer::GifInterpreter::kMobyMarker
@@ -437,8 +436,7 @@ std::vector<std::uint8_t> direct_packets(
     };
     std::size_t at = 0;
     while (at + 4 <= vif.size()) {
-        std::uint32_t code;
-        std::memcpy(&code, vif.data() + at, 4);
+        const auto code = byte_order::read_little_endian<std::uint32_t>(vif.data() + at);
         at += 4;
         const std::uint32_t command = (code >> 24) & 0x7F;
         const std::uint32_t imm = code & 0xFFFF;
@@ -460,14 +458,17 @@ std::vector<std::uint8_t> direct_packets(
             }
             // Each DIRECT's data stays a DIRECT of its own (NOP NOP NOP DIRECT, then the data), so
             // the direct renderer reads every one from its first tag.
-            const std::uint32_t head[4] = {0, 0, 0, 0x50000000u | (imm & 0xFFFF)};
+            // In the console's byte order, as the data after it is and the direct renderer reads.
+            const std::uint32_t head[4] =
+                {0, 0, 0, byte_order::from_little_endian(0x50000000u | (imm & 0xFFFF))};
             direct_at = gif.size();
             // The world's marker (renderer::GifInterpreter::kWorldMarker): one PACKED A+D write to
             // the NOP register, put where the game's terrain pass runs.
             if (world_marker != nullptr && *world_marker == SIZE_MAX && imm == 2) {
-                std::uint64_t value, address;
-                std::memcpy(&value, vif.data() + at + 16, 8);
-                std::memcpy(&address, vif.data() + at + 24, 8);
+                const auto value =
+                    byte_order::read_little_endian<std::uint64_t>(vif.data() + at + 16);
+                const auto address =
+                    byte_order::read_little_endian<std::uint64_t>(vif.data() + at + 24);
                 if ((address & 0xFF) == 0x7F
                     && (value >> 48) == renderer::GifInterpreter::kWorldMarker) {
                     *world_marker = direct_at;
@@ -476,9 +477,10 @@ std::vector<std::uint8_t> direct_packets(
             // The first moby marker (renderer::GifInterpreter::kMobyMarker): where the game drew
             // mobys of a list of their own (GameProfile::own_mobys_split_the_2d).
             if (moby_marker != nullptr && *moby_marker == SIZE_MAX && imm == 2) {
-                std::uint64_t value, address;
-                std::memcpy(&value, vif.data() + at + 16, 8);
-                std::memcpy(&address, vif.data() + at + 24, 8);
+                const auto value =
+                    byte_order::read_little_endian<std::uint64_t>(vif.data() + at + 16);
+                const auto address =
+                    byte_order::read_little_endian<std::uint64_t>(vif.data() + at + 24);
                 if ((address & 0xFF) == 0x7F
                     && (value >> 48) == renderer::GifInterpreter::kMobyMarker) {
                     *moby_marker = direct_at;
@@ -511,8 +513,7 @@ std::vector<std::uint8_t> direct_packets(
                 const std::uint8_t* data = vif.data() + at;
                 if (vn == 3 && vl == 0 && count == 1 && address == 0) {
                     // A strip's GIF tag: a triangle strip (PRIM 4) of NLOOP vertices.
-                    std::uint64_t tag;
-                    std::memcpy(&tag, data, 8);
+                    const auto tag = byte_order::read_little_endian<std::uint64_t>(data);
                     strip_tag = ((tag >> 47) & 7) == 4 && (tag & 0x7FFF) >= 3;
                     strip_count = static_cast<std::uint32_t>(tag & 0x7FFF);
                     second_texture = ((tag >> 56) & 1) != 0;
@@ -536,7 +537,7 @@ std::vector<std::uint8_t> direct_packets(
                         const std::uint32_t at_vu = (address + q) & 0x3FF;
                         if (at_vu >= 0x3AC && at_vu <= 0x3AF) {
                             const std::uint32_t i = at_vu - 0x3AC;
-                            std::memcpy(&vu_fog[i * 4], data + q * 16, 16);
+                            byte_order::copy_little_endian(&vu_fog[i * 4], data + q * 16, 4);
                             vu_fog_set |= 1u << i;
                         }
                     }
@@ -598,9 +599,9 @@ std::vector<std::uint8_t> direct_packets(
                 }
                 for (std::uint32_t k = 0; k < strip_count; ++k) {
                     renderer::EffectVertex v;
-                    std::memcpy(&v.x, strip_xyz + k * 12, 12);
-                    std::memcpy(&v.s, strip_st + k * 8, 8);
-                    std::memcpy(&v.rgba, strip_rgba + k * 4, 4);
+                    byte_order::copy_little_endian(&v.x, strip_xyz + k * 12, 3);
+                    byte_order::copy_little_endian(&v.s, strip_st + k * 8, 2);
+                    v.rgba = byte_order::read_little_endian<std::uint32_t>(strip_rgba + k * 4);
                     strip_vertices->push_back(v);
                 }
                 strips->push_back(strip);
@@ -643,8 +644,7 @@ std::uint32_t game_mode_address() {
 // kUiQuadMarker to the NOP register. None when the list has no marker.
 std::optional<std::uint32_t> marker_generation(std::span<const std::uint8_t> packets) {
     for (std::size_t at = 0; at + 9 <= packets.size(); at += 8) {
-        std::uint64_t value = 0;
-        std::memcpy(&value, packets.data() + at, 8);
+        const auto value = byte_order::read_little_endian<std::uint64_t>(packets.data() + at);
         if ((value >> 48) == renderer::GifInterpreter::kUiQuadMarker && packets[at + 8] == 0x7F) {
             return static_cast<std::uint32_t>(value >> 24) & 0x3F;
         }
@@ -925,7 +925,7 @@ void log_tick_state(
             word_at(ram, fe->pad + 0x1A4)
         );
         float axes[4]{};
-        std::memcpy(axes, ram.data() + fe->pad + 0x100, sizeof axes);
+        byte_order::copy_little_endian(axes, ram.data() + fe->pad + 0x100, 4);
         log::info(
             "  pad socket {} state {} held {:#x}, right {:.3f} {:.3f}, left {:.3f} {:.3f}",
             word_at(ram, fe->pad + 0x194),
@@ -980,8 +980,7 @@ void log_tick_state(
     }
     if (!g->sky_sprites.empty()) {
         const auto& [r, tex0] = g->sky_sprites.front();
-        float size;
-        std::memcpy(&size, r.data() + 0x1C, 4);
+        const auto size = byte_order::read_little_endian<float>(r.data() + 0x1C);
         log::info(
             "  {} sky sprites; the first RGBA {:#x} size {:.3f} TEX0 {:#x} ALPHA {:#x}",
             g->sky_sprites.size(),
@@ -1061,9 +1060,8 @@ void log_mobys_near_hero(std::span<const std::uint8_t> ram, const host::GameStat
             }
             const std::uint8_t* b = ram.data() + m.address;
             float sphere[4];
-            float t = 0.0f;
-            std::memcpy(sphere, b, sizeof sphere);
-            std::memcpy(&t, b + 0x54, 4);
+            byte_order::copy_little_endian(sphere, b, 4);
+            const auto t = byte_order::read_little_endian<float>(b + 0x54);
             log::info(
                 "moby {} class {} at {:#x}: state {} mode {:#06x} seq {} frame {} t {:.2f} "
                 "pos {:.2f} {:.2f} {:.2f} dist {:.2f} radius {:.2f} "
@@ -1106,12 +1104,14 @@ std::optional<std::array<float, 8>> moby_point_light(
         return std::nullopt;
     }
     std::array<float, 4> centre;
-    std::memcpy(centre.data(), ram.data() + moby, sizeof(centre));
+    byte_order::copy_little_endian(centre.data(), ram.data() + moby, centre.size());
     std::array<float, 3> colour{}, direction{}, single{};
     int count = 0;
     for (std::uint32_t i = 0; i < 8; ++i) {
         std::array<float, 8> light;
-        std::memcpy(light.data(), ram.data() + bank + kPoints + i * 0x20, sizeof(light));
+        byte_order::copy_little_endian(
+            light.data(), ram.data() + bank + kPoints + i * 0x20, light.size()
+        );
         std::uint64_t xy;
         std::memcpy(&xy, ram.data() + bank + kPoints + i * 0x20 + 0x10, sizeof(xy));
         if (xy == 0) {
@@ -1204,8 +1204,7 @@ std::optional<scene::GameScenery> scenery_matrices(
         if (word + 4 > ram.size()) {
             return 0;
         }
-        gaddr at;
-        std::memcpy(&at, ram.data() + word, 4);
+        const auto at = byte_order::read_little_endian<gaddr>(ram.data() + word);
         return at != 0 && at % 16 == 0 && at + count * size <= ram.size() ? at : 0;
     };
     scene::GameScenery result;
@@ -1221,7 +1220,7 @@ std::optional<scene::GameScenery> scenery_matrices(
         for (std::size_t i = 0; i < count; ++i) {
             const std::uint8_t* m = ram.data() + at + i * 0x40;
             for (std::size_t c = 0; c < 4; ++c) {
-                std::memcpy(&out[i][c * 3], m + c * 0x10, 12);
+                byte_order::copy_little_endian(&out[i][c * 3], m + c * 0x10, 3);
             }
         }
     }
@@ -1232,8 +1231,8 @@ std::optional<scene::GameScenery> scenery_matrices(
         result.tie_lights.resize(ties);
         for (std::size_t i = 0; i < ties; ++i) {
             const std::uint8_t* r = ram.data() + at + i * 0x20;
-            std::memcpy(result.tie_spheres[i].data(), r, 16);
-            std::memcpy(&result.tie_lights[i], r + 0x1A, 2);
+            byte_order::copy_little_endian(result.tie_spheres[i].data(), r, 4);
+            byte_order::copy_little_endian(&result.tie_lights[i], r + 0x1A, 1);
         }
     }
     const std::size_t shrubs =
@@ -1243,8 +1242,8 @@ std::optional<scene::GameScenery> scenery_matrices(
         result.shrub_lights.resize(shrubs);
         for (std::size_t i = 0; i < shrubs; ++i) {
             const std::uint8_t* r = ram.data() + at + i * 0x20;
-            std::memcpy(result.shrub_spheres[i].data(), r, 16);
-            std::memcpy(&result.shrub_lights[i], r + 0x1E, 2);
+            byte_order::copy_little_endian(result.shrub_spheres[i].data(), r, 4);
+            byte_order::copy_little_endian(&result.shrub_lights[i], r + 0x1E, 1);
         }
     }
     return result;
@@ -1582,8 +1581,7 @@ TickMobys pose_mobys(
             // The hero, for bring-up: where he is and what his animation fields and pose say.
             const auto pose = scene::moby_palette(ram, m.address);
             const std::uint8_t* b = ram.data() + m.address;
-            float t = 0.0f;
-            std::memcpy(&t, b + 0x54, 4);
+            const auto t = byte_order::read_little_endian<float>(b + 0x54);
             bool finite = !pose.empty();
             for (const auto& f : pose) {
                 for (const auto& row : f) {
@@ -1861,11 +1859,13 @@ void light_scene(std::span<const std::uint8_t> ram, const host::GameState& state
         const gaddr bank = openrac_relocate_data(light_bank_address());
         if (bank + 16 * 0x40 <= ram.size()) {
             std::vector<float> sets(16 * 16);
-            std::memcpy(sets.data(), ram.data() + bank, sets.size() * sizeof(float));
+            byte_order::copy_little_endian(sets.data(), ram.data() + bank, sets.size());
             g->scene.set_light_sets(sets);
             if (bank + 16 * 0x40 + 8 * 0x20 <= ram.size()) {
                 std::array<float, 64> points{};
-                std::memcpy(points.data(), ram.data() + bank + 16 * 0x40, sizeof(points));
+                byte_order::copy_little_endian(
+                    points.data(), ram.data() + bank + 16 * 0x40, points.size()
+                );
                 g->scene.set_point_lights(points);
             }
         }
@@ -2306,8 +2306,7 @@ bool sends_image(std::span<const std::uint8_t> packets) {
 
     // Every qword is read as one: a GIF tag or image data read so is the false match above.
     for (std::size_t at = 0; at + kQwordBytes <= packets.size(); at += kQwordBytes) {
-        std::uint64_t value = 0;
-        std::memcpy(&value, packets.data() + at, sizeof(value));
+        const auto value = byte_order::read_little_endian<std::uint64_t>(packets.data() + at);
 
         // A transfer to the chip: its image follows in the packets.
         if (packets[at + kAddressByte] == renderer::gs::kTrxdir

@@ -11,6 +11,7 @@
 #include <optional>
 
 #include "assets/geometry/moby_animation.h"
+#include "common/byte_order.h"
 #include "openrac/game_host.h"
 #include "openrac/guest.h"
 
@@ -24,7 +25,7 @@ template <typename T>
 T at(gaddr address) {
     T value{};
     std::memcpy(&value, G(openrac_guest_ram_address(address)), sizeof(T));
-    return value;
+    return openrac::byte_order::from_little_endian(value);  // the console's memory
 }
 
 std::optional<rac1::MobyFrame> key_at(gaddr address) {

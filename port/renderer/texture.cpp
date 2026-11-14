@@ -6,15 +6,20 @@
 #include <algorithm>
 #include <cstring>
 
+#include "common/byte_order.h"
+
 namespace openrac::renderer {
 
+// A texel as a number has red in its low byte on any host: the pixels are bytes in R, G, B, A
+// order.
 std::uint32_t Rgba8Image::texel(int x, int y) const {
     std::uint32_t v = 0;
     std::memcpy(&v, &pixels[static_cast<std::size_t>((y * width + x) * 4)], 4);
-    return v;
+    return byte_order::from_little_endian(v);
 }
 
 void Rgba8Image::set_texel(int x, int y, std::uint32_t v) {
+    v = byte_order::from_little_endian(v);
     std::memcpy(&pixels[static_cast<std::size_t>((y * width + x) * 4)], &v, 4);
 }
 
@@ -47,7 +52,7 @@ std::uint32_t read32(std::span<const std::uint8_t> data, std::size_t offset) {
     if (offset + 4 <= data.size()) {
         std::memcpy(&v, data.data() + offset, 4);
     }
-    return v;
+    return byte_order::from_little_endian(v);  // the console's memory
 }
 
 std::uint16_t read16(std::span<const std::uint8_t> data, std::size_t offset) {

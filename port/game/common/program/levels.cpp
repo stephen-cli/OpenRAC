@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "common/breadcrumbs.h"
+#include "common/byte_order.h"
 #include "common/log.h"
 #include "openrac/elf.h"
 #include "openrac/game_host.h"
@@ -56,9 +57,7 @@ bool rac2_level_program(int level, std::vector<std::uint8_t>* bytes) {
         }
 
         const auto word = [](const std::vector<std::uint8_t>& from, std::size_t at) {
-            std::uint32_t value;
-            std::memcpy(&value, from.data() + at, sizeof(value));
-            return value;
+            return byte_order::read_little_endian<std::uint32_t>(from.data() + at);
         };
         const std::string name =
             std::format("G/LEVEL{}.WAD", level == kMuseum ? kMuseumFile : level);

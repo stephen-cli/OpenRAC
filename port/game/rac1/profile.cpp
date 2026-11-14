@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 
+#include "common/byte_order.h"
 #include "game/rac1/game_state.h"
 #include "game/rac1/gameplay_lighting.h"
 #include "game/rac1/host/collision_notes.h"
@@ -67,9 +68,7 @@ std::string notes(
         if (at + 4 > ram.size()) {
             return 0;
         }
-        std::uint32_t v;
-        std::memcpy(&v, ram.data() + at, 4);
-        return v;
+        return byte_order::read_little_endian<std::uint32_t>(ram.data() + at);
     };
     const auto byte = [&](std::uint32_t at) -> unsigned {
         at = openrac_guest_ram_address_for_size(at, static_cast<std::uint32_t>(ram.size()));

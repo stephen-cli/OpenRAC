@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/byte_order.h"
 #include "common/env.h"
 #include "common/log.h"
 #include "common/stats.h"
@@ -43,13 +44,13 @@ bool is_colour_format(std::uint8_t psm) {
 std::uint64_t read64(std::span<const std::uint8_t> data, std::size_t offset) {
     std::uint64_t v = 0;
     std::memcpy(&v, data.data() + offset, 8);
-    return v;
+    return byte_order::from_little_endian(v);  // the chip's packets are the console's
 }
 
 std::uint32_t read32(std::span<const std::uint8_t> data, std::size_t offset) {
     std::uint32_t v = 0;
     std::memcpy(&v, data.data() + offset, 4);
-    return v;
+    return byte_order::from_little_endian(v);
 }
 
 float as_float(std::uint32_t bits) {

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 the OpenRAC contributors
 //
 // The byte-order helpers (common/byte_order.h): a number's swap, a record walked field by field
-// through arrays and nested records, the field count, and the swap being its own inverse. The
+// through arrays and nested records, the field count, the swap being its own inverse, and numbers
+// read out of the console's bytes. The
 // readers' largest and most nested records are walked too, so a record the walk cannot take fails
 // here on every host, not only on a big-endian build.
 
@@ -100,11 +101,28 @@ void readers_records() {
     CHECK(byte_swapped(tie).normals == 0x02010000);
 }
 
+// The console's bytes read where they lie: the same numbers on any host.
+void console_bytes() {
+    const std::uint8_t bytes[12] =
+        {0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x80, 0x3f, 0x02, 0x01, 0xfe, 0xff};
+    CHECK(read_little_endian<std::uint32_t>(bytes) == 0x11223344);
+    CHECK(read_little_endian<float>(bytes + 4) == 1.0f);
+    CHECK(read_little_endian<std::uint16_t>(bytes + 8) == 0x0102);
+    CHECK(read_little_endian<std::int16_t>(bytes + 10) == -2);
+    std::uint32_t words[2] = {};
+    copy_little_endian(words, bytes, 2);
+    CHECK(words[0] == 0x11223344 && words[1] == 0x3f800000);
+    std::uint8_t copied[3] = {};
+    copy_little_endian(copied, bytes, 3);
+    CHECK(copied[0] == 0x44 && copied[2] == 0x22);
+}
+
 }  // namespace
 
 int main() {
     numbers();
     fields();
     readers_records();
+    console_bytes();
     return openrac::test::result();
 }

@@ -14,6 +14,7 @@
 #include <iterator>
 #include <string_view>
 
+#include "common/byte_order.h"
 #include "common/ps2_float.h"
 #include "openrac/guest.h"
 
@@ -68,7 +69,7 @@ T at(std::span<const std::uint8_t> ram, std::uint32_t address) {
     if (address + sizeof(T) <= ram.size()) {
         std::memcpy(&value, ram.data() + address, sizeof(T));
     }
-    return value;
+    return byte_order::from_little_endian(value);  // the game's memory is the console's
 }
 
 renderer::Vec3 vec3(std::span<const std::uint8_t> ram, std::uint32_t address) {
@@ -109,7 +110,7 @@ std::optional<host::LiveMoby> read_live_moby(std::span<const std::uint8_t> ram, 
     live.occlusion = at<std::uint16_t>(ram, m + 0x36);
     // The animation code maintains this world-space sphere in packed units.
     std::array<float, 4> sphere;
-    std::memcpy(sphere.data(), ram.data() + m, sizeof(sphere));
+    byte_order::copy_little_endian(sphere.data(), ram.data() + m, sphere.size());
     if (sphere[3] > 0
         && std::all_of(sphere.begin(), sphere.end(), [](float x) { return std::isfinite(x); })) {
         for (std::size_t i = 0; i < sphere.size(); ++i) {
@@ -173,9 +174,8 @@ std::optional<std::uint8_t> moby_proc_distance(
 ) {
     using namespace openrac::ps2;
     u32 sphere[4];
-    std::memcpy(sphere, moby, sizeof(sphere));
-    std::int16_t distance;
-    std::memcpy(&distance, moby + 0x32, sizeof(distance));
+    byte_order::copy_little_endian(sphere, moby, 4);
+    const auto distance = byte_order::read_little_endian<std::int16_t>(moby + 0x32);
     const u32 units = bits(1024.0f);
     u32 v[3];
     for (int i = 0; i < 3; ++i) {
@@ -223,9 +223,8 @@ std::optional<std::uint8_t> moby_distance_fade(
     const std::uint8_t* moby, const host::GameState& state
 ) {
     float sphere[4];
-    std::memcpy(sphere, moby, sizeof(sphere));
-    std::int16_t distance;
-    std::memcpy(&distance, moby + 0x32, sizeof(distance));
+    byte_order::copy_little_endian(sphere, moby, 4);
+    const auto distance = byte_order::read_little_endian<std::int16_t>(moby + 0x32);
     if (!std::isfinite(sphere[0]) || !std::isfinite(sphere[1]) || !std::isfinite(sphere[2])
         || !std::isfinite(sphere[3])) {
         return std::nullopt;

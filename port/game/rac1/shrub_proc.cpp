@@ -10,6 +10,7 @@
 #include <array>
 #include <cstring>
 
+#include "common/byte_order.h"
 #include "common/ps2_float.h"
 #include "openrac/guest.h"
 
@@ -25,7 +26,7 @@ T at(std::span<const std::uint8_t> ram, std::uint32_t address) {
     if (address + sizeof(T) <= ram.size()) {
         std::memcpy(&value, ram.data() + address, sizeof(T));
     }
-    return value;
+    return byte_order::from_little_endian(value);  // the game's memory is the console's
 }
 
 // ShrubProc's class pointer table in each program: the boot program's and levels 0..18's, found
