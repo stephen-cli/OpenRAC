@@ -1,0 +1,28 @@
+!!ARBvp1.0
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 the OpenRAC contributors
+#
+# renderer/shaders/direct.vert for the RSX (README.md). The vertices arrive in device
+# coordinates; the attributes are GL's locations: 0 position, 1 stq, 2 colour, 3 fog.
+#
+# The fragment program's numbers go through here: c[1] to c[6] are handed to it as texture
+# coordinates 1 to 6, the same at every vertex. A vertex program's constants travel in the command
+# buffer with the draw; a fragment program's are written into the program itself, which the RSX
+# may still be reading for an earlier draw.
+#
+#   c[0]  pixel_offset.xy, 0, 0
+#   c[1] to c[6]  direct.fp's texcoord[1] to texcoord[6]
+MOV R0, vertex.attrib[0];
+ADD R0.xy, R0, c[0];
+MOV result.position, R0;
+MOV result.color, vertex.attrib[2];
+MOV R1, vertex.attrib[1];
+MOV R1.w, vertex.attrib[3].x;
+MOV result.texcoord[0], R1;
+MOV result.texcoord[1], c[1];
+MOV result.texcoord[2], c[2];
+MOV result.texcoord[3], c[3];
+MOV result.texcoord[4], c[4];
+MOV result.texcoord[5], c[5];
+MOV result.texcoord[6], c[6];
+END

@@ -5,6 +5,9 @@
 // The chip's texture function, fog and alpha test, per pixel, in the chip's
 // units (colour bytes 0..255, 0x80 = 1.0 when modulating; alpha 0x80 opaque).
 // Blending and the depth test are GL's fixed-function state.
+//
+// On the PlayStation 3 this stage is renderer/rsx/programs/direct.fp, which the RSX layer finds by
+// this line in both stages: rsx-program: direct
 
 in vec3 v_stq;
 in vec4 v_colour;

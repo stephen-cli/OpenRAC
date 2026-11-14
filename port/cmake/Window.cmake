@@ -204,10 +204,41 @@ endif()
 # The PlayStation 3's renderer: renderer/gl.h carried out with the RSX (renderer/rsx/rsxgl.h),
 # through PSL1GHT's librsx, which the window opens there.
 if(OPENRAC_PS3)
-  add_library(openrac_renderer_rsx STATIC renderer/rsx/rsxgl.cpp)
+  add_library(openrac_renderer_rsx STATIC
+    renderer/rsx/rsxgl.cpp
+    renderer/rsx/rsxgl_draw.cpp
+    renderer/rsx/rsxgl_objects.cpp
+  )
+  # The layer's RSX programs (renderer/rsx/programs): assembled by PSL1GHT's cgcomp and embedded
+  # as arrays of bytes in rsx_programs.h.
+  set(rsx_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/rsx")
+  set(rsx_assembled "")
+  foreach(program direct)
+    foreach(stage vp fp)
+      string(SUBSTRING "${stage}" 0 1 flag)
+      set(source "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/${program}.${stage}")
+      set(assembled "${rsx_generated}/${program}.${stage}o")
+      add_custom_command(OUTPUT "${assembled}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${rsx_generated}"
+        COMMAND cgcomp -${flag} -a "${source}" "${assembled}"
+        DEPENDS "${source}" VERBATIM)
+      list(APPEND rsx_assembled "${assembled}")
+    endforeach()
+  endforeach()
+  add_custom_command(OUTPUT "${rsx_generated}/rsx_programs.h"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUTS=${rsx_assembled}" "-DOUTPUT=${rsx_generated}/rsx_programs.h"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/embed.cmake"
+    DEPENDS ${rsx_assembled} "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/embed.cmake"
+    VERBATIM)
+  target_sources(openrac_renderer_rsx PRIVATE "${rsx_generated}/rsx_programs.h")
+  target_include_directories(openrac_renderer_rsx PRIVATE "${rsx_generated}")
   target_link_libraries(openrac_renderer_rsx PUBLIC openrac_common -lrsx -lgcm_sys)
   openrac_warnings(openrac_renderer_rsx)
   target_link_libraries(openrac_platform PRIVATE openrac_renderer_rsx)
+  # The layer checked by its pictures, a program for the console (tools/ps3/rsxgl-test).
+  add_executable(openrac-rsxgl-test tools/ps3/rsxgl-test/main.cpp)
+  target_link_libraries(openrac-rsxgl-test PRIVATE openrac_renderer_rsx)
+  openrac_warnings(openrac-rsxgl-test)
   target_compile_definitions(openrac_platform PRIVATE OPENRAC_RSX=1)
 endif()
 # macOS: the menu bar's name and menus (platform/macos_app.mm).

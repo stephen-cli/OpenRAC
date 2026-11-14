@@ -4,6 +4,9 @@
 //
 // The direct renderer's vertices arrive already in device coordinates (the
 // CPU applied XYOFFSET and the screen size); colours come as the chip's bytes.
+//
+// On the PlayStation 3 this stage is renderer/rsx/programs/direct.vp, which the RSX layer finds by
+// this line in both stages: rsx-program: direct
 
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 stq;

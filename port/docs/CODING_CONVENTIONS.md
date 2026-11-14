@@ -756,6 +756,7 @@ They share a name.
 | `audio/`, `media/` | `openrac::audio`, `openrac::media` | `openrac_audio`, `openrac_media` | exist |
 | `renderer/` | `openrac::renderer` (`::world` for `world/`) | `openrac_renderer` | exists, with `renderer/ui/` |
 | `renderer/vulkan/` | `openrac::vkgl` | `openrac_renderer_vulkan` | exists |
+| `renderer/rsx/` | `openrac::rsxgl` | `openrac_renderer_rsx` | exists (the PlayStation 3's build alone) |
 | `scene/` | `openrac::scene` | `openrac_scene` | exists (with `openrac_scene_renderer`, its GPU library) |
 | `enhanced/` | `openrac::lighting` | `openrac_enhanced` | exists |
 | `game/common/` | `openrac::host` for new code (`openrac::frontend`, `openrac::mods` today) | `openrac_host` | arriving with P3-02 |

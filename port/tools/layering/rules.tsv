@@ -41,6 +41,7 @@ module	assets/	assets
 module	audio/	audio
 module	media/	media
 module	renderer/vulkan/	renderer/vulkan
+module	renderer/rsx/	renderer/rsx
 module	renderer/world/	renderer/world
 module	renderer/	renderer
 module	materials/	materials
@@ -61,7 +62,7 @@ module	tests/	tests
 layer	0	sdk common
 layer	1	runtime
 layer	2	platform assets audio media
-layer	3	renderer renderer/vulkan renderer/world materials
+layer	3	renderer renderer/vulkan renderer/rsx renderer/world materials
 layer	4	scene
 layer	5	enhanced
 layer	6	game/common
@@ -71,13 +72,17 @@ layer	8	viewer extract tools android tests
 # Edges within a layer. audio plays the sound formats assets reads; media's movies carry PSS audio
 # that assets decodes. The world renderers and the Vulkan backend build on renderer's GL-shaped
 # interface, and the Vulkan backend carries out the world renderers' GL calls too (gl_world.h).
+# The RSX backend (the PlayStation 3's) answers renderer's GL functions (gl.h).
 # The tests cover the programs' code.
 allow	audio	assets
 allow	media	assets
 allow	renderer/world	renderer
 allow	renderer/vulkan	renderer renderer/world
+allow	renderer/rsx	renderer
 allow	tests	viewer extract
 
 # Known violations (docs/restructure/PROGRESS.md names the packages).
 # platform -> renderer/vulkan: the window opens the Vulkan backend itself; no package yet.
 except	platform/window.cpp:27	renderer/vulkan/vkgl.h	no package yet: the renderer should open its backend on the platform's window
+# platform -> renderer/rsx: the same for the PlayStation 3's backend.
+except	platform/window.cpp:30	renderer/rsx/rsxgl.h	no package yet: the renderer should open its backend on the platform's window
