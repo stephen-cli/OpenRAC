@@ -154,7 +154,11 @@ ps3toolchain's prebuilt compiler:
    `__syscalls` table that PSL1GHT's librt fills, `__getreent` in
    thread-local storage, `realpath`, and newlib's retargetable locks over
    lv2's lightweight mutexes (`retarget_lock.c`: newlib's named locks,
-   created on first use under one meta lock), and what libstdc++'s
+   created on first use under one meta lock; newlib's own do-nothing
+   locks are compiled out of the console's libc, `newlib-lv2.py`, since
+   the linker took them over these and the allocator ran unlocked under
+   every thread: a table's chain came back holding the number 9 once
+   two threads were allocating), and what libstdc++'s
    `std::filesystem` links that lv2 has not (`posix_extra.c`: `lstat` as
    `stat`, `unlinkat` over `unlink` and `rmdir` for a plain path,
    `pathconf`'s path length, and `symlink`, `readlink`, `fchmod` and
@@ -178,6 +182,16 @@ ps3toolchain's prebuilt compiler:
    code (the registration of the exception tables), before any
    constructor: the library made that mutex on the spot, with locks and
    a heap it did not have yet, and the program stopped before `main`.
+   PSL1GHT's librsx is built again too, with one change
+   (`psl1ght-lv2.py`, on the source ps3dev left checked out): its call
+   of libgcm's callback for a full segment of the command buffer was
+   inline assembly that named three registers as changed and nothing
+   else, and GCC 13 kept the context's write pointer in a register
+   across it. The next commands went over the jump at the segment's
+   end, and the RSX followed the jump into the middle of them: every
+   program stopped drawing after its first 32 KB of commands. The
+   assembly now says that memory is written and which registers a call
+   changes.
 
 `Containerfile` runs the script as its second step, so `podman build`
 gives the whole toolchain; while a step is being worked on, the script
@@ -275,6 +289,14 @@ does on the console (`platform/window.cpp`); the picture goes to the
 RSX beside SDL's window ([renderer/rsx](../../renderer/rsx/README.md)).
 ImGui's default way of opening a link forks a program and is compiled
 out there.
+
+## The RSX layer's test (2026-11-14)
+
+[rsxgl-test/](rsxgl-test/README.md) checks the renderer's RSX layer by
+its pictures: a 16 MB console program that draws through the layer's GL
+and reads the pixels back, 55 checks in the seconds RPCS3 takes to start
+it. The layer's faults, the toolchain's among them, are found there
+before the game (eight minutes a run) meets them.
 
 ## The RSX probe (2026-11-13)
 

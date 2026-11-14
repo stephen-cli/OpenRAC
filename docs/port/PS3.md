@@ -409,6 +409,53 @@ again after N refused frame(s)", so something the frontend reads of
 the camera is not yet in the host's order. The renderer's own readers
 of the game's packets are the rest of section 3's work.
 
+### The game's first picture (2026-11-14)
+
+The windowed program under RPCS3 shows the game's own first screen, the
+message that no memory card is inserted: the game's display list walked
+by the frontend, decoded by the direct renderer, drawn by the RSX layer
+with one vertex and one fragment program, copied to the screen and read
+back by the port's own screenshot (`OPENRAC_SHOT`). The 2D path is the
+only renderer with RSX programs so far; the world behind it is not
+drawn. What it took, most of it found by a test program made for the
+purpose:
+
+- **The layer's drawing** ([renderer/rsx](../../port/renderer/rsx/README.md)):
+  textures, buffers, vertex arrays, framebuffers, state, draws, copies
+  and the read-back, and `programs/direct.vp` and `direct.fp` for
+  `shaders/direct.vert` and `direct.frag`. The GLSL branches on its
+  uniforms; the fragment program is one sum whose weights the layer
+  works out for each draw.
+- **[tools/ps3/rsxgl-test](../../port/tools/ps3/rsxgl-test/README.md)**:
+  the layer checked by its pictures, 55 checks in the seconds RPCS3
+  takes to start a 16 MB program, where the game takes eight minutes a
+  run. librsx's faults and the assembler's below showed in the game
+  only as a black picture or a program that stopped.
+- **Three faults of the toolchain**, which the headless runs had not
+  shown:
+  - newlib's own do-nothing locks were linked in place of libsysbase's:
+    the allocator and every stream ran unlocked under every thread. A
+    hash table's chain held the number 9 once two threads allocated.
+    The console's libc is built without them (`newlib-lv2.py`).
+  - librsx called libgcm's callback for a full segment of the command
+    buffer from assembly that told the compiler nothing of what a call
+    changes. GCC 13 wrote the next commands over the jump at the
+    segment's end, and the RSX lost its place after 32 KB of commands
+    (`psl1ght-lv2.py`).
+  - librsx's `rsxSetVertexProgramConstants` counts single numbers and
+    converts each to an integer. The layer uses the block call.
+- **Two of `cgcomp -a`**, the assembler: a fragment instruction reads
+  one interpolated input (it takes several and keeps the last), and an
+  instruction the chip has none for is left out without a word.
+- **Byte order in the readers of the game's memory**: the frontend's
+  walk of the display list, the direct renderer's and the texture
+  decoder's readers, and the game-state reader behind the camera
+  (`game/rac1/game_state.cpp`) copied the console's bytes into host
+  numbers. They read through `common/byte_order.h` now
+  (`read_little_endian`, `copy_little_endian`), and the refused cameras
+  of the first windowed run are gone. The world's readers
+  (`frontend/world.cpp`) are still to do.
+
 ## 7. Next steps
 
 The renderer backend, now that the game runs headless on the console.
@@ -425,16 +472,17 @@ The proposal, in the order that gives a picture soonest:
    no joystick driver there; PSL1GHT's `io/pad` behind SDL's virtual
    gamepad) and sound (the dummy device plays nothing).
 2. **GL carried out with the RSX**, a layer beside the Vulkan one for
-   the functions the classic renderer calls: begun (the display, the
-   clear, the flip, the read-back); next textures, buffers and vertex
-   layouts in RSX memory, state, framebuffers, draws.
+   the functions the classic renderer calls: what the 2D path calls is
+   done (section 6). Left: indexed and instanced draws, stencil, depth
+   copies, mip chains, uniform blocks and matrices, as the world's
+   renderers come to need them.
 3. **The shaders written again** as RSX programs, kept beside their
-   GLSL and chosen by the program's name instead of compiled at run
-   time: first the direct renderer's pair (the 2D path: menus, the
-   HUD, the title screen), whose picture is compared with the other
-   platforms' through the probe's read-back; then terrain and ties,
-   whose vertex shaders lean on integers and instancing that Shader
-   Model 3 has not, so part of their work moves to the CPU.
+   GLSL and found by a line in it instead of compiled at run time: the
+   direct renderer's pair is done, less its distance-field text. Its
+   picture has not been compared with another platform's yet. Next the
+   world's readers on big-endian, then terrain and ties, whose vertex
+   shaders lean on integers and instancing that Shader Model 3 has not,
+   so part of their work moves to the CPU.
 4. Textures within 256 MB of video memory (section 2), and the
    extracted levels through the readers on big-endian
    (`--check-levels`).
