@@ -3,9 +3,10 @@
 
 #include "scene/moby_pose.h"
 
-#include <cstring>
 #include <mutex>
 #include <optional>
+
+#include "common/byte_order.h"
 
 namespace openrac::scene {
 
@@ -41,7 +42,7 @@ T at(std::span<const std::uint8_t> ram, std::uint32_t address) {
     T value{};
     address = ram_address(address, ram.size());
     if (address + sizeof(T) <= ram.size()) {
-        std::memcpy(&value, ram.data() + address, sizeof(T));
+        value = byte_order::read_little_endian<T>(ram.data() + address);
     }
     return value;
 }

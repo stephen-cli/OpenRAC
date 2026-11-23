@@ -7,8 +7,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <stdexcept>
+
+#include "common/byte_order.h"
 
 namespace openrac::scene {
 namespace {
@@ -69,8 +70,7 @@ std::optional<bool> hero_airborne(
     if (!hero || hero > ram.size() || ram.size() - hero < offset + 2) {
         return {};
     }
-    std::uint16_t airborne = 0;
-    std::memcpy(&airborne, ram.data() + hero + offset, sizeof(airborne));
+    const auto airborne = byte_order::read_little_endian<std::uint16_t>(ram.data() + hero + offset);
     // Three consecutive game updates reject brief loss of ground contact before tilting the map.
     constexpr std::uint16_t kMinimumAirFrames = 3;
     return airborne >= kMinimumAirFrames;

@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "common/breadcrumbs.h"
+#include "common/byte_order.h"
 #include "common/c_boundary.h"
 #include "common/env.h"
 #include "common/log.h"
@@ -706,13 +707,10 @@ void sky_sprite_quads(const host::GameState& state) {
     quads.reserve(g->sky_sprites.size());
     for (const auto& [r, tex0] : g->sky_sprites) {
         float pos[3];
-        float theta;
-        float size;
-        std::uint32_t rgba;
-        std::memcpy(pos, r.data() + 0x10, 12);
-        std::memcpy(&theta, r.data() + 8, 4);
-        std::memcpy(&size, r.data() + 0x1C, 4);
-        std::memcpy(&rgba, r.data() + 4, 4);
+        byte_order::copy_little_endian(pos, r.data() + 0x10, 3);
+        const auto theta = byte_order::read_little_endian<float>(r.data() + 8);
+        const auto size = byte_order::read_little_endian<float>(r.data() + 0x1C);
+        const auto rgba = byte_order::read_little_endian<std::uint32_t>(r.data() + 4);
         const float len = std::sqrt(pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]);
         const float z = pos[0] * fwd[0] + pos[1] * fwd[1] + pos[2] * fwd[2];
         if (!(len > 0.0f) || !(z > 0.0f) || !std::isfinite(size)) {
@@ -848,8 +846,7 @@ std::string particle_update(std::span<const std::uint8_t> ram, unsigned type) {
     if (at + 4 > ram.size()) {
         return "?";
     }
-    std::uint32_t fn;
-    std::memcpy(&fn, ram.data() + at, 4);
+    const auto fn = byte_order::read_little_endian<std::uint32_t>(ram.data() + at);
     const char* name = openrac_guest_function_name(fn);
     return std::format("{:#x} {}", fn, name != nullptr ? name : "(no C)");
 }
@@ -867,8 +864,8 @@ struct ParticleDepth {
 
 ParticleDepth particle_depth(const std::uint8_t* r, const host::GameState& state) {
     float p1[3], p2[3];
-    std::memcpy(p1, r + 0x10, sizeof(p1));
-    std::memcpy(p2, r + 0x20, sizeof(p2));
+    byte_order::copy_little_endian(p1, r + 0x10, 3);
+    byte_order::copy_little_endian(p2, r + 0x20, 3);
     std::array<float, 3> centre = {p1[0], p1[1], p1[2]};
     if ((r[1] & 3) == 3) {
         for (int i = 0; i < 3; ++i) {
@@ -923,7 +920,7 @@ void note_particles(std::span<const std::uint8_t> ram, const host::GameState& st
             continue;
         }
         float pos[3];
-        std::memcpy(pos, r + 0x10, sizeof(pos));
+        byte_order::copy_little_endian(pos, r + 0x10, 3);
         const float dx = pos[0] - hero->matrix[12], dy = pos[1] - hero->matrix[13],
                     dz = pos[2] - hero->matrix[14];
         if (!(dx * dx + dy * dy + dz * dz < kNear * kNear)) {
@@ -976,14 +973,10 @@ void note_particles(std::span<const std::uint8_t> ram, const host::GameState& st
 // ribbon joins its two ends across the view. Lines are not drawn yet.
 void particle_quads(std::span<const std::uint8_t> ram, const host::GameState& state) {
     const auto f32 = [](const std::uint8_t* b) {
-        float v;
-        std::memcpy(&v, b, 4);
-        return v;
+        return byte_order::read_little_endian<float>(b);
     };
     const auto u32 = [](const std::uint8_t* b) {
-        std::uint32_t v;
-        std::memcpy(&v, b, 4);
-        return v;
+        return byte_order::read_little_endian<std::uint32_t>(b);
     };
     const std::array<float, 3> cam = state.camera_position;
     const std::array<float, 3> right{-state.left[0], -state.left[1], -state.left[2]};

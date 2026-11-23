@@ -4,9 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 #include "assets/geometry/moby_shadow.h"
+#include "common/byte_order.h"
 #include "scene/moby_pose.h"
 
 namespace openrac::scene {
@@ -23,7 +23,7 @@ MobyShadowState moby_shadow_state(
     auto read = [&]<typename T>(std::uint32_t at) {
         T value{};
         if (at <= ram.size() && ram.size() - at >= sizeof(T)) {
-            std::memcpy(&value, ram.data() + at, sizeof(T));
+            value = byte_order::read_little_endian<T>(ram.data() + at);
         }
         return value;
     };
@@ -92,7 +92,7 @@ MobyShadowState moby_shadow_state_on_axis(
     auto read = [&]<typename T>(std::uint32_t at) {
         T value{};
         if (at <= ram.size() && ram.size() - at >= sizeof(T)) {
-            std::memcpy(&value, ram.data() + at, sizeof(T));
+            value = byte_order::read_little_endian<T>(ram.data() + at);
         }
         return value;
     };
@@ -171,7 +171,7 @@ std::vector<renderer::ShadowCapsule> moby_shadows(
     const auto word = [&](std::uint32_t at) {
         std::uint32_t value = 0;
         if (at <= ram.size() && ram.size() - at >= 4) {
-            std::memcpy(&value, ram.data() + at, 4);
+            value = byte_order::read_little_endian<std::uint32_t>(ram.data() + at);
         }
         return value & 0x01ffffffu;
     };
