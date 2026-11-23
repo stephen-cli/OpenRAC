@@ -4,6 +4,9 @@
 //
 // The sky's shells, around the camera: the view without its translation, after the shell's own
 // matrix as the game drew it (its turn, scale and translation: the flight's stars move by it).
+//
+// The PlayStation 3's RSX layer has this pair as programs of its own (renderer/rsx), found by
+// this line in both stages: rsx-program: sky
 
 layout(location = 0) in vec3 position;
 layout(location = 2) in vec2 uv;

@@ -14,6 +14,9 @@ invariant gl_Position;
 //
 // A lit tie (`lights` >= 0) colours each vertex with its instance's colour for
 // the vertex's light slot, from the light texture: what LightTies computed.
+//
+// The PlayStation 3's RSX layer has this pair as programs of its own (renderer/rsx), found by
+// this line in both stages: rsx-program: mesh
 
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;

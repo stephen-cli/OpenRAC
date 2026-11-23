@@ -7,6 +7,9 @@
 // carry alpha from 0 to 255 (it doubles the chip's 0..0x80), so the cutout
 // threshold is plain 0.5. A vertex colour of 1.0 is the GS's 0x80: the product
 // is the GS's MODULATE, (texel x colour) >> 7, clamped like the chip's.
+//
+// The PlayStation 3's RSX layer has this pair as programs of its own (renderer/rsx), found by
+// this line in both stages: rsx-program: mesh
 
 in vec2 v_uv;
 in vec4 v_colour;

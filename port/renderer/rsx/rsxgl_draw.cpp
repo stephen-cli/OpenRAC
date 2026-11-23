@@ -33,6 +33,8 @@ struct Loaded {
 };
 
 Loaded g_direct;
+Loaded g_sky;
+Loaded g_mesh;
 Image g_white;  // one white texel: what a unit samples when the draw binds nothing
 
 // The layer's own vertices for a copy, in the direct program's layout.
@@ -544,19 +546,156 @@ void copy_constants(float c[7][4]) {
     c[6][2] = 1.0f;
 }
 
-void load_direct(const float constants[7][4]) {
-    if (g.loaded != ProgramKind::Direct) {
-        rsxLoadVertexProgram(g.context, g_direct.vertex, g_direct.vertex_code);
+// Makes `program` the RSX's, with `count` constants of four numbers from its first. (librsx's
+// rsxSetVertexProgramConstants counts single numbers and converts each to an integer on its way
+// into the command buffer.)
+void load_program(ProgramKind kind, const Loaded& program, const float* constants, u32 count) {
+    if (g.loaded != kind) {
+        rsxLoadVertexProgram(g.context, program.vertex, program.vertex_code);
         rsxLoadFragmentProgramLocation(
-            g.context, g_direct.fragment, g_direct.fragment_code.offset, GCM_LOCATION_RSX
+            g.context, program.fragment, program.fragment_code.offset, GCM_LOCATION_RSX
         );
-        g.loaded = ProgramKind::Direct;
+        g.loaded = kind;
     }
-    // Seven constants of four numbers. (librsx's rsxSetVertexProgramConstants counts single
-    // numbers and converts each to an integer on its way into the command buffer.)
-    rsxLoadVertexProgramParameterBlock(
-        g.context, g_direct.vertex->const_start, 7, &constants[0][0]
+    rsxLoadVertexProgramParameterBlock(g.context, program.vertex->const_start, count, constants);
+}
+
+void load_direct(const float constants[7][4]) {
+    load_program(ProgramKind::Direct, g_direct, &constants[0][0], 7);
+}
+
+// ---- The sky program's numbers ----
+
+// sky.vp's five constants from sky.vert's uniforms: the rows of view_projection * shell (a
+// uniform matrix is four slots, its columns), and the tint.
+void sky_constants(const Program& program, float c[5][4]) {
+    const auto* projection = program.uniforms.data() + sky::kViewProjection;
+    const auto* shell = program.uniforms.data() + sky::kShell;
+    for (std::size_t row = 0; row < 4; ++row) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            float sum = 0.0f;
+            for (std::size_t k = 0; k < 4; ++k) {
+                sum += projection[k][row] * shell[column][k];
+            }
+            c[row][column] = sum;
+        }
+    }
+    const auto& tint = program.uniforms[sky::kTint];
+    c[4][0] = tint[0];
+    c[4][1] = tint[1];
+    c[4][2] = tint[2];
+    c[4][3] = 1.0f;
+}
+
+// ---- The mesh program's numbers ----
+
+constexpr u32 kMeshInstanceConstants = 9;  // mesh.vp's c[0] to c[8]
+constexpr u32 kMeshDrawConstants = 7;      // c[9] to c[15]
+
+// mesh.vp's constants of a draw from mesh.vert's and mesh.frag's uniforms (programs/mesh.fp says
+// what the fragment program's are).
+void mesh_constants(const Program& program, float c[kMeshDrawConstants][4]) {
+    const auto value = [&](u32 slot) {
+        return program.uniforms[slot][0];
+    };
+    std::memset(c, 0, sizeof(float) * kMeshDrawConstants * 4);
+    std::memcpy(c[0], program.uniforms[mesh::kFogParams].data(), sizeof(float) * 4);
+    // The viewer's sun (mesh.frag's kSun), on what the level did not light.
+    if (value(mesh::kLighting) != 0.0f) {
+        c[1][0] = 0.45f * 0.36f;
+        c[1][1] = 0.45f * 0.48f;
+        c[1][2] = 0.45f * 0.80f;
+        c[1][3] = 0.55f;
+    } else {
+        c[1][3] = 1.0f;
+    }
+    c[2][0] = 1.0f / 255.0f;
+    c[2][2] = 1.0e-20f;
+    c[2][3] = 1.0f;
+    std::memcpy(c[3], program.uniforms[mesh::kMaterialColour].data(), sizeof(float) * 4);
+    const auto& fog_colour = program.uniforms[mesh::kFogColour];
+    const bool fog = fog_colour[3] > 0.5f;
+    c[4][0] = fog_colour[0];
+    c[4][1] = fog_colour[1];
+    c[4][2] = fog_colour[2];
+    c[4][3] = fog ? 1.0f : 0.0f;
+    // The cutout: a solid pass keeps a cutout material's opaque texels (alpha from 0.99), the
+    // translucent pass its part-transparent ones (0.02 to 0.99) and nothing of another material.
+    const bool cutout = value(mesh::kCutout) != 0.0f;
+    const bool translucent = value(mesh::kTranslucentPass) != 0.0f;
+    c[5][1] = 1.0f;
+    c[5][3] = 1.0f;
+    if (translucent && cutout) {
+        c[5][0] = 1.0f;
+        c[5][1] = -0.02f;
+        c[5][2] = -1.0f;
+        c[5][3] = 0.98999f;
+    } else if (translucent) {
+        c[5][1] = -1.0f;
+    } else if (cutout) {
+        c[5][0] = 1.0f;
+        c[5][1] = -0.99f;
+    }
+    c[6][0] = fog ? 0.0f : 1.0f;
+    c[6][1] = translucent ? 1.0f : 0.0f;
+    c[6][2] = translucent ? 0.0f : 1.0f;
+}
+
+// Where the bound vertex array has the value of an instance for `attribute`: its first, and the
+// bytes from one to the next. Null when the attribute is not one value an instance.
+const float* instance_values(u32 attribute, u32& stride) {
+    const auto array = g.vertex_arrays.find(g.vertex_array);
+    if (array == g.vertex_arrays.end()) {
+        return nullptr;
+    }
+    const Attribute& instanced = array->second.attributes[attribute];
+    const auto buffer = g.buffers.find(instanced.buffer);
+    if (!instanced.enabled || instanced.divisor == 0 || instanced.type != GL_FLOAT
+        || buffer == g.buffers.end() || buffer->second.memory.address == nullptr) {
+        return nullptr;
+    }
+    stride = static_cast<u32>(instanced.stride);
+    return reinterpret_cast<const float*>(
+        static_cast<const unsigned char*>(buffer->second.memory.address) + instanced.pointer
     );
+}
+
+const float* stepped(const float* values, u32 stride, GLsizei instance) {
+    return reinterpret_cast<const float*>(
+        reinterpret_cast<const unsigned char*>(values) + stride * static_cast<u32>(instance)
+    );
+}
+
+// mesh.vp's constants of an instance: what mesh.vert works out at every vertex from the
+// instance's matrix (columns, as GL has a matrix) and tint.
+void mesh_instance_constants(
+    const Program& program,
+    const float* model,
+    const float* tint,
+    float c[kMeshInstanceConstants][4]
+) {
+    const auto* projection = program.uniforms.data() + mesh::kViewProjection;
+    const auto* view = program.uniforms.data() + mesh::kView;
+    for (std::size_t column = 0; column < 4; ++column) {
+        float depth = 0.0f;
+        for (std::size_t row = 0; row < 4; ++row) {
+            float sum = 0.0f;
+            for (std::size_t k = 0; k < 4; ++k) {
+                sum += projection[k][row] * model[column * 4 + k];
+            }
+            c[row][column] = sum;
+            depth += view[row][2] * model[column * 4 + row];
+        }
+        // The view looks down -z; the game's raw units are 1024 to one.
+        c[4][column] = -1024.0f * depth;
+    }
+    std::memcpy(c[5], tint, sizeof(float) * 4);
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t column = 0; column < 3; ++column) {
+            c[6 + row][column] = model[column * 4 + row];
+        }
+        c[6 + row][3] = 0.0f;
+    }
 }
 
 // ---- Vertices ----
@@ -604,16 +743,34 @@ void unbind_attributes(u32 kept) {
     g.attributes_bound &= kept;
 }
 
-// The bound vertex array's attributes. False when one of them the RSX cannot read.
-bool bind_vertex_array() {
+// The attributes a kind of program reads, a bit each: the others of a vertex array are not told
+// to the RSX (a mesh's joints are bytes as whole numbers, which it has no type for).
+u32 attributes_read(ProgramKind kind) {
+    switch (kind) {
+        case ProgramKind::Direct:
+        case ProgramKind::Mesh:
+            return 0b1111;
+        case ProgramKind::Sky:
+            return 0b1101;
+        case ProgramKind::None:
+            break;
+    }
+    return 0;
+}
+
+// The bound vertex array's attributes that `kind` reads. False when one of them the RSX cannot
+// read.
+bool bind_vertex_array(ProgramKind kind) {
     const auto found = g.vertex_arrays.find(g.vertex_array);
     if (found == g.vertex_arrays.end()) {
         return false;
     }
+    const u32 read = attributes_read(kind);
     u32 kept = 0;
     for (u32 i = 0; i < kAttributes; ++i) {
         const Attribute& attribute = found->second.attributes[i];
-        if (!attribute.enabled) {
+        // One value an instance is not the RSX's to read: the program's kind takes it, or not.
+        if (!attribute.enabled || attribute.divisor != 0 || (read & 1u << i) == 0) {
             continue;
         }
         const auto buffer = g.buffers.find(attribute.buffer);
@@ -665,28 +822,203 @@ void mark_used(const Target& target) {
     }
 }
 
-// A draw with a program the layer has for the RSX; one without is left out.
-void draw_arrays(GLenum mode, GLint first, GLsizei count) {
+// Why a draw was left out, said once in the log for each reason.
+enum class LeftOut : u32 {
+    NoProgram,   // the GL program has no RSX program yet
+    NoTarget,    // the framebuffer has nothing to draw into
+    NoVertices,  // an attribute the RSX cannot read, or no buffer behind one
+    NoIndices,   // no element buffer, or indices of a type the RSX has not
+    NoPass,      // a pass of the GL program that the RSX program has not yet
+};
+
+void leave_out(LeftOut reason) {
+    constexpr const char* kReasons[] = {
+        "of GL programs the layer has no RSX program for",
+        "into a framebuffer with nothing to draw into",
+        "of vertex arrays the RSX cannot read",
+        "of indices the RSX cannot read",
+        "of passes the layer's program has not yet",
+    };
+    ++g.draws_left_out;
+    const u32 bit = 1u << static_cast<u32>(reason);
+    if ((g.left_out_logged & bit) == 0) {
+        g.left_out_logged |= bit;
+        log::info("rsxgl: draws {} are left out", kReasons[static_cast<u32>(reason)]);
+    }
+}
+
+// Whether the bound program's draw is of a pass the layer's program has: the mesh program has
+// not the mobys' glow, the effects or the metal yet.
+bool pass_known(const Program& program) {
+    return program.kind != ProgramKind::Mesh
+           || (program.uniforms[mesh::kGlowPass][0] == 0.0f
+               && program.uniforms[mesh::kEffectPass][0] == 0.0f
+               && program.uniforms[mesh::kMetalPass][0] == 0.0f);
+}
+
+// What every draw does before its vertices: the surface, GL's state, the bound program as the
+// RSX's with its numbers, the textures. Null when the draw is left out.
+const Program* begin_draw(Target& target) {
     const auto program = g.programs.find(g.program);
-    if (program == g.programs.end() || program->second.kind != ProgramKind::Direct || count <= 0) {
-        ++g.draws_left_out;
+    if (program == g.programs.end() || program->second.kind == ProgramKind::None) {
+        leave_out(LeftOut::NoProgram);
+        return nullptr;
+    }
+    if (!pass_known(program->second)) {
+        leave_out(LeftOut::NoPass);
+        return nullptr;
+    }
+    if (!apply_target(target)) {
+        leave_out(LeftOut::NoTarget);
+        return nullptr;
+    }
+    if (!bind_vertex_array(program->second.kind)) {
+        leave_out(LeftOut::NoVertices);
+        return nullptr;
+    }
+    apply_state(target);
+    switch (program->second.kind) {
+        case ProgramKind::Direct: {
+            float constants[7][4];
+            direct_constants(program->second, constants);
+            load_direct(constants);
+            break;
+        }
+        case ProgramKind::Sky: {
+            float constants[5][4];
+            sky_constants(program->second, constants);
+            load_program(ProgramKind::Sky, g_sky, &constants[0][0], 5);
+            break;
+        }
+        case ProgramKind::Mesh: {
+            float constants[kMeshDrawConstants][4];
+            mesh_constants(program->second, constants);
+            if (g.loaded != ProgramKind::Mesh) {
+                rsxLoadVertexProgram(g.context, g_mesh.vertex, g_mesh.vertex_code);
+                rsxLoadFragmentProgramLocation(
+                    g.context, g_mesh.fragment, g_mesh.fragment_code.offset, GCM_LOCATION_RSX
+                );
+                g.loaded = ProgramKind::Mesh;
+            }
+            rsxLoadVertexProgramParameterBlock(
+                g.context,
+                g_mesh.vertex->const_start + kMeshInstanceConstants,
+                kMeshDrawConstants,
+                &constants[0][0]
+            );
+            break;
+        }
+        case ProgramKind::None:
+            break;
+    }
+    load_bound_texture(0);
+    return &program->second;
+}
+
+// What a draw's instances are to the bound program: the mesh program's numbers of each, from
+// the vertex array's values an instance; nothing to the others, whose instances are the same
+// draw again.
+struct Instances {
+    const Program* program = nullptr;
+    const float* model = nullptr;
+    const float* tint = nullptr;
+    u32 model_stride = 0;
+    u32 tint_stride = 0;
+
+    explicit Instances(const Program* bound) : program(bound) {
+        if (program->kind == ProgramKind::Mesh) {
+            model = instance_values(mesh::kModel, model_stride);
+            tint = instance_values(mesh::kTint, tint_stride);
+        }
+    }
+
+    void load(GLsizei instance) const {
+        if (program->kind != ProgramKind::Mesh) {
+            return;
+        }
+        constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        constexpr float kWhite[4] = {1, 1, 1, 1};
+        float constants[kMeshInstanceConstants][4];
+        mesh_instance_constants(
+            *program,
+            model != nullptr ? stepped(model, model_stride, instance) : kIdentity,
+            tint != nullptr ? stepped(tint, tint_stride, instance) : kWhite,
+            constants
+        );
+        rsxLoadVertexProgramParameterBlock(
+            g.context, g_mesh.vertex->const_start, kMeshInstanceConstants, &constants[0][0]
+        );
+    }
+};
+
+// A draw with a program the layer has for the RSX; one without is left out. The RSX has no
+// instances: each is a draw of its own.
+void draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
+    Target target;
+    if (count <= 0 || instances <= 0) {
+        return;
+    }
+    const Program* program = begin_draw(target);
+    if (program == nullptr) {
+        return;
+    }
+    const Instances each(program);
+    for (GLsizei instance = 0; instance < instances; ++instance) {
+        ++g.draws;
+        each.load(instance);
+        rsxDrawVertexArray(
+            g.context, primitive(mode), static_cast<u32>(first), static_cast<u32>(count)
+        );
+    }
+    mark_used(target);
+}
+
+void draw_arrays(GLenum mode, GLint first, GLsizei count) {
+    draw_arrays_instanced(mode, first, count, 1);
+}
+
+// Indexed: `indices` is where the first index is in the vertex array's element buffer. The RSX
+// reads indices of 16 and of 32 bits, in the host's byte order as the renderer wrote them.
+void draw_elements_instanced(
+    GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei instances
+) {
+    if (count <= 0 || instances <= 0) {
+        return;
+    }
+    const auto array = g.vertex_arrays.find(g.vertex_array);
+    const auto elements =
+        array != g.vertex_arrays.end() ? g.buffers.find(array->second.elements) : g.buffers.end();
+    const auto first = static_cast<u32>(reinterpret_cast<std::uintptr_t>(indices));
+    const u32 width = type == GL_UNSIGNED_INT ? 4 : type == GL_UNSIGNED_SHORT ? 2 : 0;
+    if (elements == g.buffers.end() || elements->second.memory.address == nullptr || width == 0
+        || first + width * static_cast<u32>(count) > elements->second.size) {
+        leave_out(LeftOut::NoIndices);
         return;
     }
     Target target;
-    if (!apply_target(target) || !bind_vertex_array()) {
-        ++g.draws_left_out;
+    const Program* program = begin_draw(target);
+    if (program == nullptr) {
         return;
     }
-    ++g.draws;
-    apply_state(target);
-    float constants[7][4];
-    direct_constants(program->second, constants);
-    load_direct(constants);
-    load_bound_texture(0);
-    rsxDrawVertexArray(
-        g.context, primitive(mode), static_cast<u32>(first), static_cast<u32>(count)
-    );
+    elements->second.drawn = g.frame;
+    const Instances each(program);
+    for (GLsizei instance = 0; instance < instances; ++instance) {
+        ++g.draws;
+        each.load(instance);
+        rsxDrawIndexArray(
+            g.context,
+            primitive(mode),
+            elements->second.memory.offset + first,
+            static_cast<u32>(count),
+            width == 4 ? GCM_INDEX_TYPE_32B : GCM_INDEX_TYPE_16B,
+            GCM_LOCATION_RSX
+        );
+    }
     mark_used(target);
+}
+
+void draw_elements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
+    draw_elements_instanced(mode, count, type, indices, 1);
 }
 
 // ---- Copies ----
@@ -922,7 +1254,9 @@ bool prepare_programs(std::string& error) {
     g_white.pitch = 4;
     g_white.memory = allocate(4);
     if (g_white.memory.address == nullptr
-        || !load(g_direct, programs::direct_vpo, programs::direct_fpo)) {
+        || !load(g_direct, programs::direct_vpo, programs::direct_fpo)
+        || !load(g_sky, programs::sky_vpo, programs::sky_fpo)
+        || !load(g_mesh, programs::mesh_vpo, programs::mesh_fpo)) {
         error = "no RSX memory for the layer's programs";
         return false;
     }
@@ -947,6 +1281,9 @@ const Entry kDrawFunctions[] = {
     OPENRAC_RSXGL_ENTRY(glClearDepth, clear_depth),
     OPENRAC_RSXGL_ENTRY(glClear, clear),
     OPENRAC_RSXGL_ENTRY(glDrawArrays, draw_arrays),
+    OPENRAC_RSXGL_ENTRY(glDrawArraysInstanced, draw_arrays_instanced),
+    OPENRAC_RSXGL_ENTRY(glDrawElements, draw_elements),
+    OPENRAC_RSXGL_ENTRY(glDrawElementsInstanced, draw_elements_instanced),
     OPENRAC_RSXGL_ENTRY(glBlitFramebuffer, blit_framebuffer),
     OPENRAC_RSXGL_ENTRY(glCopyTexSubImage2D, copy_tex_sub_image),
     OPENRAC_RSXGL_ENTRY(glReadPixels, read_pixels),

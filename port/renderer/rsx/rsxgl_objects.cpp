@@ -5,7 +5,9 @@
 // memory, buffers, vertex arrays, samplers, framebuffers, shaders and programs with their uniforms.
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <span>
 #include <string_view>
 
 #include "common/log.h"
@@ -269,7 +271,21 @@ void renderbuffer_storage_multisample(
 void bind_buffer(GLenum target, GLuint buffer) {
     if (target == GL_ARRAY_BUFFER) {
         g.array_buffer = buffer;
+    } else if (target == GL_ELEMENT_ARRAY_BUFFER && g.vertex_array != 0) {
+        g.vertex_arrays[g.vertex_array].elements = buffer;
     }
+}
+
+// The buffer bound to `target`, or 0.
+GLuint bound_buffer(GLenum target) {
+    if (target == GL_ARRAY_BUFFER) {
+        return g.array_buffer;
+    }
+    if (target == GL_ELEMENT_ARRAY_BUFFER) {
+        const auto found = g.vertex_arrays.find(g.vertex_array);
+        return found != g.vertex_arrays.end() ? found->second.elements : 0;
+    }
+    return 0;
 }
 
 // A buffer a draw of this frame read is not written in place: the RSX reads a draw's vertices
@@ -287,10 +303,11 @@ void new_store(Buffer& buffer, u32 bytes, bool keep) {
 }
 
 void buffer_data(GLenum target, GLsizeiptr size, const void* data, GLenum) {
-    if (target != GL_ARRAY_BUFFER || g.array_buffer == 0 || size < 0) {
+    const GLuint name = bound_buffer(target);
+    if (name == 0 || size < 0) {
         return;
     }
-    Buffer& into = g.buffers[g.array_buffer];
+    Buffer& into = g.buffers[name];
     const auto bytes = static_cast<u32>(size);
     if (into.memory.address == nullptr || into.size != bytes || into.drawn == g.frame) {
         new_store(into, bytes, false);
@@ -301,10 +318,11 @@ void buffer_data(GLenum target, GLsizeiptr size, const void* data, GLenum) {
 }
 
 void buffer_sub_data(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
-    if (target != GL_ARRAY_BUFFER || g.array_buffer == 0 || offset < 0 || size < 0) {
+    const GLuint name = bound_buffer(target);
+    if (name == 0 || offset < 0 || size < 0) {
         return;
     }
-    Buffer& into = g.buffers[g.array_buffer];
+    Buffer& into = g.buffers[name];
     if (into.memory.address == nullptr || static_cast<u32>(offset + size) > into.size) {
         return;
     }
@@ -355,6 +373,19 @@ void attribute_pointer(
     attribute.stride = stride;
     attribute.pointer = static_cast<u32>(reinterpret_cast<std::uintptr_t>(pointer));
     attribute.buffer = g.array_buffer;
+}
+
+// An integer attribute: bytes, which the RSX hands a program as numbers.
+void attribute_integer_pointer(
+    GLuint index, GLint size, GLenum type, GLsizei stride, const void* pointer
+) {
+    attribute_pointer(index, size, type, GL_FALSE, stride, pointer);
+}
+
+void attribute_divisor(GLuint index, GLuint divisor) {
+    if (index < kAttributes && g.vertex_array != 0) {
+        g.vertex_arrays[g.vertex_array].attributes[index].divisor = divisor;
+    }
 }
 
 void delete_vertex_arrays(GLsizei count, const GLuint* names) {
@@ -447,10 +478,51 @@ constexpr std::string_view kDirectUniforms[] = {
     "source_scale",
     "source_fix",
 };
-static_assert(std::size(kDirectUniforms) <= kUniformSlots);
 
-// The line in the GLSL of both stages that names the RSX's program for them.
-constexpr std::string_view kDirectMark = "rsx-program: direct";
+constexpr Uniform kSkyUniforms[] = {
+    {"view_projection", sky::kViewProjection, 4},
+    {"shell", sky::kShell, 4},
+    {"sky_tint", sky::kTint, 1},
+    {"tex_T0", sky::kTint + 1, 1},
+};
+
+constexpr Uniform kMeshUniforms[] = {
+    {"view_projection", mesh::kViewProjection, 4},
+    {"view", mesh::kView, 4},
+    {"fog_params", mesh::kFogParams, 1},
+    {"fog_colour", mesh::kFogColour, 1},
+    {"material_colour", mesh::kMaterialColour, 1},
+    {"cutout", mesh::kCutout, 1},
+    {"lighting", mesh::kLighting, 1},
+    {"glow_pass", mesh::kGlowPass, 1},
+    {"translucent_pass", mesh::kTranslucentPass, 1},
+    {"effect_pass", mesh::kEffectPass, 1},
+    {"metal_pass", mesh::kMetalPass, 1},
+};
+
+// A kind of program: the line in the GLSL of both stages that names it, its uniforms (the direct
+// program's are kDirectUniforms, a slot each) and how many slots they take.
+struct Kind {
+    ProgramKind kind;
+    std::string_view mark;
+    std::span<const Uniform> uniforms;
+    u32 slots;
+};
+
+constexpr Kind kKinds[] = {
+    {ProgramKind::Direct, "rsx-program: direct", {}, std::size(kDirectUniforms)},
+    {ProgramKind::Sky, "rsx-program: sky", kSkyUniforms, sky::kSlots},
+    {ProgramKind::Mesh, "rsx-program: mesh", kMeshUniforms, mesh::kSlots},
+};
+
+const Kind* kind_of(ProgramKind kind) {
+    for (const Kind& known : kKinds) {
+        if (known.kind == kind) {
+            return &known;
+        }
+    }
+    return nullptr;
+}
 
 GLuint create_shader(GLenum type) {
     const GLuint name = g.next_name++;
@@ -497,10 +569,17 @@ void link_program(GLuint program) {
     const auto vertex = g.shaders.find(linked.vertex);
     const auto fragment = g.shaders.find(linked.fragment);
     linked.kind = ProgramKind::None;
-    if (vertex != g.shaders.end() && fragment != g.shaders.end()
-        && vertex->second.source.find(kDirectMark) != std::string::npos
-        && fragment->second.source.find(kDirectMark) != std::string::npos) {
-        linked.kind = ProgramKind::Direct;
+    linked.uniforms.clear();
+    if (vertex == g.shaders.end() || fragment == g.shaders.end()) {
+        return;
+    }
+    for (const Kind& known : kKinds) {
+        if (vertex->second.source.find(known.mark) != std::string::npos
+            && fragment->second.source.find(known.mark) != std::string::npos) {
+            linked.kind = known.kind;
+            linked.uniforms.assign(known.slots, {});
+            return;
+        }
     }
 }
 
@@ -522,24 +601,56 @@ void get_status(GLuint, GLenum name, GLint* value) {
 
 GLint uniform_location(GLuint program, const GLchar* name) {
     const auto found = g.programs.find(program);
-    if (found == g.programs.end() || found->second.kind != ProgramKind::Direct) {
+    if (found == g.programs.end()) {
         return -1;
     }
     const std::string_view wanted(name);
-    for (std::size_t i = 0; i < std::size(kDirectUniforms); ++i) {
-        if (kDirectUniforms[i] == wanted) {
-            return static_cast<GLint>(i);
+    if (found->second.kind == ProgramKind::Direct) {
+        for (std::size_t i = 0; i < std::size(kDirectUniforms); ++i) {
+            if (kDirectUniforms[i] == wanted) {
+                return static_cast<GLint>(i);
+            }
+        }
+        return -1;
+    }
+    if (const Kind* kind = kind_of(found->second.kind)) {
+        for (const Uniform& uniform : kind->uniforms) {
+            if (uniform.name == wanted) {
+                return static_cast<GLint>(uniform.slot);
+            }
         }
     }
     return -1;
 }
 
-void set_uniform(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
+// `slots` slots of the bound program's uniforms from `location`, or null when it has not so many.
+std::array<GLfloat, 4>* uniform_slots(GLint location, std::size_t slots) {
     const auto found = g.programs.find(g.program);
-    if (found == g.programs.end() || location < 0 || static_cast<u32>(location) >= kUniformSlots) {
+    if (found == g.programs.end() || location < 0
+        || static_cast<std::size_t>(location) + slots > found->second.uniforms.size()) {
+        return nullptr;
+    }
+    return found->second.uniforms.data() + location;
+}
+
+void set_uniform(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
+    if (auto* slot = uniform_slots(location, 1)) {
+        *slot = {x, y, z, w};
+    }
+}
+
+void uniform_4fv(GLint location, GLsizei count, const GLfloat* value) {
+    if (count <= 0) {
         return;
     }
-    found->second.uniforms[static_cast<std::size_t>(location)] = {x, y, z, w};
+    if (auto* slot = uniform_slots(location, static_cast<std::size_t>(count))) {
+        std::memcpy(slot, value, sizeof(GLfloat) * 4 * static_cast<std::size_t>(count));
+    }
+}
+
+// A matrix's four columns, as GL has them, in four slots.
+void uniform_matrix_4fv(GLint location, GLsizei count, GLboolean, const GLfloat* value) {
+    uniform_4fv(location, 4 * count, value);
 }
 
 void uniform_1i(GLint location, GLint x) {
@@ -592,6 +703,8 @@ const Entry kObjectFunctions[] = {
     OPENRAC_RSXGL_ENTRY(glBindVertexArray, bind_vertex_array),
     OPENRAC_RSXGL_ENTRY(glEnableVertexAttribArray, enable_attribute),
     OPENRAC_RSXGL_ENTRY(glVertexAttribPointer, attribute_pointer),
+    OPENRAC_RSXGL_ENTRY(glVertexAttribIPointer, attribute_integer_pointer),
+    OPENRAC_RSXGL_ENTRY(glVertexAttribDivisor, attribute_divisor),
     OPENRAC_RSXGL_ENTRY(glDeleteVertexArrays, delete_vertex_arrays),
     OPENRAC_RSXGL_ENTRY(glBindFramebuffer, bind_framebuffer),
     OPENRAC_RSXGL_ENTRY(glFramebufferTexture2D, framebuffer_texture),
@@ -615,6 +728,8 @@ const Entry kObjectFunctions[] = {
     OPENRAC_RSXGL_ENTRY(glUniform2f, uniform_2f),
     OPENRAC_RSXGL_ENTRY(glUniform3f, uniform_3f),
     OPENRAC_RSXGL_ENTRY(glUniform4f, uniform_4f),
+    OPENRAC_RSXGL_ENTRY(glUniform4fv, uniform_4fv),
+    OPENRAC_RSXGL_ENTRY(glUniformMatrix4fv, uniform_matrix_4fv),
 };
 const std::size_t kObjectFunctionCount = std::size(kObjectFunctions);
 

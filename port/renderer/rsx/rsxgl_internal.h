@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -21,10 +22,9 @@
 
 namespace openrac::rsxgl {
 
-inline constexpr u32 kBuffers = 2;        // the screen's colour buffers
-inline constexpr u32 kAttributes = 16;    // the RSX's vertex attributes
-inline constexpr u32 kTextureUnits = 2;   // the units the layer's programs sample
-inline constexpr u32 kUniformSlots = 16;  // the most uniforms one of the layer's programs has
+inline constexpr u32 kBuffers = 2;       // the screen's colour buffers
+inline constexpr u32 kAttributes = 16;   // the RSX's vertex attributes
+inline constexpr u32 kTextureUnits = 2;  // the units the layer's programs sample
 
 // A piece of the RSX's memory.
 struct Memory {
@@ -68,10 +68,12 @@ struct Attribute {
     gl::GLsizei stride = 0;
     u32 pointer = 0;
     gl::GLuint buffer = 0;
+    u32 divisor = 0;  // 1: one value an instance, which the layer hands the program as a constant
 };
 
 struct VertexArray {
     std::array<Attribute, kAttributes> attributes{};
+    gl::GLuint elements = 0;  // GL_ELEMENT_ARRAY_BUFFER, which GL keeps with the vertex array
 };
 
 // What a framebuffer's attachment is: a texture's name or a renderbuffer's (both are Images).
@@ -89,7 +91,45 @@ struct Shader {
 enum class ProgramKind : std::uint8_t {
     None,    // no RSX program yet: its draws are left out
     Direct,  // renderer/shaders/direct.vert and direct.frag
+    Sky,     // viewer/shaders/sky.vert and sky.frag
+    Mesh,    // viewer/shaders/mesh.vert and mesh.frag
 };
+
+// A uniform of one of the layer's programs: its name in the GLSL, and where its numbers are kept
+// in Program::uniforms, four to a slot (a matrix has four slots, its columns; an array one slot an
+// element). A uniform's location is its first slot.
+struct Uniform {
+    std::string_view name;
+    u32 slot;
+    u32 slots;
+};
+
+// The sky program's uniforms' slots (rsxgl_objects.cpp has their names).
+namespace sky {
+inline constexpr u32 kViewProjection = 0;
+inline constexpr u32 kShell = 4;
+inline constexpr u32 kTint = 8;
+inline constexpr u32 kSlots = 10;
+}  // namespace sky
+
+// The mesh program's.
+namespace mesh {
+inline constexpr u32 kViewProjection = 0;
+inline constexpr u32 kView = 4;
+inline constexpr u32 kFogParams = 8;
+inline constexpr u32 kFogColour = 9;
+inline constexpr u32 kMaterialColour = 10;
+inline constexpr u32 kCutout = 11;
+inline constexpr u32 kLighting = 12;
+inline constexpr u32 kGlowPass = 13;
+inline constexpr u32 kTranslucentPass = 14;
+inline constexpr u32 kEffectPass = 15;
+inline constexpr u32 kMetalPass = 16;
+inline constexpr u32 kSlots = 17;
+// The attributes of an instance (scene/level_instances.cpp): the model's four columns, the tint.
+inline constexpr u32 kModel = 4;
+inline constexpr u32 kTint = 8;
+}  // namespace mesh
 
 // The direct program's uniforms: a uniform's location is its number here (rsxgl_objects.cpp has
 // their names in this order).
@@ -112,7 +152,7 @@ struct Program {
     gl::GLuint vertex = 0;
     gl::GLuint fragment = 0;
     ProgramKind kind = ProgramKind::None;
-    std::array<std::array<gl::GLfloat, 4>, kUniformSlots> uniforms{};
+    std::vector<std::array<gl::GLfloat, 4>> uniforms;  // as many slots as its kind has
 };
 
 struct State {
@@ -176,6 +216,7 @@ struct State {
     // program, and copies between framebuffers.
     u32 draws = 0;
     u32 draws_left_out = 0;
+    u32 left_out_logged = 0;  // a bit for each reason a draw was left out that the log has had
     u32 copies = 0;
 
     // What the RSX was last told, so that a draw tells it only what changed.

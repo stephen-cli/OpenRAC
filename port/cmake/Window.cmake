@@ -213,7 +213,7 @@ if(OPENRAC_PS3)
   # as arrays of bytes in rsx_programs.h.
   set(rsx_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/rsx")
   set(rsx_assembled "")
-  foreach(program direct)
+  foreach(program direct sky mesh)
     foreach(stage vp fp)
       string(SUBSTRING "${stage}" 0 1 flag)
       set(source "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/${program}.${stage}")

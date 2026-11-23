@@ -1,0 +1,24 @@
+!!ARBvp1.0
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 the OpenRAC contributors
+#
+# viewer/shaders/sky.vert for the RSX (README.md). The attributes are GL's locations: 0 position,
+# 2 uv, 3 colour. The layer multiplies the two matrices of the GLSL into one (rsxgl_draw.cpp,
+# sky_constants).
+#
+#   c[0] to c[3]  the rows of view_projection * shell
+#   c[4]          sky_tint.rgb, 1
+#
+# The colour goes to the fragment program as a texture coordinate: a colour output is clamped to
+# 0 to 1 on its way, and a shell's vertex colour is not.
+MOV R0, vertex.attrib[0];
+MOV R0.w, c[4].w;
+DP4 R1.x, c[0], R0;
+DP4 R1.y, c[1], R0;
+DP4 R1.z, c[2], R0;
+DP4 R1.w, c[3], R0;
+MOV result.position, R1;
+MOV result.texcoord[0], vertex.attrib[2];
+MOV result.texcoord[1], c[4];
+MOV result.texcoord[2], vertex.attrib[3];
+END

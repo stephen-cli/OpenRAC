@@ -1,0 +1,62 @@
+!!ARBvp1.0
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 the OpenRAC contributors
+#
+# viewer/shaders/mesh.vert for the RSX (README.md), for what is drawn as stored: terrain, ties,
+# shrubs. The attributes are GL's locations: 0 position, 1 normal, 2 uv, 3 colour. The GLSL
+# reads a matrix, a tint and more for each instance; the RSX has no instances, so the layer
+# draws each by itself and works these numbers out for it (rsxgl_draw.cpp, mesh_constants).
+#
+# Of the instance:
+#   c[0] to c[3]  the rows of view_projection * model
+#   c[4]          the camera's depth in the game's raw units: depth = c[4] . position
+#   c[5]          the instance's tint
+#   c[6] to c[8]  the rows of the model's rotation: the normal in the world
+# Of the draw:
+#   c[9]          fog_params: fog = floor(clamp(depth x + y, z, w)) / 255
+#   c[10]         the viewer's sun, light = |c[10] . normal| / |normal| + c[10].w: 0.45 times
+#                 (0.36, 0.48, 0.80) and 0.55, or nothing and 1 where the level lit the vertex
+#   c[11]         1 / 255, 0, a little (a normal of no length divides by it), 1
+#   c[12] to c[15]  mesh.fp's texcoord[3] to texcoord[6]
+#
+# Not here yet: a tie's colours from the light texture, the terrain's point lights, a moby's
+# skin and lights, the metal pass.
+MOV R0, vertex.attrib[0];
+MOV R0.w, c[11].w;
+DP4 R1.x, c[0], R0;
+DP4 R1.y, c[1], R0;
+DP4 R1.z, c[2], R0;
+DP4 R1.w, c[3], R0;
+MOV result.position, R1;
+MOV result.texcoord[0], vertex.attrib[2];
+MUL R2, vertex.attrib[3], c[5];
+MOV result.texcoord[1], R2;
+# The fog, times w beside w: their quotient in the fragment program is the fog as the screen
+# interpolates it, not as the surface does.
+DP4 R3.x, c[4], R0;
+MAD R3.x, R3.x, c[9].x, c[9].y;
+MAX R3.x, R3.x, c[9].z;
+MIN R3.x, R3.x, c[9].w;
+FLR R3.x, R3.x;
+MUL R3.x, R3.x, c[11].x;
+MUL R4.x, R3.x, R1.w;
+MOV R4.y, R1.w;
+# The viewer's sun.
+MOV R5, vertex.attrib[1];
+DP3 R6.x, c[6], R5;
+DP3 R6.y, c[7], R5;
+DP3 R6.z, c[8], R5;
+DP3 R6.w, R6, R6;
+ADD R6.w, R6.w, c[11].z;
+RSQ R6.w, R6.w;
+DP3 R7.x, R6, c[10];
+MUL R7.x, R7.x, R6.w;
+MAX R7.x, R7.x, -R7.x;
+ADD R4.z, R7.x, c[10].w;
+MOV R4.w, c[11].y;
+MOV result.texcoord[2], R4;
+MOV result.texcoord[3], c[12];
+MOV result.texcoord[4], c[13];
+MOV result.texcoord[5], c[14];
+MOV result.texcoord[6], c[15];
+END

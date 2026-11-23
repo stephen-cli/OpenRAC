@@ -35,6 +35,7 @@ RSXGL(glGenVertexArrays);
 RSXGL(glBindVertexArray);
 RSXGL(glEnableVertexAttribArray);
 RSXGL(glVertexAttribPointer);
+RSXGL(glVertexAttribDivisor);
 RSXGL(glCreateShader);
 RSXGL(glShaderSource);
 RSXGL(glCreateProgram);
@@ -46,6 +47,8 @@ RSXGL(glUniform1i);
 RSXGL(glUniform1f);
 RSXGL(glUniform2f);
 RSXGL(glUniform3f);
+RSXGL(glUniform4f);
+RSXGL(glUniformMatrix4fv);
 RSXGL(glGenFramebuffers);
 RSXGL(glBindFramebuffer);
 RSXGL(glFramebufferTexture2D);
@@ -59,6 +62,7 @@ RSXGL(glBlendEquation);
 RSXGL(glClearColor);
 RSXGL(glClear);
 RSXGL(glDrawArrays);
+RSXGL(glDrawElementsInstanced);
 RSXGL(glReadPixels);
 #undef RSXGL
 
@@ -155,9 +159,8 @@ void expect_quarters(
     expect((name + ", top right").c_str(), framebuffer, wide * 3 / 4, high * 3 / 4, tr);
 }
 
-GLuint shader(GLenum type) {
-    // The layer finds its program by this line in both stages (renderer/shaders/direct.vert).
-    const char* source = "// rsx-program: direct\n";
+// The layer finds its program by a line in both stages (renderer/shaders/direct.vert).
+GLuint shader(GLenum type, const char* source = "// rsx-program: direct\n") {
     const GLuint made = glCreateShader(type);
     glShaderSource(made, 1, &source, nullptr);
     return made;
@@ -196,6 +199,202 @@ void set_mode(Mode mode) {
 void clear(float r, float g, float b) {
     glClearColor(r, g, b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+// The sky program (viewer/shaders/sky.vert): a square of four vertices and six indices, moved by
+// the shell's matrix and then halved by the view's, so it covers the upper right quarter of the
+// screen and nothing else; the texel (the chip's 1.0, half of full) times a vertex colour above
+// one, times the tint.
+void sky_checks(int wide, int high) {
+    struct SkyVertex {
+        float position[3];
+        float uv[2];
+        float colour[4];
+    };
+
+    const SkyVertex vertices[4] = {
+        {{-1.0f, -1.0f, 0.0f}, {0.5f, 0.5f}, {2.0f, 1.0f, 0.5f, 1.0f}},
+        {{1.0f, -1.0f, 0.0f}, {0.5f, 0.5f}, {2.0f, 1.0f, 0.5f, 1.0f}},
+        {{1.0f, 1.0f, 0.0f}, {0.5f, 0.5f}, {2.0f, 1.0f, 0.5f, 1.0f}},
+        {{-1.0f, 1.0f, 0.0f}, {0.5f, 0.5f}, {2.0f, 1.0f, 0.5f, 1.0f}},
+    };
+    const std::uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, shader(GL_VERTEX_SHADER, "// rsx-program: sky\n"));
+    glAttachShader(program, shader(GL_FRAGMENT_SHADER, "// rsx-program: sky\n"));
+    glLinkProgram(program);
+    glUseProgram(program);
+    GLuint vertex_array = 0;
+    GLuint buffers[2] = {};
+    glGenVertexArrays(1, &vertex_array);
+    glGenBuffers(2, buffers);
+    glBindVertexArray(vertex_array);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof indices, indices, GL_STATIC_DRAW);
+    constexpr auto stride = static_cast<GLsizei>(sizeof(SkyVertex));
+    const auto at = [](std::size_t offset) {
+        return reinterpret_cast<const void*>(offset);
+    };
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, at(offsetof(SkyVertex, position)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, at(offsetof(SkyVertex, uv)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, at(offsetof(SkyVertex, colour)));
+
+    GLuint grey = 0;
+    glGenTextures(1, &grey);
+    glBindTexture(GL_TEXTURE_2D, grey);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(GL_RGBA8), 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &kGrey
+    );
+    texture_parameters();
+
+    // Columns, as GL has a matrix.
+    const float halved[16] = {0.5f, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    const float moved[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1};
+    glUniformMatrix4fv(glGetUniformLocation(program, "view_projection"), 1, GL_FALSE, halved);
+    glUniformMatrix4fv(glGetUniformLocation(program, "shell"), 1, GL_FALSE, moved);
+    glUniform3f(glGetUniformLocation(program, "sky_tint"), 1.0f, 0.5f, 1.0f);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_BLEND);
+    clear(0.0f, 0.0f, 1.0f);
+    glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, at(0), 1);
+    // 2 x 128/255, 1 x 0.5 x 128/255, 0.5 x 128/255.
+    expect("sky: indexed, two matrices", 0, wide * 5 / 8, high * 5 / 8, Colour{255, 64, 64, 255});
+    expect("sky: within the quarter", 0, wide * 7 / 8, high * 7 / 8, Colour{255, 64, 64, 255});
+    expect("sky: nothing left of it", 0, wide * 3 / 8, high * 5 / 8, kBlue);
+    expect("sky: nothing below it", 0, wide * 5 / 8, high * 3 / 8, kBlue);
+    glUseProgram(g_program);
+}
+
+// The mesh program (viewer/shaders/mesh.vert): one square, drawn as two instances, each with a
+// matrix and a tint of its own from a buffer GL reads once an instance. The texel is the chip's
+// 1.0 (half of full) with an alpha below a cutout's, and the material's colour doubles it.
+void mesh_checks(int wide, int high) {
+    struct MeshVertex {
+        float position[3];
+        float normal[3];
+        float uv[2];
+        float colour[4];
+    };
+
+    // scene/level_renderer.h's InstanceData, as far as the program reads it.
+    struct Instance {
+        float matrix[16];
+        float tint[4];
+    };
+
+    const auto corner = [](float x, float y) {
+        return MeshVertex{{x, y, 0.0f}, {0.0f, 0.0f, 2.0f}, {0.5f, 0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}};
+    };
+    const MeshVertex vertices[4] =
+        {corner(-1.0f, -1.0f), corner(1.0f, -1.0f), corner(1.0f, 1.0f), corner(-1.0f, 1.0f)};
+    const std::uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
+    // Halved, to the lower left quarter in red and to the upper right in green.
+    const Instance instances[2] = {
+        {{0.5f, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 1, 0, -0.5f, -0.5f, 0, 1}, {1.0f, 0.0f, 0.0f, 1.0f}},
+        {{0.5f, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 1, 0, 0.5f, 0.5f, 0, 1}, {0.0f, 1.0f, 0.0f, 1.0f}},
+    };
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, shader(GL_VERTEX_SHADER, "// rsx-program: mesh\n"));
+    glAttachShader(program, shader(GL_FRAGMENT_SHADER, "// rsx-program: mesh\n"));
+    glLinkProgram(program);
+    glUseProgram(program);
+    GLuint vertex_array = 0;
+    GLuint buffers[3] = {};
+    glGenVertexArrays(1, &vertex_array);
+    glGenBuffers(3, buffers);
+    glBindVertexArray(vertex_array);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof indices, indices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices, GL_STATIC_DRAW);
+    constexpr auto stride = static_cast<GLsizei>(sizeof(MeshVertex));
+    const auto at = [](std::size_t offset) {
+        return reinterpret_cast<const void*>(offset);
+    };
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, at(offsetof(MeshVertex, position)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, at(offsetof(MeshVertex, normal)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, at(offsetof(MeshVertex, uv)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, at(offsetof(MeshVertex, colour)));
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof instances, instances, GL_STATIC_DRAW);
+    constexpr auto instance_stride = static_cast<GLsizei>(sizeof(Instance));
+    for (GLuint column = 0; column < 4; ++column) {
+        glEnableVertexAttribArray(4 + column);
+        glVertexAttribPointer(
+            4 + column, 4, GL_FLOAT, GL_FALSE, instance_stride, at(column * 4 * sizeof(float))
+        );
+        glVertexAttribDivisor(4 + column, 1);
+    }
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 4, GL_FLOAT, GL_FALSE, instance_stride, at(offsetof(Instance, tint)));
+    glVertexAttribDivisor(8, 1);
+
+    GLuint grey = 0;
+    glGenTextures(1, &grey);
+    glBindTexture(GL_TEXTURE_2D, grey);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(GL_RGBA8), 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &kGrey
+    );
+    texture_parameters();
+
+    const auto uniform = [program](const char* name) {
+        return glGetUniformLocation(program, name);
+    };
+    const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, identity);
+    glUniformMatrix4fv(uniform("view"), 1, GL_FALSE, identity);
+    glUniform4f(uniform("material_colour"), 2.0f, 2.0f, 2.0f, 1.0f);
+    glUniform4f(uniform("fog_colour"), 0.0f, 0.0f, 1.0f, 0.0f);
+    glUniform4f(uniform("fog_params"), 0.0f, 128.0f, 0.0f, 255.0f);
+    const auto draw = [&] {
+        clear(0.0f, 0.0f, 0.0f);
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, at(0), 2);
+    };
+    const Colour black{0, 0, 0, 255};
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_BLEND);
+    draw();
+    expect_quarters(
+        "mesh: two instances", 0, wide, high, kRed, black, black, Colour{0, 255, 0, 255}
+    );
+    // The viewer's sun on a normal straight up, of any length: 0.55 + 0.45 x 0.80.
+    glUniform1i(uniform("lighting"), 1);
+    draw();
+    expect("mesh: the viewer's sun", 0, wide / 4, high / 4, Colour{232, 0, 0, 255});
+    glUniform1i(uniform("lighting"), 0);
+    // The chip's fog, 128 of 255 of the colour kept.
+    glUniform4f(uniform("fog_colour"), 0.0f, 0.0f, 1.0f, 1.0f);
+    draw();
+    expect("mesh: fog", 0, wide / 4, high / 4, Colour{128, 0, 127, 255});
+    glUniform4f(uniform("fog_colour"), 0.0f, 0.0f, 1.0f, 0.0f);
+    // A cutout's part-transparent texel: left out of the solid pass, drawn by the translucent
+    // one; a material without a cutout has nothing in the translucent pass.
+    glUniform1i(uniform("cutout"), 1);
+    draw();
+    expect("mesh: cutout, solid pass", 0, wide / 4, high / 4, black);
+    glUniform1i(uniform("translucent_pass"), 1);
+    draw();
+    expect("mesh: cutout, translucent pass", 0, wide / 4, high / 4, kRed);
+    glUniform1i(uniform("cutout"), 0);
+    draw();
+    expect("mesh: no cutout, translucent pass", 0, wide / 4, high / 4, black);
+    glUniform1i(uniform("translucent_pass"), 0);
+    // A pass the program has not yet is left out, not drawn wrong.
+    glUniform1i(uniform("metal_pass"), 1);
+    draw();
+    expect("mesh: metal pass left out", 0, wide / 4, high / 4, black);
+    glUseProgram(g_program);
 }
 
 // The checks. Within the namespace, so that the names above are the layer's functions and not
@@ -410,6 +609,10 @@ int run() {
     clear(0.0f, 0.0f, 0.0f);
     rectangle(-1.0f, -1.0f, 1.0f, 1.0f, kWhite);
     expect_quarters("copied texture", 0, wide, high, kRed, green, green, green);
+
+    sky_checks(wide, high);
+    mesh_checks(wide, high);
+    glBindVertexArray(vertex_array);
 
     // Many frames: the command buffer wraps and the flips keep coming.
     for (int frame = 0; frame < 300; ++frame) {

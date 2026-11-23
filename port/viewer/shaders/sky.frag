@@ -4,6 +4,9 @@
 //
 // A shell's texel (white where untextured) times its vertex colour; the alpha
 // blends it over the shells before it and the background.
+//
+// The PlayStation 3's RSX layer has this pair as programs of its own (renderer/rsx), found by
+// this line in both stages: rsx-program: sky
 
 in vec2 v_uv;
 in vec4 v_colour;
