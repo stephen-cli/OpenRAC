@@ -17,7 +17,9 @@
 #include <mach/mach.h>
 #include <sys/resource.h>
 #elif defined(__lv2ppu__)
-// The console: lv2 keeps a process's memory and times to itself.
+// The console: lv2 says how much of the process's share of main memory is left; its times it
+// keeps to itself.
+#include <ppu-lv2.h>
 #else
 #include <cstdio>
 #include <sys/resource.h>
@@ -25,6 +27,23 @@
 #endif
 
 namespace openrac::stats {
+
+#if defined(__lv2ppu__)
+namespace {
+
+struct UserMemory {
+    std::uint32_t total;
+    std::uint32_t available;
+};
+
+// sys_memory_get_user_memory_size, which PSL1GHT has no name for.
+s32 user_memory(UserMemory* memory) {
+    lv2syscall1(352, (u64) memory);
+    return_to_user_prog(s32);
+}
+
+}  // namespace
+#endif
 
 ProcessMemory process_memory() {
     ProcessMemory m;
@@ -45,7 +64,11 @@ ProcessMemory process_memory() {
         m.peak = info.resident_size_peak;
     }
 #elif defined(__lv2ppu__)
-    // Nothing to read.
+    UserMemory memory{};
+    if (user_memory(&memory) == 0) {
+        m.resident = memory.total - memory.available;
+        m.available = memory.available;
+    }
 #else
     // /proc/self/statm: sizes in pages; the second is the resident set.
     if (std::FILE* f = std::fopen("/proc/self/statm", "r")) {

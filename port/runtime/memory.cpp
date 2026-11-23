@@ -56,13 +56,21 @@ struct Region {
     std::uint32_t size;
 };
 
+// The port's own region, as far as anything is put in it: packed, where each megabyte is one of
+// the console's 213, what lies past the stack, the strings and the statics is left out.
+#if defined(OPENRAC_PACKED_MEMORY)
+constexpr std::uint32_t kPortSize = GUEST_STATICS + GUEST_STATICS_SIZE - GUEST_PORT;
+#else
+constexpr std::uint32_t kPortSize = GUEST_PORT_SIZE;
+#endif
+
 // Everything but main RAM and its aliases, which are mapped separately.
 constexpr Region kPlainRegions[] = {
     {GUEST_EE_REGS, GUEST_EE_REGS_SIZE},
     {GUEST_VU_MEM, GUEST_VU_MEM_SIZE},
     {GUEST_GS_REGS, GUEST_GS_REGS_SIZE},
     {GUEST_SCRATCHPAD, GUEST_SCRATCHPAD_SIZE},
-    {GUEST_PORT, GUEST_PORT_SIZE},
+    {GUEST_PORT, kPortSize},
 };
 
 constexpr gaddr kRamViews[] = {GUEST_RAM, GUEST_RAM_UNCACHED, GUEST_RAM_UNCACHED_ACCEL};

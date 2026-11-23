@@ -178,6 +178,11 @@ void preload_level(int number) {
         return;
     }
     // A read of another level still under way is waited for here (its future ends with it).
+    // Where the system gives the process a fixed share of memory (the PS3), two levels do not
+    // fit in it: the level is read when it comes, after the last one is let go.
+    if (stats::process_memory().available != 0) {
+        return;
+    }
     crash::level_breadcrumb("level preload requested", number);
     g_preload.level = number;
     g_preload.generation = openrac_game_mods_generation;
@@ -407,6 +412,17 @@ void use_level(int number) {
 #endif
     renderer::gl_warmup::warm();
     crash::level_breadcrumb("level load finished", wanted);
+    // Where memory is a fixed share, the level's copies of what the GPU now holds are let go.
+    if (stats::process_memory().available != 0) {
+        g->level.release_uploaded();
+        const stats::ProcessMemory memory = stats::process_memory();
+        log::info(
+            "level {}: {} MB of main memory held, {} MB left",
+            wanted,
+            memory.resident >> 20,
+            memory.available >> 20
+        );
+    }
     log::info("drawing level {} natively ({} models)", wanted, g->level.models.size());
 }
 

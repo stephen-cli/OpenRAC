@@ -561,6 +561,15 @@ Vec3 bounds_centre(const Model& model, const Mat4& matrix) {
     );
 }
 
+void LevelData::release_uploaded() {
+    // A vector's clear(), and its assignment from {}, keep its memory.
+    std::vector<Vertex>().swap(vertices);
+    std::vector<std::uint32_t>().swap(indices);
+    for (renderer::Rgba8Image& image : images) {
+        image = renderer::Rgba8Image();
+    }
+}
+
 bool load_level(
     const fs::path& dir,
     LevelData& out,

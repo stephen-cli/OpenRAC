@@ -308,6 +308,8 @@ struct ProcessMemory {
     std::uint64_t resident = 0;   // bytes of physical memory the process holds
     std::uint64_t footprint = 0;  // what the system charges it for, where it says (macOS); else 0
     std::uint64_t peak = 0;       // the most resident so far, where the system says; else 0
+    std::uint64_t available = 0;  // what the system has left for it, where it is a fixed share
+                                  // (the PS3); else 0
 };
 
 ProcessMemory process_memory();

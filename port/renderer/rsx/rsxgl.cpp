@@ -62,7 +62,9 @@ void wait_idle() {
 namespace {
 
 constexpr u32 kCommandBufferSize = 0x80000;  // 512 KB of commands between flushes
-constexpr u32 kHostSize = 32 * 1024 * 1024;  // main memory the RSX may read (rsxInit's)
+// Main memory the RSX may read (rsxInit's, megabytes whole): the command buffer alone, as buffers
+// and textures are in the RSX's own memory. It comes out of the 213 MB a program has.
+constexpr u32 kHostSize = 1024 * 1024;
 constexpr u32 kHostAlignment = 1024 * 1024;
 
 const GLubyte* get_string(GLenum name) {

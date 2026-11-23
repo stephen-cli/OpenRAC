@@ -191,6 +191,12 @@ struct MaterialAssets;
 struct MaterialBindings;
 
 struct LevelData {
+    // Lets go of what the GPU holds once the level is uploaded (LevelScene::upload): the
+    // vertices, the indices and the images' texels, most of a level's memory. For a system
+    // whose memory is a fixed share (the PS3); the object picker, which reads them later, finds
+    // nothing to pick.
+    void release_uploaded();
+
     std::shared_ptr<const MaterialAssets>
         material_assets;  // Immutable identities, hashed once at load.
     std::shared_ptr<const MaterialBindings>
