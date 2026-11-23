@@ -123,10 +123,21 @@ endif()
 # interface target whose headers are SYSTEM, so the port's warnings do not
 # apply to them. Their implementations are compiled once, in
 # viewer/third_party.c, with warnings off.
+# cgltf reads a glTF's little-endian numbers in the host's order: on a
+# big-endian target its source is changed to read them by their bytes
+# (tools/cgltf_little_endian.py).
+set(openrac_cgltf_options)
+if(CMAKE_C_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  list(APPEND openrac_cgltf_options PATCH_COMMAND
+       "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../tools/cgltf_little_endian.py"
+       <SOURCE_DIR>)
+endif()
 FetchContent_Declare(cgltf
   GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
   GIT_TAG v1.15
   GIT_SHALLOW TRUE
+  ${openrac_cgltf_options}
 )
 # stb has no releases; a commit is pinned (2026-08-01, stb_image 2.30).
 FetchContent_Declare(stb
