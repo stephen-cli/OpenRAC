@@ -480,7 +480,7 @@ been compared with another platform's. What it took:
   draw an instance, the instance's numbers worked out by the layer),
   matrix and array uniforms, and RSX programs for the sky and for the
   level as stored ([renderer/rsx](../../port/renderer/rsx/README.md)).
-  The layer's test has 69 checks.
+  The layer's test had 69 checks then.
 
 Between the scenes the game shows its own 2D screens (the level's name
 on black), which the first windowed run had left unexplained.
@@ -489,12 +489,38 @@ Not drawn yet: the mobys (their skin is a float texture the vertex
 program reads), the ties' own lighting (the same), effects, shadows, the
 metal pass.
 
-Level 0 itself is not reached: the console's memory runs out while its
-files are read ahead, during the flight (`sys_mmapper` refused 9 MB with
-1.6 MB left, under RPCS3), and the reading thread then stops in `free`
-instead of ending with an error. The level's data on the CPU beside the
-flight world's, the game's memory and the program are more than the
-console's main memory holds as the port keeps them (section 2).
+### A level within main memory (2026-11-24)
+
+The windowed program under RPCS3 reaches level 0 and draws Veldin's
+opening scenes: the terrain, the ties, the shrubs, the sky, and the mobys
+as stored (unposed: no skinning yet), about three thousand draws a frame.
+Its picture has not been compared with another platform's.
+
+A program has 213 MB of main memory (`sys_memory_get_user_memory_size`,
+which `stats::process_memory()` reads on the console). As the port kept
+it, level 0 did not fit: the read ran out while the flight world was
+still loaded. What changed:
+
+| | Before | After |
+|---|---|---|
+| The RSX's host buffer (`rsxInit`) | 32 MB | 1 MB: the command buffer alone, buffers and textures being in the RSX's memory |
+| The port's region of game memory | 16 MB | 3 MB, packed: the stack, the strings, the statics |
+| A level read ahead during the flight | beside the level drawn | not where memory is a fixed share: read when it comes, after the last one is let go |
+| A level's textures in the renderer's pool | kept for the rest of the run, every level visited (on every platform) | dropped when the level goes (`TexturePool::drop`) |
+| The level's vertices, indices and texels on the CPU | kept beside the GPU's | let go after the upload where memory is a fixed share (`LevelData::release_uploaded`) |
+
+Measured with level 0 drawn: 194 MB held by the process as the system
+counts it, 18 MB left; the heap gives nothing back to the system, so
+what a level let go is free inside it and not in that figure. The
+largest holders are the program (28 MB loaded), game memory (35 MB) and
+the level while it is read and uploaded (about 80 MB at the peak, the
+texels twice: the level's and the pool's).
+
+Left: an allocation that fails stops the program in newlib's `free`
+instead of ending with an error; the peak of a level's load is close to
+the limit, so a larger level than Veldin may not fit yet (the pool's
+copy of the texels is the next saving); and a draw an instance is some
+three thousand draws a frame, whose cost on the console is not measured.
 
 ## 7. Next steps
 
@@ -524,7 +550,8 @@ The proposal, in the order that gives a picture soonest:
    and the level as stored are done too (terrain, ties, shrubs), the
    instancing on the CPU. Next the ties' lights and the mobys (skinning,
    lights, glow, metal), then effects and shadows.
-4. A level within the console's main memory (section 6: level 0's read
-   runs out of it), textures within 256 MB of video memory (section 2), and the
+4. Every level within the console's main memory (section 6: Veldin
+   fits, with little to spare at the peak of its load), an allocation's
+   failure ending with an error, textures within 256 MB of video memory (section 2), and the
    extracted levels through the readers on big-endian
    (`--check-levels`).

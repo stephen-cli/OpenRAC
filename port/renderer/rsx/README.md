@@ -19,7 +19,7 @@ function pointers of `renderer/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 69 checks that RPCS3 starts in seconds: a change here is run
+program of 73 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs

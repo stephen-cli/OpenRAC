@@ -20,7 +20,7 @@ rpcs3 --no-gui --config CONFIG build/ps3-window/openrac-rsxgl-test
 [probe](../rsx-probe/README.md)'s. What the program printed is in RPCS3's
 `TTY.log`.
 
-What it checks (69 checks, all passing on RPCS3 0.0.42, 2026-11-23):
+What it checks (73 checks, all passing on RPCS3 0.0.42, 2026-11-24):
 
 | Check | What it would catch |
 |---|---|
@@ -36,6 +36,7 @@ What it checks (69 checks, all passing on RPCS3 0.0.42, 2026-11-23):
 | mesh: two instances | a matrix and a tint for each instance from the instance buffer |
 | mesh: the viewer's sun, fog | the normal through the model's rotation; the fog's arithmetic in the vertex program and its weight in the fragment program |
 | mesh: cutout, in the solid and the translucent pass | the two tests on the texel's alpha; a material without a cutout drawing nothing in the translucent pass |
+| mesh: 20000 draws a frame | more commands in a frame than the command buffer holds |
 | mesh: metal pass | a pass the RSX program has not is left out, not drawn wrong |
 | frame 300 | 300 frames of 100 draws: the command buffer's segments filling and wrapping, buffers taking new memory within a frame |
 
