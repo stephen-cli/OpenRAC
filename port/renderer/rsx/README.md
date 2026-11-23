@@ -19,7 +19,7 @@ function pointers of `renderer/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 55 checks that RPCS3 starts in seconds: a change here is run
+program of 69 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs
@@ -29,11 +29,19 @@ succeed at once, and a GL program is carried out by the RSX program made
 ahead of time for it. The layer knows which by a line in the GLSL of both
 stages (`rsx-program: direct` in `shaders/direct.vert` and `direct.frag`).
 A program without one links too, and its draws are left out: the picture
-is what the programs written so far draw.
+is what the programs written so far draw. The log says once why draws
+are left out (no RSX program, a pass the RSX program has not yet, a
+vertex array or indices the RSX cannot read).
 
 | GL program | RSX program | Draws |
 |---|---|---|
-| `direct.vert`, `direct.frag` | `programs/direct.vp`, `direct.fp` | the 2D path: menus, the HUD, text, fades; and the layer's own copies between framebuffers |
+| `renderer/shaders/direct.vert`, `direct.frag` | `programs/direct.vp`, `direct.fp` | the 2D path: menus, the HUD, text, fades; and the layer's own copies between framebuffers |
+| `viewer/shaders/sky.vert`, `sky.frag` | `programs/sky.vp`, `sky.fp` | the sky's shells |
+| `viewer/shaders/mesh.vert`, `mesh.frag` | `programs/mesh.vp`, `mesh.fp` | the level as stored: terrain, ties, shrubs, in the solid and the translucent pass |
+
+A program's uniforms are kept by name in slots of four numbers (a matrix
+four slots, an array a slot an element; `rsxgl_objects.cpp` has each
+kind's names), and a draw makes the RSX program's constants of them.
 
 `direct.frag` branches on its uniforms (the chip's four texture
 functions, fog, the alpha test's six comparisons, the blend's source
@@ -47,6 +55,19 @@ still be reading for an earlier draw.
 
 Not in `direct.fp` yet: text drawn sharp from a distance field (a second
 texture), and the texture packs' upscaled colours.
+
+`mesh.fp` is made the same way (the cutout's two passes, the fog and the
+alpha written are sums), and `mesh.vp` does what `mesh.vert` does for a
+vertex drawn as stored. The GLSL reads a matrix and a tint for each
+instance; the RSX has no instances, so an instanced draw is a draw for
+each, with the constants the instance changes (nine: the matrix times the
+view's, the depth's row, the tint, the normal's rotation) worked out by
+the layer from the instance buffer and sent before it. The viewer's sun
+is worked out at the vertex, not at the pixel as the GLSL has it. Not in
+the mesh programs yet: a tie's colours from the light texture (a float
+texture read by the vertex program), the terrain's point lights, a moby's
+skin, lights and glow, the effect and metal passes; draws of those passes
+are left out, and a lit tie is drawn with its stored colour.
 
 Writing a program for `cgcomp -a`: registers are `R0` up, constants
 `c[n]`, and the chip's limits are the author's to keep, since the
@@ -68,21 +89,22 @@ Carried out:
 | `glGetString`, `glGetIntegerv`, `glGetFloatv` | the layer's name ("4.1 OpenRAC on RSX": the desktop's GL to `gl::api()`), no extensions, a 4096 texture limit, one sample a pixel, the viewport |
 | textures: `glTexImage2D`, `glTexSubImage2D`, `glTexParameteri`, samplers | one level of A8R8G8B8 in RSX memory, rows in GL's order, GL's RGBA bytes turned to the RSX's order on the way in; a depth format is 24-bit depth with stencil; a float format is held as eight bits a channel; any other format has no memory and samples white |
 | renderbuffers | as textures; one sample a pixel whatever was asked |
-| buffers: `glBufferData`, `glBufferSubData` | RSX memory. A buffer a draw of this frame read is not written in place, since that draw may still be queued: it takes new memory (kept contents for `glBufferSubData`) and the old is left to the draw, without a wait. A texture's writes wait for the RSX first when a queued draw uses the texture |
-| vertex arrays | float attributes and normalised bytes, at GL's locations |
+| buffers: `glBufferData`, `glBufferSubData` | RSX memory, vertices and indices alike (the element buffer is the vertex array's). A buffer a draw of this frame read is not written in place, since that draw may still be queued: it takes new memory (kept contents for `glBufferSubData`) and the old is left to the draw, without a wait. A texture's writes wait for the RSX first when a queued draw uses the texture |
+| vertex arrays | float attributes and normalised bytes, at GL's locations; of a vertex array's attributes the RSX is told those the bound program reads; an attribute with a divisor is one value an instance, read by the layer |
+| uniforms: `glUniform1i` to `4f`, `glUniform4fv`, `glUniformMatrix4fv` | kept with the GL program, the RSX program's constants at a draw |
 | framebuffers: attachments, `glBindFramebuffer`, `glCheckFramebufferStatus` | a colour texture and a depth texture or renderbuffer as the RSX's surface; every framebuffer is complete |
 | state: viewport, scissor, depth test, function, mask and clamp, colour mask, blend (function, equation, colour), cull face, front face | the RSX's, told again before a draw when any of it changed |
 | `glClear`, `glClearColor`, `glClearDepth` | `rsxClearSurface`, within the scissor, of what the masks let be written |
-| `glDrawArrays` | with a program the layer has for the RSX |
+| `glDrawArrays`, `glDrawElements` and their instanced forms | with a program the layer has for the RSX; indices of 16 and 32 bits; an instance is a draw |
 | `glBlitFramebuffer` | colour, from a framebuffer's texture: a textured rectangle drawn with the direct program, scaled and filtered as asked |
 | `glCopyTexSubImage2D` | the RSX's own copy between two pieces of its memory (`rsxSetTransferImage`) |
 | `glReadPixels` | `GL_RGBA` bytes or floats from the screen or a framebuffer's colour, read from memory once the RSX has caught up and been taken off that surface: the port's screenshots (`OPENRAC_SHOT`) work on the console |
 | `glFinish` | waits for the RSX |
 
-Answered and not carried out yet: indexed and instanced draws, stencil,
-depth copies between framebuffers, mip chains (`glGenerateMipmap`: a mip
-filter is linear within the one level), compressed textures, uniform
-blocks and the matrix uniforms (no program uses them yet).
+Answered and not carried out yet: stencil, depth copies between
+framebuffers, mip chains (`glGenerateMipmap`: a mip filter is linear
+within the one level, so the world's far textures shimmer), float
+textures, compressed textures, uniform blocks.
 
 ## Which way up
 

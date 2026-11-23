@@ -2,7 +2,7 @@
 
 The RSX layer ([renderer/rsx](../../renderer/rsx/README.md)) checked by
 its pictures: a console program that calls the layer's GL as the renderer
-does, draws rectangles of known colours with the direct program, reads
+does, draws rectangles of known colours with each of the layer's programs, reads
 the pixels back and prints one line a check, `ok` or `FAIL` with what it
 read and what GL would have drawn. It ends with status 0 when every check
 passed. It is 16 MB, so RPCS3 starts it in seconds where the game takes
@@ -20,7 +20,7 @@ rpcs3 --no-gui --config CONFIG build/ps3-window/openrac-rsxgl-test
 [probe](../rsx-probe/README.md)'s. What the program printed is in RPCS3's
 `TTY.log`.
 
-What it checks (55 checks, all passing on RPCS3 0.0.42, 2026-11-14):
+What it checks (69 checks, all passing on RPCS3 0.0.42, 2026-11-23):
 
 | Check | What it would catch |
 |---|---|
@@ -32,6 +32,11 @@ What it checks (55 checks, all passing on RPCS3 0.0.42, 2026-11-14):
 | vertex alpha above and below the reference | the colour's alpha byte |
 | blend, added and by the source's alpha | the blend state; the alpha the fragment program writes |
 | framebuffer, blit to the screen, framebuffer as a texture, copied texture | a texture as the RSX's surface and back, the copy between framebuffers, `glCopyTexSubImage2D` |
+| sky | an indexed draw; the two matrices multiplied in the right order; a vertex colour above one; the tint |
+| mesh: two instances | a matrix and a tint for each instance from the instance buffer |
+| mesh: the viewer's sun, fog | the normal through the model's rotation; the fog's arithmetic in the vertex program and its weight in the fragment program |
+| mesh: cutout, in the solid and the translucent pass | the two tests on the texel's alpha; a material without a cutout drawing nothing in the translucent pass |
+| mesh: metal pass | a pass the RSX program has not is left out, not drawn wrong |
 | frame 300 | 300 frames of 100 draws: the command buffer's segments filling and wrapping, buffers taking new memory within a frame |
 
 What it found on its first day, each of which the game had shown only as

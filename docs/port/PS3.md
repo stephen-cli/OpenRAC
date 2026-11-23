@@ -456,6 +456,46 @@ purpose:
   of the first windowed run are gone. The world's readers
   (`frontend/world.cpp`) are still to do.
 
+### The world's first picture (2026-11-23)
+
+The windowed program under RPCS3 draws the title world: the sky's
+shells, the terrain and the ties of level 99, the game's logo over them
+through the 2D path, about a thousand draws a frame. Its picture has not
+been compared with another platform's. What it took:
+
+- **The levels on the console.** `editor/extract.py port` writes the
+  levels on the desktop; the console run reads them from the data
+  folder (`port/pal/level_NN`).
+- **cgltf on big-endian.** cgltf reads a glTF's little-endian numbers in
+  the host's order (the GLB header's words with `memcpy`, a buffer's
+  components through a cast pointer) and refused every `.glb` at its
+  first word. On a big-endian target the port's CMake changes the
+  fetched source to read them by their bytes
+  (`port/tools/cgltf_little_endian.py`); a little-endian build fetches
+  cgltf as it was.
+- **More readers of the game's memory**: the frontend's particle and sky
+  sprite records (`frontend/world.cpp`) and the scene's moby shadow, pose
+  and hero shadow readers read through `common/byte_order.h`.
+- **The layer**: element buffers and indexed draws, instanced draws (a
+  draw an instance, the instance's numbers worked out by the layer),
+  matrix and array uniforms, and RSX programs for the sky and for the
+  level as stored ([renderer/rsx](../../port/renderer/rsx/README.md)).
+  The layer's test has 69 checks.
+
+Between the scenes the game shows its own 2D screens (the level's name
+on black), which the first windowed run had left unexplained.
+
+Not drawn yet: the mobys (their skin is a float texture the vertex
+program reads), the ties' own lighting (the same), effects, shadows, the
+metal pass.
+
+Level 0 itself is not reached: the console's memory runs out while its
+files are read ahead, during the flight (`sys_mmapper` refused 9 MB with
+1.6 MB left, under RPCS3), and the reading thread then stops in `free`
+instead of ending with an error. The level's data on the CPU beside the
+flight world's, the game's memory and the program are more than the
+console's main memory holds as the port keeps them (section 2).
+
 ## 7. Next steps
 
 The renderer backend, now that the game runs headless on the console.
@@ -472,17 +512,19 @@ The proposal, in the order that gives a picture soonest:
    no joystick driver there; PSL1GHT's `io/pad` behind SDL's virtual
    gamepad) and sound (the dummy device plays nothing).
 2. **GL carried out with the RSX**, a layer beside the Vulkan one for
-   the functions the classic renderer calls: what the 2D path calls is
-   done (section 6). Left: indexed and instanced draws, stencil, depth
-   copies, mip chains, uniform blocks and matrices, as the world's
-   renderers come to need them.
+   the functions the classic renderer calls: what the 2D path, the sky
+   and the stored level call is done (section 6). Left: float textures
+   (the ties' lights, the mobys' joints), mip chains, stencil, depth
+   copies, uniform blocks, as the world's renderers come to need them.
+   A draw an instance has not been timed.
 3. **The shaders written again** as RSX programs, kept beside their
    GLSL and found by a line in it instead of compiled at run time: the
    direct renderer's pair is done, less its distance-field text. Its
-   picture has not been compared with another platform's yet. Next the
-   world's readers on big-endian, then terrain and ties, whose vertex
-   shaders lean on integers and instancing that Shader Model 3 has not,
-   so part of their work moves to the CPU.
-4. Textures within 256 MB of video memory (section 2), and the
+   picture has not been compared with another platform's yet. The sky
+   and the level as stored are done too (terrain, ties, shrubs), the
+   instancing on the CPU. Next the ties' lights and the mobys (skinning,
+   lights, glow, metal), then effects and shadows.
+4. A level within the console's main memory (section 6: level 0's read
+   runs out of it), textures within 256 MB of video memory (section 2), and the
    extracted levels through the readers on big-endian
    (`--check-levels`).
