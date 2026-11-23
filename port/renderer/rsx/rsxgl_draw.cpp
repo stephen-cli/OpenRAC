@@ -792,6 +792,31 @@ bool bind_vertex_array(ProgramKind kind) {
     return true;
 }
 
+// How many vertices the bound vertex array's buffers hold for `kind`'s attributes: a draw past
+// them would have the RSX read memory that is not the buffer's.
+u32 vertices_held(ProgramKind kind) {
+    const auto found = g.vertex_arrays.find(g.vertex_array);
+    if (found == g.vertex_arrays.end()) {
+        return 0;
+    }
+    const u32 read = attributes_read(kind);
+    u32 held = ~0u;
+    for (u32 i = 0; i < kAttributes; ++i) {
+        const Attribute& attribute = found->second.attributes[i];
+        if (!attribute.enabled || attribute.divisor != 0 || (read & 1u << i) == 0) {
+            continue;
+        }
+        const auto buffer = g.buffers.find(attribute.buffer);
+        const u32 bytes = static_cast<u32>(attribute.size) * (attribute.type == GL_FLOAT ? 4u : 1u);
+        if (buffer == g.buffers.end() || attribute.pointer + bytes > buffer->second.size) {
+            return 0;
+        }
+        const u32 stride = attribute.stride > 0 ? static_cast<u32>(attribute.stride) : bytes;
+        held = std::min(held, (buffer->second.size - attribute.pointer - bytes) / stride + 1);
+    }
+    return held;
+}
+
 u32 primitive(GLenum mode) {
     switch (mode) {
         case GL_POINTS:
@@ -829,6 +854,7 @@ enum class LeftOut : u32 {
     NoVertices,  // an attribute the RSX cannot read, or no buffer behind one
     NoIndices,   // no element buffer, or indices of a type the RSX has not
     NoPass,      // a pass of the GL program that the RSX program has not yet
+    PastEnd,     // vertices past the end of their buffers
 };
 
 void leave_out(LeftOut reason) {
@@ -838,6 +864,7 @@ void leave_out(LeftOut reason) {
         "of vertex arrays the RSX cannot read",
         "of indices the RSX cannot read",
         "of passes the layer's program has not yet",
+        "of vertices past the end of their buffers",
     };
     ++g.draws_left_out;
     const u32 bit = 1u << static_cast<u32>(reason);
@@ -856,6 +883,14 @@ bool pass_known(const Program& program) {
                && program.uniforms[mesh::kMetalPass][0] == 0.0f);
 }
 
+// Whether the bound program's draw has no pixel to write, whatever its vertices: the mesh
+// program's translucent pass of a material without a cutout (mesh_constants). The renderer draws
+// every instance in both passes, and an instance is a draw here.
+bool draws_nothing(const Program& program) {
+    return program.kind == ProgramKind::Mesh && program.uniforms[mesh::kTranslucentPass][0] != 0.0f
+           && program.uniforms[mesh::kCutout][0] == 0.0f;
+}
+
 // What every draw does before its vertices: the surface, GL's state, the bound program as the
 // RSX's with its numbers, the textures. Null when the draw is left out.
 const Program* begin_draw(Target& target) {
@@ -866,6 +901,9 @@ const Program* begin_draw(Target& target) {
     }
     if (!pass_known(program->second)) {
         leave_out(LeftOut::NoPass);
+        return nullptr;
+    }
+    if (draws_nothing(program->second)) {
         return nullptr;
     }
     if (!apply_target(target)) {
@@ -960,6 +998,10 @@ void draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
     }
     const Program* program = begin_draw(target);
     if (program == nullptr) {
+        return;
+    }
+    if (static_cast<u32>(first) + static_cast<u32>(count) > vertices_held(program->kind)) {
+        leave_out(LeftOut::PastEnd);
         return;
     }
     const Instances each(program);

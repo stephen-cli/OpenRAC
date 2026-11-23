@@ -368,6 +368,14 @@ void mesh_checks(int wide, int high) {
     expect_quarters(
         "mesh: two instances", 0, wide, high, kRed, black, black, Colour{0, 255, 0, 255}
     );
+    // A frame of a level: more commands than the command buffer holds, before any flip.
+    clear(0.0f, 0.0f, 0.0f);
+    for (int i = 0; i < 10000; ++i) {
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, at(0), 2);
+    }
+    expect_quarters(
+        "mesh: 20000 draws a frame", 0, wide, high, kRed, black, black, Colour{0, 255, 0, 255}
+    );
     // The viewer's sun on a normal straight up, of any length: 0.55 + 0.45 x 0.80.
     glUniform1i(uniform("lighting"), 1);
     draw();
