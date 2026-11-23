@@ -72,6 +72,9 @@ public:
     // Upload a level; the GL context must be current.
     bool upload(const LevelData& level, renderer::TexturePool& textures, std::string& error);
     void release();
+    // Gives `textures` back what upload() added to it, when the level goes (the pool outlives
+    // the level).
+    void drop_textures(renderer::TexturePool& textures);
 
     void draw_layer(Layer layer, const renderer::FrameInput& input, renderer::RenderState& state);
     // The mod-only animated scenery layer at this presentation time (seconds since startup).

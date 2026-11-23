@@ -240,6 +240,12 @@ void use_level(int number) {
         g->renderer->textures().clear_upscaled_texture_colours();
     }
     crash::level_breadcrumb("level scene reset", wanted);
+    // The last level's textures leave the pool with it.
+    g->scene.drop_textures(g->renderer->textures());
+    for (const renderer::TextureHandle texture : g->sky_textures) {
+        g->renderer->textures().drop(texture);
+    }
+    g->sky_textures.clear();
     g->scene.release();
     g->scene = scene::LevelScene();
     // The enhanced renderer's probe and early lighting, drawn when the player's settings ask.
@@ -389,6 +395,7 @@ void use_level(int number) {
                 sky[i], renderer::AlphaScale::Full, std::format("sky {} of level {}", i, wanted)
             );
             g->renderer->textures().place(kSkyTextureKey + static_cast<std::uint32_t>(i), h);
+            g->sky_textures.push_back(h);
         }
     }
     // Build shader work from earlier runs now, behind the loading screen (docs/port/RENDER_PERF.md).
@@ -420,6 +427,7 @@ void savestate_restored(std::uint64_t tick) {
     g->kept = std::make_shared<Kept>();
     g->scene.release();
     g->renderer.reset();
+    g->sky_textures.clear();
     if (g->temporal) {
         g->temporal->reset();
     }

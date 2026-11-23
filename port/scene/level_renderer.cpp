@@ -629,6 +629,20 @@ void LevelScene::draw_mobys(
     groups.swap(own);
 }
 
+void LevelScene::drop_textures(renderer::TexturePool& textures) {
+    // An image without texels has the white texture's handle.
+    std::vector<renderer::TextureHandle> added = std::move(m_textures);
+    added.push_back(m_white);
+    std::sort(added.begin(), added.end());
+    added.erase(std::unique(added.begin(), added.end()), added.end());
+    for (const renderer::TextureHandle texture : added) {
+        textures.drop(texture);
+    }
+    m_textures.clear();
+    m_variants.clear();
+    m_white = 0;
+}
+
 void LevelScene::release() {
     m_culling_lines.reset();
     m_culling_lines_failed = false;

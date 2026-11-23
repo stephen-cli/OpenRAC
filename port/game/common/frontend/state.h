@@ -326,6 +326,8 @@ struct State {
     std::vector<std::array<std::uint64_t, 4>> effect_states_before;
     // The sky sprites the game drew since the last frame (sky_sprite): record, TEX0.
     std::vector<std::pair<std::array<std::uint8_t, 0x20>, std::uint64_t>> sky_sprites;
+    // The level's sky textures in the renderer's pool, dropped when the level goes.
+    std::vector<renderer::TextureHandle> sky_textures;
     // The 2D layer's quads drawn natively since the last frame (ui_quad), by marker index.
     std::vector<renderer::UiQuad> ui_quads;
     // The quads of the last ticks that drew any, by generation: a marker names the generation of

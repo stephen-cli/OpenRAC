@@ -134,6 +134,24 @@ TextureHandle TexturePool::add(Rgba8Image image, AlphaScale scale, std::string n
     return h;
 }
 
+void TexturePool::drop(TextureHandle texture) {
+    if (texture == 0 || texture > m_entries.size()) {
+        return;
+    }
+    Entry& e = m_entries[texture - 1];
+    // A converted upload and a distance field are retired by end_frame().
+    if (!e.live || e.from_upload || e.field) {
+        return;
+    }
+    if (gl::loaded()) {
+        delete_gl(e);
+    }
+    std::erase_if(m_placed, [texture](const auto& placed) { return placed.second == texture; });
+    m_field_of_handle.erase(texture);
+    e = Entry{};
+    m_free.push_back(texture);
+}
+
 void TexturePool::place(std::uint32_t tbp, TextureHandle texture) {
     m_placed[tbp] = texture;
 }

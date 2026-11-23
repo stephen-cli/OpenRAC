@@ -89,6 +89,11 @@ public:
     TextureHandle add(Rgba8Image image, AlphaScale scale, std::string name, bool mipmaps = false,
                       bool linear = false);
 
+    // Lets go of a texture its owner added (add()): its texels, its GL texture and its
+    // placements; the handle goes to a later texture. A level's textures are dropped when the
+    // level goes, or every level visited stays in memory. The context must be current.
+    void drop(TextureHandle texture);
+
     // Gives `texture` the frames of a texture pack's animated replacement (texture_pack.h): its
     // image stays the first frame, and gl_texture() gives the frame of the game's tick. Null:
     // none. Each frame's GL texture is made at its first use and freed with the texture.
