@@ -489,6 +489,15 @@ Not drawn yet: the mobys (their skin is a float texture the vertex
 program reads), the ties' own lighting (the same), effects, shadows, the
 metal pass.
 
+### The mobys' glow, blended and metal passes (2026-11-24)
+
+The rest of the mobys' passes are drawn: their glow faces, the blended
+mobys (those fading, the added ones) and the metal packets' shine, by the
+same pair of programs with other constants
+([renderer/rsx](../../port/renderer/rsx/README.md)). No draw of the level
+is left out for want of a pass. The layer's test has 94 checks. Not
+compared with another platform's picture.
+
 ### The mobys posed and lit (2026-11-24)
 
 The live mobys are skinned and lit: Ratchet stands posed on Veldin under
@@ -499,8 +508,7 @@ the palette texture and the instance
 did not assemble a constant addressed through a register; the toolchain
 builds it with that put right
 ([tools/ps3](../../port/tools/ps3/README.md)). The layer's test has 85
-checks. Not compared with another platform's picture; the mobys' glow,
-effect and metal passes are not drawn yet.
+checks. Not compared with another platform's picture.
 
 ### A level within main memory (2026-11-24)
 
@@ -561,9 +569,8 @@ The proposal, in the order that gives a picture soonest:
    direct renderer's pair is done, less its distance-field text. Its
    picture has not been compared with another platform's yet. The sky
    and the level as stored are done too (terrain, ties, shrubs), the
-   instancing on the CPU, and the mobys' solid pass, skinned and lit.
-   Next the ties' lights and the mobys' glow, effect and metal passes,
-   then shadows.
+   instancing on the CPU, and the mobys in all their passes, skinned and
+   lit. Next the ties' lights, then shadows.
 4. Every level within the console's main memory (section 6: Veldin
    fits, with little to spare at the peak of its load), an allocation's
    failure ending with an error, textures within 256 MB of video memory (section 2), and the
