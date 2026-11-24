@@ -20,7 +20,7 @@ rpcs3 --no-gui --config CONFIG build/ps3-window/openrac-rsxgl-test
 [probe](../rsx-probe/README.md)'s. What the program printed is in RPCS3's
 `TTY.log`.
 
-What it checks (94 checks, all passing on RPCS3 0.0.42, 2026-11-24):
+What it checks (117 checks, all passing on RPCS3 0.0.42, 2026-11-25):
 
 | Check | What it would catch |
 |---|---|
@@ -43,6 +43,9 @@ What it checks (94 checks, all passing on RPCS3 0.0.42, 2026-11-24):
 | moby: glow pass | the glow faces in the glow colour and no others; the two draws split at the alpha reference; the alpha written, blended |
 | moby: effect pass | a blended moby whole and lit, at the texel's alpha times its own; the split; an added one's colour times an alpha past 1 |
 | moby: metal pass | the sphere map read by the normal as the camera sees it, the chip's 0x70 without the material's colour, the shine of the moby's distance as alpha |
+| tie: a light slot's colour; a vertex without a slot; a colour written again; an instance without colours | a lit instance's colours read from the light texture across its rows and handed over as constants, by the vertex's slot; the stored colour and the viewer's sun kept elsewhere; the constants sent again when the texture is written |
+| effect: through the camera; the fog line | the effect renderer's world positions; the strip's fog from the depth, its slope, offset and bounds |
+| effect: textured; added; under the depth test; coordinates across a square; perspective; the game's smoke | the texel times the colour; the colour weighed by its alpha for an added strip; the reversed depth test; coordinates that differ from vertex to vertex, with and without perspective; a blended strip with the game's numbers |
 | frame 300 | 300 frames of 100 draws: the command buffer's segments filling and wrapping, buffers taking new memory within a frame |
 
 What it found on its first day, each of which the game had shown only as

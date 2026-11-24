@@ -19,7 +19,7 @@ function pointers of `renderer/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 94 checks that RPCS3 starts in seconds: a change here is run
+program of 117 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs
@@ -27,7 +27,8 @@ there before the game.
 Nothing is compiled on the console: `glCompileShader` and `glLinkProgram`
 succeed at once, and a GL program is carried out by the RSX program made
 ahead of time for it. The layer knows which by a line in the GLSL of both
-stages (`rsx-program: direct` in `shaders/direct.vert` and `direct.frag`).
+stages (`rsx-program: direct` in `shaders/direct.vert` and `direct.frag`;
+a pair may name a program in each, as `effect.vert` with `direct.frag`).
 A program without one links too, and its draws are left out: the picture
 is what the programs written so far draw. The log says once why draws
 are left out (no RSX program, a pass the RSX program has not yet, a
@@ -39,6 +40,7 @@ vertex array or indices the RSX cannot read).
 | `viewer/shaders/sky.vert`, `sky.frag` | `programs/sky.vp`, `sky.fp` | the sky's shells |
 | `viewer/shaders/mesh.vert`, `mesh.frag` | `programs/mesh.vp`, `mesh.fp` | the level as stored: terrain, ties, shrubs, in the solid and the translucent pass |
 | the same, where its `skinning` or a pass of the mobys is set | `programs/moby.vp`, `mesh.fp` | the live mobys, skinned and lit as MobyProc lights them: their solid faces, glow faces, the blended ones, the metal packets |
+| `renderer/shaders/effect.vert`, `direct.frag` | `programs/effect.vp`, `direct.fp` | the effect renderer's strips and quads: smoke, fire, glows, particles |
 
 A program's uniforms are kept by name in slots of four numbers (a matrix
 four slots, an array a slot an element; `rsxgl_objects.cpp` has each
@@ -66,6 +68,20 @@ view's, the depth's row, the tint, the normal's rotation) worked out by
 the layer from the instance buffer and sent before it. The viewer's sun
 is worked out at the vertex, not at the pixel as the GLSL has it.
 
+A lit tie or shrub takes its colours from the light texture in the GLSL,
+a texel for each of the instance's light slots. The RSX's vertex programs
+read no such texture, so the layer reads the instance's 64 texels where
+the texture is in RSX memory and sends them as constants from `c[32]`,
+which `mesh.vp` reads through the address register by the vertex's slot.
+They are sent once for an instance's draws and again when the texture is
+written. `moby.vp` has its joints in the same constants, and the load of
+the one ends what the layer knows of the other. A vertex with a slot gets
+no viewer's sun.
+
+`effect.vp` is `effect.vert`: world positions through the camera, the
+strip's fog line, and `direct.fp`'s numbers handed on as `direct.vp`
+hands them.
+
 `moby.vp` is the same GLSL for a live moby. The GLSL reads a moby's joint
 matrices from a float texture and its lights from uniform arrays, by
 numbers of the instance. An instance is a draw here, so the layer hands
@@ -90,9 +106,8 @@ packets take their texture coordinates from the normal as the camera sees
 it, the chip's 0x70 as their colour and the shine their moby's distance
 gives as their alpha, which the layer works out for the instance.
 
-Not in the mesh programs yet: a tie's colours from the light texture, the
-terrain's point lights, the cut at the picture's sides of a moby of the 2D
-layer; a lit tie is drawn with its stored colour.
+Not in the mesh programs yet: the terrain's point lights, the cut at the
+picture's sides of a moby of the 2D layer.
 
 Writing a program for `cgcomp -a`: registers are `R0` up, constants
 `c[n]`, and the chip's limits are the author's to keep, since the
@@ -156,6 +171,17 @@ Every 120 frames the verbose log has a line of what the layer did
 (`rsxgl: 120 frames: 904 draws, 0 left out, 120 copies`): draws left out
 are draws of a program the layer has no RSX program for, and no draws at
 all is a renderer that was given nothing to draw.
+
+## Against the desktop's picture
+
+The port's own OpenGL renderer, built for x86 and run under Mesa's
+software rasteriser with the console run's arguments, writes the same
+frames (`OPENRAC_SHOT`), and the two are compared pixel for pixel. On
+Veldin (2026-11-25), frames of the opening without effects in view differ
+in 0.2% of their pixels by more than 16 of 255 in a channel. Frames with
+smoke and fire differ in about 38%: the effects are missing, and that is
+not the layer's doing ([docs/port/PS3.md](../../../docs/port/PS3.md)).
+Also missing: the shadows and the haze, whose programs the layer has not.
 
 ## Under RPCS3
 

@@ -489,6 +489,34 @@ Not drawn yet: the mobys (their skin is a float texture the vertex
 program reads), the ties' own lighting (the same), effects, shadows, the
 metal pass.
 
+### The ties lit, the effect program, the desktop's picture (2026-11-25)
+
+The ties and shrubs take their lit colours: the layer reads an instance's
+colours from the light texture and hands them to the vertex program as
+constants ([renderer/rsx](../../port/renderer/rsx/README.md)). The light
+texture's colours are words with red in the low byte, uploaded as bytes:
+on a big-endian host the scene turns each word round first
+(`light_texel`, `scene/level_renderer_internal.h`). The effect renderer
+has an RSX program. The layer's test has 117 checks.
+
+The picture is compared with the desktop's: the port's OpenGL renderer
+built for x86 runs under Mesa's software rasteriser with the same
+arguments and writes the same frames. Frames of Veldin's opening without
+effects in view differ in 0.2% of their pixels (more than 16 of 255 in a
+channel); before the ties were lit, in about half.
+
+Smoke and fire are not in the picture, and the layer draws what it is
+given: the game hands over other effect quads on the console. At tick
+1400 of the same run the x86 build's quads have four corners and their
+texture coordinates; the console build's have one point for all four
+corners, a depth of about -1.1e28 and 0.5 for every texture coordinate,
+and it has 178 particles where the x86 build has 298 (`OPENRAC_DEBUG=1`
+with `OPENRAC_FX_DUMP`). A big-endian fault in the game's own code that
+builds the quads, not found yet.
+
+Not drawn yet: the shadows and the haze (no RSX program: one or two draws
+a frame are left out).
+
 ### The mobys' glow, blended and metal passes (2026-11-24)
 
 The rest of the mobys' passes are drawn: their glow faces, the blended
