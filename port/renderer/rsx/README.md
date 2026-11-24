@@ -19,7 +19,7 @@ function pointers of `renderer/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 73 checks that RPCS3 starts in seconds: a change here is run
+program of 85 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs
@@ -38,6 +38,7 @@ vertex array or indices the RSX cannot read).
 | `renderer/shaders/direct.vert`, `direct.frag` | `programs/direct.vp`, `direct.fp` | the 2D path: menus, the HUD, text, fades; and the layer's own copies between framebuffers |
 | `viewer/shaders/sky.vert`, `sky.frag` | `programs/sky.vp`, `sky.fp` | the sky's shells |
 | `viewer/shaders/mesh.vert`, `mesh.frag` | `programs/mesh.vp`, `mesh.fp` | the level as stored: terrain, ties, shrubs, in the solid and the translucent pass |
+| the same, where its `skinning` is set | `programs/moby.vp`, `mesh.fp` | the live mobys' solid pass: skinned, lit as MobyProc lights them |
 
 A program's uniforms are kept by name in slots of four numbers (a matrix
 four slots, an array a slot an element; `rsxgl_objects.cpp` has each
@@ -63,11 +64,27 @@ instance; the RSX has no instances, so an instanced draw is a draw for
 each, with the constants the instance changes (nine: the matrix times the
 view's, the depth's row, the tint, the normal's rotation) worked out by
 the layer from the instance buffer and sent before it. The viewer's sun
-is worked out at the vertex, not at the pixel as the GLSL has it. Not in
-the mesh programs yet: a tie's colours from the light texture (a float
-texture read by the vertex program), the terrain's point lights, a moby's
-skin, lights and glow, the effect and metal passes; draws of those passes
-are left out, and a lit tie is drawn with its stored colour.
+is worked out at the vertex, not at the pixel as the GLSL has it.
+
+`moby.vp` is the same GLSL for a live moby. The GLSL reads a moby's joint
+matrices from a float texture and its lights from uniform arrays, by
+numbers of the instance. An instance is a draw here, so the layer hands
+both over as constants: the palette texture (RGBA32F) is kept in main
+memory and never reaches the RSX, a draw sends its instance's joints as
+three rows each from `c[32]`, and the vertex program reads them through
+the address register (`c[A0.x + 32]`). The RSX has 468 constants: 145
+joints, where Ratchet has 111, the most of the three levels looked at; a
+moby with more is left out and the log says so. How many joints a draw
+needs is read from its vertices once and kept until their buffers are
+written. The two directional lights (two sets cross-faded), the point
+light, the ambient and the glow colour are worked out for the instance
+on the CPU. The joints' bytes reach the program as parts of 255.
+
+Not in the mesh programs yet: a tie's colours from the light texture, the
+terrain's point lights, the mobys' glow, effect and metal passes (a glow
+packet's faces are left out of the solid pass, as the GLSL leaves them),
+the cut at the picture's sides of a moby of the 2D layer; draws of those
+passes are left out, and a lit tie is drawn with its stored colour.
 
 Writing a program for `cgcomp -a`: registers are `R0` up, constants
 `c[n]`, and the chip's limits are the author's to keep, since the

@@ -1,0 +1,136 @@
+!!ARBvp1.0
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 the OpenRAC contributors
+#
+# viewer/shaders/mesh.vert for the RSX (README.md), for the live mobys: the vertex skinned with
+# its joints' matrices, then lit as MobyProc lights it. mesh.fp is its fragment program, and
+# c[0] to c[15] are mesh.vp's. The GLSL reads the joints from a float texture and the lights from
+# uniform arrays by numbers of the instance; here the layer hands over the instance's own joints
+# and lights as constants (rsxgl_draw.cpp, moby_instance_constants).
+#
+# The attributes are GL's locations: 0 position, 1 normal, 2 uv, 3 colour, 10 the four joints
+# (bytes, which the RSX hands over as parts of 255), 11 their weights, 12 the light slot (-2: a
+# vertex of a glow packet).
+#
+# Of the instance:
+#   c[16]         the moby's ambient colour; w: 1 where the instance has joints, else 0
+#   c[17]         its first light's colour; w: -|back factor|
+#   c[18]         the direction to that light, in the world; w: 1 where MobyProc lights the
+#                 instance, 0 where the viewer's sun may (mesh.vp's c[10])
+#   c[19], c[20]  the second light's; c[20].w: 255 / 128, the brightest a lit colour is
+#   c[21], c[22]  the point light's colour and the direction to it; c[22].w: -2
+#   c[23]         the glow colour
+#   c[24]         765 (a byte's part of 255 to three constants a joint), 0.5, -1.5, and 1 where
+#                 the moby's glow packets take the glow colour
+#   c[32] on      the joints' matrices, three rows a joint
+#
+# Not here yet: the metal pass, the cut at the picture's sides of a moby of the 2D layer.
+MOV R0, vertex.attrib[0];
+MOV R0.w, c[11].w;
+MOV R5, vertex.attrib[1];
+MOV R9, vertex.attrib[11];
+# The skin: the weighted sum of the joints' matrices on the bind pose.
+MUL R8, vertex.attrib[10], c[24].x;
+ADD R8, R8, c[24].y;
+ARL A0, R8;
+DP4 R10.x, c[A0.x + 32], R0;
+DP4 R10.y, c[A0.x + 33], R0;
+DP4 R10.z, c[A0.x + 34], R0;
+DP3 R11.x, c[A0.x + 32], R5;
+DP3 R11.y, c[A0.x + 33], R5;
+DP3 R11.z, c[A0.x + 34], R5;
+MUL R12.xyz, R10, R9.x;
+MUL R13.xyz, R11, R9.x;
+DP4 R10.x, c[A0.y + 32], R0;
+DP4 R10.y, c[A0.y + 33], R0;
+DP4 R10.z, c[A0.y + 34], R0;
+DP3 R11.x, c[A0.y + 32], R5;
+DP3 R11.y, c[A0.y + 33], R5;
+DP3 R11.z, c[A0.y + 34], R5;
+MAD R12.xyz, R10, R9.y, R12;
+MAD R13.xyz, R11, R9.y, R13;
+DP4 R10.x, c[A0.z + 32], R0;
+DP4 R10.y, c[A0.z + 33], R0;
+DP4 R10.z, c[A0.z + 34], R0;
+DP3 R11.x, c[A0.z + 32], R5;
+DP3 R11.y, c[A0.z + 33], R5;
+DP3 R11.z, c[A0.z + 34], R5;
+MAD R12.xyz, R10, R9.z, R12;
+MAD R13.xyz, R11, R9.z, R13;
+DP4 R10.x, c[A0.w + 32], R0;
+DP4 R10.y, c[A0.w + 33], R0;
+DP4 R10.z, c[A0.w + 34], R0;
+DP3 R11.x, c[A0.w + 32], R5;
+DP3 R11.y, c[A0.w + 33], R5;
+DP3 R11.z, c[A0.w + 34], R5;
+MAD R12.xyz, R10, R9.w, R12;
+MAD R13.xyz, R11, R9.w, R13;
+# A vertex without weights, or an instance without joints, stays as stored.
+DP4 R14.x, R9, c[11].w;
+SLT R14.x, c[11].y, R14.x;
+MUL R14.x, R14.x, c[16].w;
+ADD R12.xyz, R12, -R0;
+MAD R0.xyz, R12, R14.x, R0;
+ADD R13.xyz, R13, -R5;
+MAD R5.xyz, R13, R14.x, R5;
+DP4 R1.x, c[0], R0;
+DP4 R1.y, c[1], R0;
+DP4 R1.z, c[2], R0;
+DP4 R1.w, c[3], R0;
+MOV result.position, R1;
+MOV result.texcoord[0], vertex.attrib[2];
+# The fog, as mesh.vp has it.
+DP4 R3.x, c[4], R0;
+MAD R3.x, R3.x, c[9].x, c[9].y;
+MAX R3.x, R3.x, c[9].z;
+MIN R3.x, R3.x, c[9].w;
+FLR R3.x, R3.x;
+MUL R3.x, R3.x, c[11].x;
+MUL R4.x, R3.x, R1.w;
+MOV R4.y, R1.w;
+# The normal in the world, of length one.
+DP3 R6.x, c[6], R5;
+DP3 R6.y, c[7], R5;
+DP3 R6.z, c[8], R5;
+DP3 R6.w, R6, R6;
+ADD R6.w, R6.w, c[11].z;
+RSQ R6.w, R6.w;
+MUL R6.xyz, R6, R6.w;
+# The viewer's sun, where MobyProc does not light the instance.
+DP3 R7.x, R6, c[10];
+MAX R7.x, R7.x, -R7.x;
+ADD R4.z, R7.x, c[10].w;
+ADD R7.y, c[11].w, -R4.z;
+MAD R4.z, R7.y, c[18].w, R4.z;
+# MobyProc's lights: each of the two with its leaky back clamp max(d, -|K| d), the point light
+# from its front only, on the ambient colour, times the vertex's multiplier.
+DP3 R8.x, R6, c[18];
+DP3 R8.y, R6, c[20];
+DP3 R8.z, R6, c[22];
+MUL R9.x, R8.x, c[17].w;
+MUL R9.y, R8.y, c[19].w;
+MOV R9.z, c[11].y;
+MAX R8.xyz, R8, R9;
+MOV R10, c[16];
+MAD R10.xyz, R8.x, c[17], R10;
+MAD R10.xyz, R8.y, c[19], R10;
+MAD R10.xyz, R8.z, c[21], R10;
+MUL R10.xyz, R10, vertex.attrib[3];
+MIN R10.xyz, R10, c[20].w;
+MOV R10.w, vertex.attrib[3].w;
+# A glow packet's vertex in the moby's glow colour, unlit.
+SLT R11.x, vertex.attrib[12].x, c[24].z;
+MUL R11.x, R11.x, c[24].w;
+ADD R9, c[23], -R10;
+MAD R10, R9, R11.x, R10;
+MUL R2, R10, c[5];
+MOV result.texcoord[1], R2;
+# mesh.fp leaves out a pixel whose w here is below 0: the glow packets, in the solid pass.
+MUL R7.z, R11.x, c[22].w;
+ADD R4.w, R7.z, c[11].w;
+MOV result.texcoord[2], R4;
+MOV result.texcoord[3], c[12];
+MOV result.texcoord[4], c[13];
+MOV result.texcoord[5], c[14];
+MOV result.texcoord[6], c[15];
+END

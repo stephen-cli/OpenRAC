@@ -213,17 +213,15 @@ if(OPENRAC_PS3)
   # as arrays of bytes in rsx_programs.h.
   set(rsx_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/rsx")
   set(rsx_assembled "")
-  foreach(program direct sky mesh)
-    foreach(stage vp fp)
-      string(SUBSTRING "${stage}" 0 1 flag)
-      set(source "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/${program}.${stage}")
-      set(assembled "${rsx_generated}/${program}.${stage}o")
-      add_custom_command(OUTPUT "${assembled}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${rsx_generated}"
-        COMMAND cgcomp -${flag} -a "${source}" "${assembled}"
-        DEPENDS "${source}" VERBATIM)
-      list(APPEND rsx_assembled "${assembled}")
-    endforeach()
+  foreach(program direct.vp direct.fp sky.vp sky.fp mesh.vp mesh.fp moby.vp)
+    string(REGEX REPLACE "^.*[.](.)p$" "\\1" flag "${program}")
+    set(source "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/${program}")
+    set(assembled "${rsx_generated}/${program}o")
+    add_custom_command(OUTPUT "${assembled}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${rsx_generated}"
+      COMMAND cgcomp -${flag} -a "${source}" "${assembled}"
+      DEPENDS "${source}" VERBATIM)
+    list(APPEND rsx_assembled "${assembled}")
   endforeach()
   add_custom_command(OUTPUT "${rsx_generated}/rsx_programs.h"
     COMMAND "${CMAKE_COMMAND}" "-DINPUTS=${rsx_assembled}" "-DOUTPUT=${rsx_generated}/rsx_programs.h"

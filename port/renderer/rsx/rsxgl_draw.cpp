@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 
 #include "common/log.h"
 #include "renderer/rsx/rsxgl_internal.h"
@@ -35,6 +36,7 @@ struct Loaded {
 Loaded g_direct;
 Loaded g_sky;
 Loaded g_mesh;
+Loaded g_moby;  // moby.vp with a copy of mesh.fp
 Image g_white;  // one white texel: what a unit samples when the draw binds nothing
 
 // The layer's own vertices for a copy, in the direct program's layout.
@@ -698,14 +700,228 @@ void mesh_instance_constants(
     }
 }
 
+// ---- The moby program's numbers ----
+
+constexpr u32 kMobyFirstConstant = 16;  // moby.vp's c[16] to c[24] are an instance's
+constexpr u32 kMobyInstanceConstants = 9;
+constexpr u32 kJointFirstConstant = 32;  // then the joints' matrices, three rows a joint
+constexpr u32 kJointsHeld = (468 - kJointFirstConstant) / 3;  // the RSX has 468 constants
+
+// The RSX program a draw with `program` bound takes: the mesh program's draws with `skinning`
+// set are the live mobys'.
+ProgramKind drawn_kind(const Program& program) {
+    return program.kind == ProgramKind::Mesh && program.uniforms[mesh::kSkinning][0] != 0.0f
+               ? ProgramKind::Moby
+               : program.kind;
+}
+
+// moby.vp's constants of an instance (programs/moby.vp says what each is): what mesh.vert works
+// out at every vertex from the instance's moby_light and moby_ambient and the uniform arrays they
+// index, which is the same for all of an instance's vertices.
+void moby_instance_constants(
+    const Program& program,
+    const float* light,
+    const float* ambient,
+    bool skinned,
+    float c[kMobyInstanceConstants][4]
+) {
+    std::memset(c, 0, sizeof(float) * kMobyInstanceConstants * 4);
+    c[0][0] = c[0][1] = c[0][2] = 1.0f;
+    c[0][3] = skinned ? 1.0f : 0.0f;
+    c[4][3] = kOpaque;
+    c[6][3] = -2.0f;
+    c[8][0] = 765.0f;
+    c[8][1] = 0.5f;
+    c[8][2] = -1.5f;
+    // Not lit by MobyProc: the vertex's own colour, and the viewer's sun where it is asked for.
+    if (std::fabs(light[3]) <= 0.5f) {
+        return;
+    }
+    using Four = std::array<GLfloat, 4>;
+    const Four* sets = program.uniforms.data() + mesh::kLightSets;
+    const int first = static_cast<int>(light[0] + 0.5f);
+    const auto set0 = static_cast<std::size_t>(first & 15) * 4;
+    const auto set1 = static_cast<std::size_t>(static_cast<int>(light[1] + 0.5f) & 15) * 4;
+    Four colour_a = sets[set0];
+    Four direction_a = sets[set0 + 1];
+    Four colour_b = sets[set0 + 2];
+    Four direction_b = sets[set0 + 3];
+    // Two sets cross-faded.
+    const float fade = light[2];
+    if (fade > 0.0f) {
+        const auto mixed = [fade](Four& from, const Four& to) {
+            for (std::size_t i = 0; i < 4; ++i) {
+                from[i] += (to[i] - from[i]) * fade;
+            }
+        };
+        const auto unit = [](Four& v) {
+            const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            for (std::size_t i = 0; i < 3 && length > 0.0f; ++i) {
+                v[i] /= length;
+            }
+        };
+        mixed(colour_a, sets[set1]);
+        mixed(direction_a, sets[set1 + 1]);
+        mixed(colour_b, sets[set1 + 2]);
+        mixed(direction_b, sets[set1 + 3]);
+        unit(direction_a);
+        unit(direction_b);
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+        c[0][i] = ambient[i];
+        c[1][i] = colour_a[i];
+        c[2][i] = -direction_a[i];
+        c[3][i] = colour_b[i];
+        c[4][i] = -direction_b[i];
+    }
+    c[1][3] = -std::fabs(colour_a[3]);
+    c[2][3] = 1.0f;
+    c[3][3] = -std::fabs(colour_b[3]);
+    // A point-lit moby's third light: the record its first number names above the set's.
+    const int point = (first >> 8) - 1;
+    if (point >= 0 && point < 32) {
+        const Four* points = program.uniforms.data() + mesh::kMobyPointLights;
+        for (std::size_t i = 0; i < 3; ++i) {
+            c[5][i] = points[2 * point][i];
+            c[6][i] = -points[2 * point + 1][i];
+        }
+    }
+    // The glow colour of a moby whose mode has 0x10: 1 + its RGB as a whole number.
+    if (ambient[3] > 0.5f) {
+        const auto glow = static_cast<u32>(std::lround(ambient[3])) - 1;
+        c[7][0] = static_cast<float>(glow & 255) / 128.0f;
+        c[7][1] = static_cast<float>(glow >> 8 & 255) / 128.0f;
+        c[7][2] = static_cast<float>(glow >> 16 & 255) / 128.0f;
+        c[7][3] = 1.0f;
+        c[8][3] = 1.0f;
+    }
+}
+
+// The joints the RSX's constants hold now: a moby is several draws of a frame (a material each),
+// and the constants stay through them and through the other programs' draws.
+struct JointsLoaded {
+    const Image* palette = nullptr;
+    u32 frame = 0;
+    u32 written = 0;
+    u32 first = 0;
+    u32 joints = 0;
+};
+
+JointsLoaded g_joints_loaded;
+
+// Hands the RSX `joints` matrices of the palette texture from `first` (four columns a matrix)
+// as moby.vp's rows. False when the palette has not so many.
+bool load_joints(const Image& palette, u32 first, u32 joints) {
+    if (joints == 0 || joints > kJointsHeld
+        || (static_cast<std::size_t>(first) + joints) * 16 > palette.floats.size()) {
+        return false;
+    }
+    if (g_joints_loaded.palette == &palette && g_joints_loaded.frame == g.frame
+        && g_joints_loaded.written == palette.written && g_joints_loaded.first == first
+        && g_joints_loaded.joints >= joints) {
+        return true;
+    }
+    g_joints_loaded = {&palette, g.frame, palette.written, first, joints};
+    float rows[kJointsHeld * 3][4];
+    const float* matrix = palette.floats.data() + static_cast<std::size_t>(first) * 16;
+    for (u32 joint = 0; joint < joints; ++joint, matrix += 16) {
+        for (u32 row = 0; row < 3; ++row) {
+            for (u32 column = 0; column < 4; ++column) {
+                rows[joint * 3 + row][column] = matrix[column * 4 + row];
+            }
+        }
+    }
+    rsxLoadVertexProgramParameterBlock(
+        g.context, g_moby.vertex->const_start + kJointFirstConstant, joints * 3, &rows[0][0]
+    );
+    return true;
+}
+
+// One past the highest joint that the draw's vertices give a weight; 0 where they have none. The
+// vertices are read once for a draw, and the answer kept until one of their buffers is written.
+// `width` is the bytes of an index, 0 for a draw without indices.
+struct JointsDrawn {
+    u32 written = 0;  // the buffers' counts of writes, summed
+    u32 joints = 0;
+};
+
+std::map<std::array<u32, 4>, JointsDrawn> g_joints_drawn;
+
+u32 joints_drawn(u32 first, u32 count, u32 width) {
+    const auto array = g.vertex_arrays.find(g.vertex_array);
+    if (array == g.vertex_arrays.end()) {
+        return 0;
+    }
+    const Attribute& joints = array->second.attributes[mesh::kJoints];
+    const Attribute& weights = array->second.attributes[mesh::kWeights];
+    const auto joint_buffer = g.buffers.find(joints.buffer);
+    const auto weight_buffer = g.buffers.find(weights.buffer);
+    const auto elements = width != 0 ? g.buffers.find(array->second.elements) : g.buffers.end();
+    if (!joints.enabled || !weights.enabled || joints.type != GL_UNSIGNED_BYTE || joints.size != 4
+        || weights.type != GL_FLOAT || weights.size != 4 || joint_buffer == g.buffers.end()
+        || weight_buffer == g.buffers.end() || joint_buffer->second.memory.address == nullptr
+        || weight_buffer->second.memory.address == nullptr
+        || (width != 0 && elements == g.buffers.end())) {
+        return 0;
+    }
+    const u32 written = joint_buffer->second.written + weight_buffer->second.written
+                        + (width != 0 ? elements->second.written : 0);
+    if (g_joints_drawn.size() > 4096) {
+        g_joints_drawn.clear();  // draws of buffers long gone
+    }
+    JointsDrawn& kept =
+        g_joints_drawn[{joints.buffer, width != 0 ? array->second.elements : 0, first, count}];
+    if (kept.written == written) {
+        return kept.joints;
+    }
+    const u32 joint_stride = joints.stride > 0 ? static_cast<u32>(joints.stride) : 4;
+    const u32 weight_stride = weights.stride > 0 ? static_cast<u32>(weights.stride) : 16;
+    const auto* joint_bytes =
+        static_cast<const unsigned char*>(joint_buffer->second.memory.address);
+    const auto* weight_bytes =
+        static_cast<const unsigned char*>(weight_buffer->second.memory.address);
+    const auto* index_bytes =
+        width != 0 ? static_cast<const unsigned char*>(elements->second.memory.address) : nullptr;
+    u32 highest = 0;
+    for (u32 i = 0; i < count; ++i) {
+        u32 vertex = first + i;
+        if (width == 4) {
+            std::memcpy(&vertex, index_bytes + first + i * 4, 4);
+        } else if (width == 2) {
+            u16 narrow = 0;
+            std::memcpy(&narrow, index_bytes + first + i * 2, 2);
+            vertex = narrow;
+        }
+        const std::size_t joint_at =
+            joints.pointer + static_cast<std::size_t>(vertex) * joint_stride;
+        const std::size_t weight_at =
+            weights.pointer + static_cast<std::size_t>(vertex) * weight_stride;
+        if (joint_at + 4 > joint_buffer->second.size
+            || weight_at + 16 > weight_buffer->second.size) {
+            continue;
+        }
+        float weight[4];
+        std::memcpy(weight, weight_bytes + weight_at, sizeof weight);
+        for (u32 k = 0; k < 4; ++k) {
+            if (weight[k] > 0.0f) {
+                highest = std::max(highest, joint_bytes[joint_at + k] + 1u);
+            }
+        }
+    }
+    kept.written = written;
+    kept.joints = highest;
+    return highest;
+}
+
 // ---- Vertices ----
 
-// The RSX's type of a GL attribute, or 0 for one it has none for.
+// The RSX's type of a GL attribute, or 0 for one it has none for. Bytes are parts of 255 to the
+// RSX whether GL has them so or as whole numbers (a moby's joints, which moby.vp multiplies back).
 u8 data_type(const Attribute& attribute) {
     if (attribute.type == GL_FLOAT) {
         return GCM_VERTEX_DATA_TYPE_F32;
     }
-    if (attribute.type == GL_UNSIGNED_BYTE && attribute.normalized) {
+    if (attribute.type == GL_UNSIGNED_BYTE) {
         return GCM_VERTEX_DATA_TYPE_U8;
     }
     return 0;
@@ -744,12 +960,14 @@ void unbind_attributes(u32 kept) {
 }
 
 // The attributes a kind of program reads, a bit each: the others of a vertex array are not told
-// to the RSX (a mesh's joints are bytes as whole numbers, which it has no type for).
+// to the RSX.
 u32 attributes_read(ProgramKind kind) {
     switch (kind) {
         case ProgramKind::Direct:
         case ProgramKind::Mesh:
             return 0b1111;
+        case ProgramKind::Moby:
+            return 0b1111 | 1u << mesh::kJoints | 1u << mesh::kWeights | 1u << mesh::kLightSlot;
         case ProgramKind::Sky:
             return 0b1101;
         case ProgramKind::None:
@@ -855,6 +1073,7 @@ enum class LeftOut : u32 {
     NoIndices,   // no element buffer, or indices of a type the RSX has not
     NoPass,      // a pass of the GL program that the RSX program has not yet
     PastEnd,     // vertices past the end of their buffers
+    ManyJoints,  // a moby of more joints than the RSX has constants for
 };
 
 void leave_out(LeftOut reason) {
@@ -865,6 +1084,7 @@ void leave_out(LeftOut reason) {
         "of indices the RSX cannot read",
         "of passes the layer's program has not yet",
         "of vertices past the end of their buffers",
+        "of mobys with more joints than the RSX's constants hold",
     };
     ++g.draws_left_out;
     const u32 bit = 1u << static_cast<u32>(reason);
@@ -910,12 +1130,13 @@ const Program* begin_draw(Target& target) {
         leave_out(LeftOut::NoTarget);
         return nullptr;
     }
-    if (!bind_vertex_array(program->second.kind)) {
+    const ProgramKind kind = drawn_kind(program->second);
+    if (!bind_vertex_array(kind)) {
         leave_out(LeftOut::NoVertices);
         return nullptr;
     }
     apply_state(target);
-    switch (program->second.kind) {
+    switch (kind) {
         case ProgramKind::Direct: {
             float constants[7][4];
             direct_constants(program->second, constants);
@@ -928,19 +1149,34 @@ const Program* begin_draw(Target& target) {
             load_program(ProgramKind::Sky, g_sky, &constants[0][0], 5);
             break;
         }
-        case ProgramKind::Mesh: {
+        case ProgramKind::Mesh:
+        case ProgramKind::Moby: {
+            const Loaded& loaded = kind == ProgramKind::Moby ? g_moby : g_mesh;
             float constants[kMeshDrawConstants][4];
             mesh_constants(program->second, constants);
-            if (g.loaded != ProgramKind::Mesh) {
-                rsxLoadVertexProgram(g.context, g_mesh.vertex, g_mesh.vertex_code);
+            if (g.loaded != kind) {
+                rsxLoadVertexProgram(g.context, loaded.vertex, loaded.vertex_code);
                 rsxLoadFragmentProgramLocation(
-                    g.context, g_mesh.fragment, g_mesh.fragment_code.offset, GCM_LOCATION_RSX
+                    g.context, loaded.fragment, loaded.fragment_code.offset, GCM_LOCATION_RSX
                 );
-                g.loaded = ProgramKind::Mesh;
+                g.loaded = kind;
+            }
+            // The joints' constants hold numbers from the first: an instance without joints
+            // weighs whatever is there by nothing.
+            static bool joints_cleared = false;
+            if (kind == ProgramKind::Moby && !joints_cleared) {
+                joints_cleared = true;
+                static const float kNothing[kJointsHeld * 3][4] = {};
+                rsxLoadVertexProgramParameterBlock(
+                    g.context,
+                    loaded.vertex->const_start + kJointFirstConstant,
+                    kJointsHeld * 3,
+                    &kNothing[0][0]
+                );
             }
             rsxLoadVertexProgramParameterBlock(
                 g.context,
-                g_mesh.vertex->const_start + kMeshInstanceConstants,
+                loaded.vertex->const_start + kMeshInstanceConstants,
                 kMeshDrawConstants,
                 &constants[0][0]
             );
@@ -954,19 +1190,41 @@ const Program* begin_draw(Target& target) {
 }
 
 // What a draw's instances are to the bound program: the mesh program's numbers of each, from
-// the vertex array's values an instance; nothing to the others, whose instances are the same
-// draw again.
+// the vertex array's values an instance, and a moby's joints and lights besides; nothing to the
+// others, whose instances are the same draw again. `joints` is how many joints the draw's
+// vertices are skinned with (joints_drawn).
 struct Instances {
     const Program* program = nullptr;
+    ProgramKind kind = ProgramKind::None;
     const float* model = nullptr;
     const float* tint = nullptr;
     u32 model_stride = 0;
     u32 tint_stride = 0;
+    const float* palette = nullptr;
+    const float* light = nullptr;
+    const float* ambient = nullptr;
+    u32 palette_stride = 0;
+    u32 light_stride = 0;
+    u32 ambient_stride = 0;
+    const Image* matrices = nullptr;  // the palette texture
+    u32 joints = 0;
 
-    explicit Instances(const Program* bound) : program(bound) {
+    Instances(const Program* bound, u32 skinned_with)
+        : program(bound),
+          kind(drawn_kind(*bound)),
+          joints(skinned_with) {
         if (program->kind == ProgramKind::Mesh) {
             model = instance_values(mesh::kModel, model_stride);
             tint = instance_values(mesh::kTint, tint_stride);
+        }
+        if (kind == ProgramKind::Moby) {
+            palette = instance_values(mesh::kPalette, palette_stride);
+            light = instance_values(mesh::kMobyLight, light_stride);
+            ambient = instance_values(mesh::kMobyAmbient, ambient_stride);
+            const auto texture = g.images.find(g.texture[mesh::kPaletteUnit]);
+            if (texture != g.images.end() && !texture->second.floats.empty()) {
+                matrices = &texture->second;
+            }
         }
     }
 
@@ -976,6 +1234,7 @@ struct Instances {
         }
         constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         constexpr float kWhite[4] = {1, 1, 1, 1};
+        const Loaded& loaded = kind == ProgramKind::Moby ? g_moby : g_mesh;
         float constants[kMeshInstanceConstants][4];
         mesh_instance_constants(
             *program,
@@ -984,10 +1243,44 @@ struct Instances {
             constants
         );
         rsxLoadVertexProgramParameterBlock(
-            g.context, g_mesh.vertex->const_start, kMeshInstanceConstants, &constants[0][0]
+            g.context, loaded.vertex->const_start, kMeshInstanceConstants, &constants[0][0]
+        );
+        if (kind != ProgramKind::Moby) {
+            return;
+        }
+        constexpr float kNone[4] = {0, 0, 0, 0};
+        // The instance's first matrix in the palette, -1 for one drawn as stored.
+        const float first =
+            palette != nullptr ? *stepped(palette, palette_stride, instance) : -1.0f;
+        const bool skinned = first >= 0.0f && matrices != nullptr
+                             && load_joints(*matrices, static_cast<u32>(first + 0.5f), joints);
+        float lit[kMobyInstanceConstants][4];
+        moby_instance_constants(
+            *program,
+            light != nullptr ? stepped(light, light_stride, instance) : kNone,
+            ambient != nullptr ? stepped(ambient, ambient_stride, instance) : kNone,
+            skinned,
+            lit
+        );
+        rsxLoadVertexProgramParameterBlock(
+            g.context,
+            loaded.vertex->const_start + kMobyFirstConstant,
+            kMobyInstanceConstants,
+            &lit[0][0]
         );
     }
 };
+
+// How many joints a moby's draw is skinned with: 0 for another program's draw. False, and the
+// draw left out, when they are more than the RSX's constants hold.
+bool joints_of_draw(const Program& program, u32 first, u32 count, u32 width, u32& joints) {
+    joints = drawn_kind(program) == ProgramKind::Moby ? joints_drawn(first, count, width) : 0;
+    if (joints > kJointsHeld) {
+        leave_out(LeftOut::ManyJoints);
+        return false;
+    }
+    return true;
+}
 
 // A draw with a program the layer has for the RSX; one without is left out. The RSX has no
 // instances: each is a draw of its own.
@@ -1000,11 +1293,15 @@ void draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
     if (program == nullptr) {
         return;
     }
-    if (static_cast<u32>(first) + static_cast<u32>(count) > vertices_held(program->kind)) {
+    if (static_cast<u32>(first) + static_cast<u32>(count) > vertices_held(drawn_kind(*program))) {
         leave_out(LeftOut::PastEnd);
         return;
     }
-    const Instances each(program);
+    u32 joints = 0;
+    if (!joints_of_draw(*program, static_cast<u32>(first), static_cast<u32>(count), 0, joints)) {
+        return;
+    }
+    const Instances each(program, joints);
     for (GLsizei instance = 0; instance < instances; ++instance) {
         ++g.draws;
         each.load(instance);
@@ -1043,7 +1340,11 @@ void draw_elements_instanced(
         return;
     }
     elements->second.drawn = g.frame;
-    const Instances each(program);
+    u32 joints = 0;
+    if (!joints_of_draw(*program, first, static_cast<u32>(count), width, joints)) {
+        return;
+    }
+    const Instances each(program, joints);
     for (GLsizei instance = 0; instance < instances; ++instance) {
         ++g.draws;
         each.load(instance);
@@ -1298,7 +1599,8 @@ bool prepare_programs(std::string& error) {
     if (g_white.memory.address == nullptr
         || !load(g_direct, programs::direct_vpo, programs::direct_fpo)
         || !load(g_sky, programs::sky_vpo, programs::sky_fpo)
-        || !load(g_mesh, programs::mesh_vpo, programs::mesh_fpo)) {
+        || !load(g_mesh, programs::mesh_vpo, programs::mesh_fpo)
+        || !load(g_moby, programs::moby_vpo, programs::mesh_fpo)) {
         error = "no RSX memory for the layer's programs";
         return false;
     }

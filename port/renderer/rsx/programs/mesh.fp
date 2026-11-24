@@ -9,7 +9,8 @@
 #
 #   texcoord[0]  u, v
 #   texcoord[1]  the vertex colour times the instance's tint
-#   texcoord[2]  fog w, w, the light
+#   texcoord[2]  fog w, w, the light; w: below 0 where the pixel is left out (moby.vp: a glow
+#                packet's in the solid pass; all three of a packet's triangle's vertices agree)
 #   texcoord[3]  material_colour
 #   texcoord[4]  the fog colour; w: the fog's weight, f = w fog + texcoord[6].x
 #   texcoord[5]  the cutout: the pixel is left out when x a + y < 0 or z a + w < 0
@@ -30,6 +31,8 @@ MUL R6.x, R2.w, R5.z;
 ADDC R6.x, R6.x, R5.w;
 KIL (LT.x);
 MOV R7, fragment.texcoord[2];
+ADDC R6.x, R7.w, R7.w;
+KIL (LT.x);
 MUL_SAT R2.xyz, R2, R7.z;
 RCP R7.w, R7.y;
 MUL R7.x, R7.x, R7.w;

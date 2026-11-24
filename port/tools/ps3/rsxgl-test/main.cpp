@@ -6,10 +6,13 @@
 // pixels back and says which were not what GL would have drawn. README.md says how it is run.
 // It ends with status 0 when every check passed.
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <string>
 
 #include "renderer/gl.h"
@@ -26,6 +29,7 @@ RSXGL(glGenTextures);
 RSXGL(glBindTexture);
 RSXGL(glActiveTexture);
 RSXGL(glTexImage2D);
+RSXGL(glTexSubImage2D);
 RSXGL(glTexParameteri);
 RSXGL(glCopyTexSubImage2D);
 RSXGL(glGenBuffers);
@@ -35,6 +39,7 @@ RSXGL(glGenVertexArrays);
 RSXGL(glBindVertexArray);
 RSXGL(glEnableVertexAttribArray);
 RSXGL(glVertexAttribPointer);
+RSXGL(glVertexAttribIPointer);
 RSXGL(glVertexAttribDivisor);
 RSXGL(glCreateShader);
 RSXGL(glShaderSource);
@@ -48,6 +53,7 @@ RSXGL(glUniform1f);
 RSXGL(glUniform2f);
 RSXGL(glUniform3f);
 RSXGL(glUniform4f);
+RSXGL(glUniform4fv);
 RSXGL(glUniformMatrix4fv);
 RSXGL(glGenFramebuffers);
 RSXGL(glBindFramebuffer);
@@ -405,6 +411,200 @@ void mesh_checks(int wide, int high) {
     glUseProgram(g_program);
 }
 
+// The mesh program with `skinning` set, the live mobys' (programs/moby.vp): a square over the
+// picture's left half, as one instance with the renderer's whole vertex and instance.
+void moby_checks(int wide, int high) {
+    // scene/level.h's Vertex.
+    struct MobyVertex {
+        float position[3];
+        float normal[3];
+        float uv[2];
+        float colour[4];
+        std::uint8_t joints[4];
+        float weights[4];
+        float light_slot;
+    };
+
+    // scene/level_renderer.h's InstanceData.
+    struct Instance {
+        float matrix[16];
+        float tint[4];
+        float palette;
+        float lights;
+        float moby_light[4];
+        float moby_ambient[4];
+    };
+
+    // Half of joint 2 and half of joint 3 of the instance's palette.
+    const auto corner = [](float x, float y, float slot) {
+        return MobyVertex{
+            {x, y, 0.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.5f, 0.5f},
+            {1.0f, 1.0f, 1.0f, 1.0f},
+            {2, 3, 0, 0},
+            {0.5f, 0.5f, 0.0f, 0.0f},
+            slot
+        };
+    };
+    const auto square = [&corner](float slot) {
+        return std::array<MobyVertex, 4>{
+            corner(-1.0f, -1.0f, slot),
+            corner(0.0f, -1.0f, slot),
+            corner(0.0f, 1.0f, slot),
+            corner(-1.0f, 1.0f, slot)
+        };
+    };
+    const std::array<MobyVertex, 4> vertices = square(-1.0f);
+    const std::uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
+    Instance instance{
+        {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        1.0f,
+        -1.0f,
+        {0.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 0.0f}
+    };
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, shader(GL_VERTEX_SHADER, "// rsx-program: mesh\n"));
+    glAttachShader(program, shader(GL_FRAGMENT_SHADER, "// rsx-program: mesh\n"));
+    glLinkProgram(program);
+    glUseProgram(program);
+    GLuint vertex_array = 0;
+    GLuint buffers[3] = {};
+    glGenVertexArrays(1, &vertex_array);
+    glGenBuffers(3, buffers);
+    glBindVertexArray(vertex_array);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof indices, indices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices.data(), GL_STATIC_DRAW);
+    constexpr auto stride = static_cast<GLsizei>(sizeof(MobyVertex));
+    const auto at = [](std::size_t offset) {
+        return reinterpret_cast<const void*>(offset);
+    };
+    const auto floats = [&](GLuint index, GLint size, std::size_t offset) {
+        glEnableVertexAttribArray(index);
+        glVertexAttribPointer(index, size, GL_FLOAT, GL_FALSE, stride, at(offset));
+    };
+    floats(0, 3, offsetof(MobyVertex, position));
+    floats(1, 3, offsetof(MobyVertex, normal));
+    floats(2, 2, offsetof(MobyVertex, uv));
+    floats(3, 4, offsetof(MobyVertex, colour));
+    glEnableVertexAttribArray(10);
+    glVertexAttribIPointer(10, 4, GL_UNSIGNED_BYTE, stride, at(offsetof(MobyVertex, joints)));
+    floats(11, 4, offsetof(MobyVertex, weights));
+    floats(12, 1, offsetof(MobyVertex, light_slot));
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof instance, &instance, GL_DYNAMIC_DRAW);
+    constexpr auto instance_stride = static_cast<GLsizei>(sizeof(Instance));
+    const auto each = [&](GLuint index, GLint size, std::size_t offset) {
+        glEnableVertexAttribArray(index);
+        glVertexAttribPointer(index, size, GL_FLOAT, GL_FALSE, instance_stride, at(offset));
+        glVertexAttribDivisor(index, 1);
+    };
+    for (GLuint column = 0; column < 4; ++column) {
+        each(4 + column, 4, column * 4 * sizeof(float));
+    }
+    each(8, 4, offsetof(Instance, tint));
+    each(9, 1, offsetof(Instance, palette));
+    each(13, 1, offsetof(Instance, lights));
+    each(14, 4, offsetof(Instance, moby_light));
+    each(15, 4, offsetof(Instance, moby_ambient));
+
+    // The palette texture, on the renderer's unit: four texels (columns) a matrix. The
+    // instance's palette starts at matrix 1: its joint 2 moves two to the right, its joint 3
+    // nowhere, and half of each is one to the right.
+    std::array<float, 16 * 8> palette{};
+    const auto matrix = [&palette](std::size_t index, float x) {
+        const float columns[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1};
+        std::copy(std::begin(columns), std::end(columns), palette.begin() + index * 16);
+    };
+    matrix(3, 2.0f);
+    matrix(4, 0.0f);
+    GLuint joints = 0;
+    glGenTextures(1, &joints);
+    glActiveTexture(GL_TEXTURE0 + 1);
+    glBindTexture(GL_TEXTURE_2D, joints);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(GL_RGBA32F), 32, 1, 0, GL_RGBA, GL_FLOAT, nullptr
+    );
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 32, 1, GL_RGBA, GL_FLOAT, palette.data());
+    glActiveTexture(GL_TEXTURE0);
+    GLuint grey = 0;
+    glGenTextures(1, &grey);
+    glBindTexture(GL_TEXTURE_2D, grey);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(GL_RGBA8), 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &kGrey
+    );
+    texture_parameters();
+
+    const auto uniform = [program](const char* name) {
+        return glGetUniformLocation(program, name);
+    };
+    const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, identity);
+    glUniformMatrix4fv(uniform("view"), 1, GL_FALSE, identity);
+    glUniform4f(uniform("material_colour"), 2.0f, 2.0f, 2.0f, 1.0f);
+    glUniform4f(uniform("fog_colour"), 0.0f, 0.0f, 1.0f, 0.0f);
+    glUniform4f(uniform("fog_params"), 0.0f, 128.0f, 0.0f, 255.0f);
+    glUniform1i(uniform("skinning"), 1);
+    // Light set 1: a red light the square faces, a green one behind it that leaks half through.
+    const float sets[8][4] = {
+        {0, 0, 0, 0},
+        {0, 0, -1, 0},
+        {0, 0, 0, 0},
+        {0, 0, 1, 0},
+        {0.25f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, -1.0f, 0.0f},
+        {0.0f, 0.5f, 0.0f, 0.5f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+    };
+    glUniform4fv(uniform("light_sets"), 8, &sets[0][0]);
+    const auto draw = [&] {
+        glBufferData(GL_ARRAY_BUFFER, sizeof instance, &instance, GL_DYNAMIC_DRAW);
+        clear(0.0f, 0.0f, 0.0f);
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, at(0), 1);
+    };
+    const Colour black{0, 0, 0, 255};
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_BLEND);
+    draw();
+    expect_quarters("moby: two joints' skin", 0, wide, high, black, kRed, black, kRed);
+    instance.palette = -1.0f;
+    draw();
+    expect_quarters("moby: no palette, as stored", 0, wide, high, kRed, black, kRed, black);
+    // Ambient 0.5, the red light full on, the green one's half leaking through from behind.
+    instance.tint[1] = instance.tint[2] = 1.0f;
+    instance.moby_light[0] = 1.0f;
+    instance.moby_light[3] = 1.0f;
+    instance.moby_ambient[0] = instance.moby_ambient[1] = instance.moby_ambient[2] = 0.5f;
+    draw();
+    expect("moby: MobyProc's lights", 0, wide / 4, high / 4, Colour{192, 192, 128, 255});
+    // Cross-faded half way from set 0, which has the directions and no colour: half the red,
+    // and of the green half the colour through half the leak.
+    instance.moby_light[0] = 0.0f;
+    instance.moby_light[1] = 1.0f;
+    instance.moby_light[2] = 0.5f;
+    draw();
+    expect("moby: two light sets cross-faded", 0, wide / 4, high / 4, Colour{160, 144, 128, 255});
+    // A glow packet's vertices (slot -2) of a moby with a glow colour are the glow pass's: the
+    // solid pass leaves them out. Without a glow colour they are drawn as any vertex.
+    const std::array<MobyVertex, 4> glowing = square(-2.0f);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof glowing, glowing.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    draw();
+    expect(
+        "moby: glow vertices, no glow colour", 0, wide / 4, high / 4, Colour{160, 144, 128, 255}
+    );
+    instance.moby_ambient[3] = 1.0f + 0x0000FF;
+    draw();
+    expect("moby: glow vertices left out of the solid pass", 0, wide / 4, high / 4, black);
+    glUseProgram(g_program);
+}
+
 // The checks. Within the namespace, so that the names above are the layer's functions and not
 // renderer/gl.h's pointers of the same names.
 int run() {
@@ -620,6 +820,7 @@ int run() {
 
     sky_checks(wide, high);
     mesh_checks(wide, high);
+    moby_checks(wide, high);
     glBindVertexArray(vertex_array);
 
     // Many frames: the command buffer wraps and the flips keep coming.

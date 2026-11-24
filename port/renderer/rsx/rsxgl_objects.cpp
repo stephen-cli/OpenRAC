@@ -74,6 +74,7 @@ bool is_colour_format(GLenum format) {
 void store(Image& into, GLsizei width, GLsizei height, bool depth) {
     const auto wide = static_cast<u32>(std::max(width, 0));
     const auto high = static_cast<u32>(std::max(height, 0));
+    std::vector<float>().swap(into.floats);
     if (into.memory.address != nullptr && into.width == wide && into.height == high
         && into.depth == depth) {
         before_write(into.used);
@@ -144,6 +145,18 @@ void tex_image(
         return;  // one level: the RSX's mip chains come with the textures' own step
     }
     const auto internal = static_cast<GLenum>(internal_format);
+    // A texture of floats is the layer's own to read (Image::floats).
+    if (internal == GL_RGBA32F) {
+        retire(into->memory);
+        into->width = static_cast<u32>(std::max(width, 0));
+        into->height = static_cast<u32>(std::max(height, 0));
+        into->floats.assign(static_cast<std::size_t>(into->width) * into->height * 4, 0.0f);
+        if (pixels != nullptr && format == GL_RGBA && type == GL_FLOAT) {
+            std::memcpy(into->floats.data(), pixels, into->floats.size() * sizeof(float));
+        }
+        ++into->written;
+        return;
+    }
     if (!is_depth_format(internal) && !is_colour_format(internal)) {
         static bool told = false;
         if (!told) {
@@ -172,10 +185,26 @@ void tex_sub_image(
     const void* pixels
 ) {
     Image* into = bound_texture(target);
-    if (into == nullptr || into->memory.address == nullptr || level != 0 || pixels == nullptr
-        || format != GL_RGBA || type != GL_UNSIGNED_BYTE || x < 0 || y < 0 || width < 0
-        || height < 0 || static_cast<u32>(x + width) > into->width
+    if (into == nullptr || level != 0 || pixels == nullptr || format != GL_RGBA || x < 0 || y < 0
+        || width < 0 || height < 0 || static_cast<u32>(x + width) > into->width
         || static_cast<u32>(y + height) > into->height) {
+        return;
+    }
+    if (!into->floats.empty()) {
+        if (type != GL_FLOAT) {
+            return;
+        }
+        const auto* from = static_cast<const float*>(pixels);
+        const std::size_t run = static_cast<std::size_t>(width) * 4;
+        for (GLsizei row = 0; row < height; ++row, from += run) {
+            const std::size_t at =
+                (static_cast<std::size_t>(y + row) * into->width + static_cast<std::size_t>(x)) * 4;
+            std::memcpy(into->floats.data() + at, from, run * sizeof(float));
+        }
+        ++into->written;
+        return;
+    }
+    if (into->memory.address == nullptr || type != GL_UNSIGNED_BYTE) {
         return;
     }
     before_write(into->used);
@@ -312,6 +341,7 @@ void buffer_data(GLenum target, GLsizeiptr size, const void* data, GLenum) {
     if (into.memory.address == nullptr || into.size != bytes || into.drawn == g.frame) {
         new_store(into, bytes, false);
     }
+    ++into.written;
     if (data != nullptr && into.memory.address != nullptr) {
         std::memcpy(into.memory.address, data, bytes);
     }
@@ -332,6 +362,7 @@ void buffer_sub_data(GLenum target, GLintptr offset, GLsizeiptr size, const void
             return;
         }
     }
+    ++into.written;
     std::memcpy(
         static_cast<unsigned char*>(into.memory.address) + offset, data, static_cast<u32>(size)
     );
@@ -498,6 +529,9 @@ constexpr Uniform kMeshUniforms[] = {
     {"translucent_pass", mesh::kTranslucentPass, 1},
     {"effect_pass", mesh::kEffectPass, 1},
     {"metal_pass", mesh::kMetalPass, 1},
+    {"skinning", mesh::kSkinning, 1},
+    {"light_sets", mesh::kLightSets, 64},
+    {"moby_point_lights", mesh::kMobyPointLights, 64},
 };
 
 // A kind of program: the line in the GLSL of both stages that names it, its uniforms (the direct

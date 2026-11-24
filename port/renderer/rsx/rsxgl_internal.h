@@ -45,6 +45,10 @@ struct Image {
     gl::GLenum wrap_s = gl::GL_REPEAT;
     gl::GLenum wrap_t = gl::GL_REPEAT;
     u32 used = 0;  // State::sync when a draw last read or wrote it
+    // An RGBA32F texture's numbers, four a texel, kept by the layer and not in the RSX's memory:
+    // the mobys' joint matrices, which a draw hands the RSX as constants.
+    std::vector<float> floats;
+    u32 written = 0;  // counts the writes of `floats`
 };
 
 struct Sampler {
@@ -57,7 +61,8 @@ struct Sampler {
 struct Buffer {
     Memory memory;
     u32 size = 0;
-    u32 drawn = 0;  // State::frame when a draw last read it
+    u32 drawn = 0;    // State::frame when a draw last read it
+    u32 written = 0;  // counts its writes: what the layer worked out of its bytes holds until one
 };
 
 struct Attribute {
@@ -93,6 +98,7 @@ enum class ProgramKind : std::uint8_t {
     Direct,  // renderer/shaders/direct.vert and direct.frag
     Sky,     // viewer/shaders/sky.vert and sky.frag
     Mesh,    // viewer/shaders/mesh.vert and mesh.frag
+    Moby,    // the same GL program where its `skinning` is set: programs/moby.vp with mesh.fp
 };
 
 // A uniform of one of the layer's programs: its name in the GLSL, and where its numbers are kept
@@ -125,10 +131,23 @@ inline constexpr u32 kGlowPass = 13;
 inline constexpr u32 kTranslucentPass = 14;
 inline constexpr u32 kEffectPass = 15;
 inline constexpr u32 kMetalPass = 16;
-inline constexpr u32 kSlots = 17;
-// The attributes of an instance (scene/level_instances.cpp): the model's four columns, the tint.
+inline constexpr u32 kSkinning = 17;
+inline constexpr u32 kLightSets = 18;        // 64 slots
+inline constexpr u32 kMobyPointLights = 82;  // 64 slots
+inline constexpr u32 kSlots = 146;
+// The attributes of an instance (scene/level_instances.cpp): the model's four columns, the tint,
+// a moby's first joint matrix in the palette texture, its lights and its ambient colour.
 inline constexpr u32 kModel = 4;
 inline constexpr u32 kTint = 8;
+inline constexpr u32 kPalette = 9;
+inline constexpr u32 kMobyLight = 14;
+inline constexpr u32 kMobyAmbient = 15;
+// A moby's vertex: its four joints (bytes), their weights, its light slot.
+inline constexpr u32 kJoints = 10;
+inline constexpr u32 kWeights = 11;
+inline constexpr u32 kLightSlot = 12;
+// The unit of the palette texture (scene/level_renderer_internal.h's kPaletteUnit).
+inline constexpr u32 kPaletteUnit = 1;
 }  // namespace mesh
 
 // The direct program's uniforms: a uniform's location is its number here (rsxgl_objects.cpp has
