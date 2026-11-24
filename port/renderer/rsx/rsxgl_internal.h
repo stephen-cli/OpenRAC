@@ -134,12 +134,18 @@ inline constexpr u32 kMetalPass = 16;
 inline constexpr u32 kSkinning = 17;
 inline constexpr u32 kLightSets = 18;        // 64 slots
 inline constexpr u32 kMobyPointLights = 82;  // 64 slots
-inline constexpr u32 kSlots = 146;
+inline constexpr u32 kGlowSplit = 146;
+inline constexpr u32 kEffectReference = 147;
+inline constexpr u32 kEffectAdditive = 148;
+inline constexpr u32 kClipZeroToOne = 149;
+inline constexpr u32 kSlots = 150;
 // The attributes of an instance (scene/level_instances.cpp): the model's four columns, the tint,
-// a moby's first joint matrix in the palette texture, its lights and its ambient colour.
+// a moby's first joint matrix in the palette texture, its shine distance (-1 - distance), its
+// lights and its ambient colour.
 inline constexpr u32 kModel = 4;
 inline constexpr u32 kTint = 8;
 inline constexpr u32 kPalette = 9;
+inline constexpr u32 kLights = 13;
 inline constexpr u32 kMobyLight = 14;
 inline constexpr u32 kMobyAmbient = 15;
 // A moby's vertex: its four joints (bytes), their weights, its light slot.

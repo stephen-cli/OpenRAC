@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 the OpenRAC contributors
 #
-# viewer/shaders/mesh.vert for the RSX (README.md), for the live mobys: the vertex skinned with
+# viewer/shaders/mesh.vert for the RSX (README.md), for the live mobys in all their passes (the
+# solid faces, the glow faces, the blended mobys, the metal packets): the vertex skinned with
 # its joints' matrices, then lit as MobyProc lights it. mesh.fp is its fragment program, and
-# c[0] to c[15] are mesh.vp's. The GLSL reads the joints from a float texture and the lights from
+# c[0] to c[15] and c[25] are mesh.vp's. The GLSL reads the joints from a float texture and the lights from
 # uniform arrays by numbers of the instance; here the layer hands over the instance's own joints
 # and lights as constants (rsxgl_draw.cpp, moby_instance_constants).
 #
@@ -18,13 +19,21 @@
 #   c[18]         the direction to that light, in the world; w: 1 where MobyProc lights the
 #                 instance, 0 where the viewer's sun may (mesh.vp's c[10])
 #   c[19], c[20]  the second light's; c[20].w: 255 / 128, the brightest a lit colour is
-#   c[21], c[22]  the point light's colour and the direction to it; c[22].w: -2
+#   c[21], c[22]  the point light's colour and the direction to it; c[21].w: the metal pass's
+#                 alpha, the shine the moby's distance gives
 #   c[23]         the glow colour
 #   c[24]         765 (a byte's part of 255 to three constants a joint), 0.5, -1.5, and 1 where
 #                 the moby's glow packets take the glow colour
 #   c[32] on      the joints' matrices, three rows a joint
+# Of the pass:
+#   c[26]         x, y: mesh.fp leaves a pixel out where x g + y < 0, g 1 at a glow packet's
+#                 vertex that takes the glow colour (the solid pass has no glow faces, the glow
+#                 pass no others); z: the metal packets' pull toward the camera, in clip w
+#   c[27], c[28]  the metal pass's texture coordinates from the normal in the world: half the
+#                 view's row to the right, half its row downward; w: 0.5
+#   c[29]         the metal pass's vertex colour; w: 1 in the metal pass, else 0
 #
-# Not here yet: the metal pass, the cut at the picture's sides of a moby of the 2D layer.
+# Not here yet: the cut at the picture's sides of a moby of the 2D layer.
 MOV R0, vertex.attrib[0];
 MOV R0.w, c[11].w;
 MOV R5, vertex.attrib[1];
@@ -77,8 +86,8 @@ DP4 R1.x, c[0], R0;
 DP4 R1.y, c[1], R0;
 DP4 R1.z, c[2], R0;
 DP4 R1.w, c[3], R0;
+MAD R1.z, R1.w, c[26].z, R1.z;
 MOV result.position, R1;
-MOV result.texcoord[0], vertex.attrib[2];
 # The fog, as mesh.vp has it.
 DP4 R3.x, c[4], R0;
 MAD R3.x, R3.x, c[9].x, c[9].y;
@@ -96,6 +105,16 @@ DP3 R6.w, R6, R6;
 ADD R6.w, R6.w, c[11].z;
 RSQ R6.w, R6.w;
 MUL R6.xyz, R6, R6.w;
+# The texture coordinates: the vertex's own, or in the metal pass the sphere map's, from the
+# normal as the camera sees it.
+DP3 R12.x, R6, c[27];
+DP3 R12.y, R6, c[28];
+ADD R12.x, R12.x, c[27].w;
+ADD R12.y, R12.y, c[28].w;
+MOV R13, vertex.attrib[2];
+ADD R12.xy, R12, -R13;
+MAD R13.xy, R12, c[29].w, R13;
+MOV result.texcoord[0], R13;
 # The viewer's sun, where MobyProc does not light the instance.
 DP3 R7.x, R6, c[10];
 MAX R7.x, R7.x, -R7.x;
@@ -124,13 +143,19 @@ MUL R11.x, R11.x, c[24].w;
 ADD R9, c[23], -R10;
 MAD R10, R9, R11.x, R10;
 MUL R2, R10, c[5];
+# The metal pass's colour instead, with the shine as its alpha.
+MOV R9, c[29];
+MOV R9.w, c[21].w;
+ADD R9, R9, -R2;
+MAD R2, R9, c[29].w, R2;
 MOV result.texcoord[1], R2;
-# mesh.fp leaves out a pixel whose w here is below 0: the glow packets, in the solid pass.
-MUL R7.z, R11.x, c[22].w;
-ADD R4.w, R7.z, c[11].w;
+# mesh.fp leaves out a pixel whose w here is below 0.
+MUL R7.z, R11.x, c[26].x;
+ADD R4.w, R7.z, c[26].y;
 MOV result.texcoord[2], R4;
 MOV result.texcoord[3], c[12];
 MOV result.texcoord[4], c[13];
 MOV result.texcoord[5], c[14];
 MOV result.texcoord[6], c[15];
+MOV result.texcoord[7], c[25];
 END

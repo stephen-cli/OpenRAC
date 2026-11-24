@@ -532,6 +532,10 @@ constexpr Uniform kMeshUniforms[] = {
     {"skinning", mesh::kSkinning, 1},
     {"light_sets", mesh::kLightSets, 64},
     {"moby_point_lights", mesh::kMobyPointLights, 64},
+    {"glow_split", mesh::kGlowSplit, 1},
+    {"effect_reference", mesh::kEffectReference, 1},
+    {"effect_additive", mesh::kEffectAdditive, 1},
+    {"clip_zero_to_one", mesh::kClipZeroToOne, 1},
 };
 
 // A kind of program: the line in the GLSL of both stages that names it, its uniforms (the direct

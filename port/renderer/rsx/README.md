@@ -19,7 +19,7 @@ function pointers of `renderer/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 85 checks that RPCS3 starts in seconds: a change here is run
+program of 94 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs
@@ -38,7 +38,7 @@ vertex array or indices the RSX cannot read).
 | `renderer/shaders/direct.vert`, `direct.frag` | `programs/direct.vp`, `direct.fp` | the 2D path: menus, the HUD, text, fades; and the layer's own copies between framebuffers |
 | `viewer/shaders/sky.vert`, `sky.frag` | `programs/sky.vp`, `sky.fp` | the sky's shells |
 | `viewer/shaders/mesh.vert`, `mesh.frag` | `programs/mesh.vp`, `mesh.fp` | the level as stored: terrain, ties, shrubs, in the solid and the translucent pass |
-| the same, where its `skinning` is set | `programs/moby.vp`, `mesh.fp` | the live mobys' solid pass: skinned, lit as MobyProc lights them |
+| the same, where its `skinning` or a pass of the mobys is set | `programs/moby.vp`, `mesh.fp` | the live mobys, skinned and lit as MobyProc lights them: their solid faces, glow faces, the blended ones, the metal packets |
 
 A program's uniforms are kept by name in slots of four numbers (a matrix
 four slots, an array a slot an element; `rsxgl_objects.cpp` has each
@@ -80,11 +80,19 @@ written. The two directional lights (two sets cross-faded), the point
 light, the ambient and the glow colour are worked out for the instance
 on the CPU. The joints' bytes reach the program as parts of 255.
 
+The mobys' passes (`scene/moby_passes.h`) are the same pair with other
+constants. A glow packet's faces are the glow pass's and are left out of
+the solid pass, the others the reverse. The glow pass and the blended
+mobys are drawn in two draws split at an alpha reference, as the GLSL
+splits them; an added moby's colour is weighed by its alpha in the
+fragment program, where the chip's alpha goes to about 2. The metal
+packets take their texture coordinates from the normal as the camera sees
+it, the chip's 0x70 as their colour and the shine their moby's distance
+gives as their alpha, which the layer works out for the instance.
+
 Not in the mesh programs yet: a tie's colours from the light texture, the
-terrain's point lights, the mobys' glow, effect and metal passes (a glow
-packet's faces are left out of the solid pass, as the GLSL leaves them),
-the cut at the picture's sides of a moby of the 2D layer; draws of those
-passes are left out, and a lit tie is drawn with its stored colour.
+terrain's point lights, the cut at the picture's sides of a moby of the 2D
+layer; a lit tie is drawn with its stored colour.
 
 Writing a program for `cgcomp -a`: registers are `R0` up, constants
 `c[n]`, and the chip's limits are the author's to keep, since the

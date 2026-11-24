@@ -18,6 +18,7 @@
 #                 (0.36, 0.48, 0.80) and 0.55, or nothing and 1 where the level lit the vertex
 #   c[11]         1 / 255, 0, a little (a normal of no length divides by it), 1
 #   c[12] to c[15]  mesh.fp's texcoord[3] to texcoord[6]
+#   c[25]         mesh.fp's texcoord[7]
 #
 # The live mobys have a vertex program of their own, moby.vp. Not here yet: a tie's colours from
 # the light texture, the terrain's point lights.
@@ -59,4 +60,5 @@ MOV result.texcoord[3], c[12];
 MOV result.texcoord[4], c[13];
 MOV result.texcoord[5], c[14];
 MOV result.texcoord[6], c[15];
+MOV result.texcoord[7], c[25];
 END

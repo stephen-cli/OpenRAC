@@ -404,15 +404,12 @@ void mesh_checks(int wide, int high) {
     draw();
     expect("mesh: no cutout, translucent pass", 0, wide / 4, high / 4, black);
     glUniform1i(uniform("translucent_pass"), 0);
-    // A pass the program has not yet is left out, not drawn wrong.
-    glUniform1i(uniform("metal_pass"), 1);
-    draw();
-    expect("mesh: metal pass left out", 0, wide / 4, high / 4, black);
     glUseProgram(g_program);
 }
 
-// The mesh program with `skinning` set, the live mobys' (programs/moby.vp): a square over the
-// picture's left half, as one instance with the renderer's whole vertex and instance.
+// The mesh program with `skinning` set, the live mobys' (programs/moby.vp), in the mobys' passes
+// (scene/moby_passes.h): a square over the picture's left half, as one instance with the
+// renderer's whole vertex and instance.
 void moby_checks(int wide, int high) {
     // scene/level.h's Vertex.
     struct MobyVertex {
@@ -602,6 +599,79 @@ void moby_checks(int wide, int high) {
     instance.moby_ambient[3] = 1.0f + 0x0000FF;
     draw();
     expect("moby: glow vertices left out of the solid pass", 0, wide / 4, high / 4, black);
+
+    // The glow pass draws them, in the glow colour (red, the chip's 0xFF) and unlit.
+    const auto at_left = [&](const char* what, Colour wanted) {
+        expect(what, 0, wide / 4, high / 4, wanted);
+    };
+    glUniform1i(uniform("glow_pass"), 1);
+    draw();
+    at_left("moby: glow pass", kRed);
+    // In two draws split at the alpha 0x60: the texel's is 0x80 of 0xFF, below it.
+    glUniform1i(uniform("glow_split"), 1);
+    draw();
+    at_left("moby: glow pass, the texels from the reference", black);
+    glUniform1i(uniform("glow_split"), 2);
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+    draw();
+    at_left("moby: glow pass, the texels below it, blended", Colour{128, 0, 0, 255});
+    // The other faces are not the glow pass's.
+    glUniform1i(uniform("glow_split"), 0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    draw();
+    at_left("moby: glow pass, no glow vertices", black);
+    glUniform1i(uniform("glow_pass"), 0);
+
+    // A blended moby: all of it, lit, at the texel's alpha times its own.
+    glUniform1i(uniform("effect_pass"), 1);
+    glUniform1f(uniform("effect_reference"), 96.0f / 128.0f);
+    draw();
+    at_left("moby: effect pass, blended", Colour{80, 72, 64, 255});
+    glUniform1i(uniform("glow_split"), 1);
+    draw();
+    at_left("moby: effect pass, the texels from the reference", black);
+    glUniform1i(uniform("glow_split"), 0);
+    // An added one: its colour times its alpha, which goes past 1 as the chip's does.
+    glUniform1i(uniform("effect_additive"), 1);
+    glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ZERO, GL_ONE);
+    instance.tint[3] = 3.0f;
+    draw();
+    at_left("moby: effect pass, added", Colour{241, 217, 193, 255});
+    instance.tint[3] = 1.0f;
+    glUniform1i(uniform("effect_additive"), 0);
+    glUniform1i(uniform("effect_pass"), 0);
+
+    // The metal packets: a sphere map read by the normal as the camera sees it (to the right
+    // of the picture's middle, then to the left), times the chip's 0x70, not lit and not the
+    // material's colour; its alpha the shine the moby's distance gives.
+    const Colour sphere[2] = {{255, 0, 0, 255}, {0, 255, 0, 255}};
+    GLuint metal = 0;
+    glGenTextures(1, &metal);
+    glBindTexture(GL_TEXTURE_2D, metal);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(GL_RGBA8), 2, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, sphere
+    );
+    texture_parameters();
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+    glUniform1i(uniform("metal_pass"), 1);
+    const float right[16] = {0.8f, 0, -0.6f, 0, 0, 1, 0, 0, 0.6f, 0, 0.8f, 0, 0, 0, 0, 1};
+    glUniformMatrix4fv(uniform("view"), 1, GL_FALSE, right);
+    draw();
+    at_left("moby: metal pass, the sphere map's right", Colour{0, 223, 0, 255});
+    const float left[16] = {0.8f, 0, 0.6f, 0, 0, 1, 0, 0, -0.6f, 0, 0.8f, 0, 0, 0, 0, 1};
+    glUniformMatrix4fv(uniform("view"), 1, GL_FALSE, left);
+    draw();
+    at_left("moby: metal pass, the sphere map's left", Colour{223, 0, 0, 255});
+    // A shine distance of 8 units: half the shine at the camera.
+    instance.lights = -9.0f;
+    draw();
+    at_left("moby: metal pass, half the shine", Colour{112, 0, 0, 255});
+    glUniform1i(uniform("metal_pass"), 0);
+    glDisable(GL_BLEND);
     glUseProgram(g_program);
 }
 

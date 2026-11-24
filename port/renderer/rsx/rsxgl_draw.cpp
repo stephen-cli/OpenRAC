@@ -591,8 +591,29 @@ void sky_constants(const Program& program, float c[5][4]) {
 
 // ---- The mesh program's numbers ----
 
-constexpr u32 kMeshInstanceConstants = 9;  // mesh.vp's c[0] to c[8]
-constexpr u32 kMeshDrawConstants = 7;      // c[9] to c[15]
+constexpr u32 kMeshInstanceConstants = 9;   // mesh.vp's c[0] to c[8]
+constexpr u32 kMeshDrawConstants = 7;       // c[9] to c[15]
+constexpr u32 kMeshPassFirstConstant = 25;  // c[25] to c[29] are the pass's (programs/moby.vp)
+constexpr u32 kMeshPassConstants = 5;
+
+// The pass of the mobys a draw of the mesh program is of (scene/moby_passes.h), as mesh.frag
+// tells them apart; Solid is the static layers' passes too.
+enum class MobyPass {
+    Solid,
+    Glow,
+    Effects,
+    Metal,
+};
+
+MobyPass moby_pass(const Program& program) {
+    if (program.uniforms[mesh::kMetalPass][0] != 0.0f) {
+        return MobyPass::Metal;
+    }
+    if (program.uniforms[mesh::kEffectPass][0] != 0.0f) {
+        return MobyPass::Effects;
+    }
+    return program.uniforms[mesh::kGlowPass][0] != 0.0f ? MobyPass::Glow : MobyPass::Solid;
+}
 
 // mesh.vp's constants of a draw from mesh.vert's and mesh.frag's uniforms (programs/mesh.fp says
 // what the fragment program's are).
@@ -600,10 +621,12 @@ void mesh_constants(const Program& program, float c[kMeshDrawConstants][4]) {
     const auto value = [&](u32 slot) {
         return program.uniforms[slot][0];
     };
+    const MobyPass pass = moby_pass(program);
     std::memset(c, 0, sizeof(float) * kMeshDrawConstants * 4);
     std::memcpy(c[0], program.uniforms[mesh::kFogParams].data(), sizeof(float) * 4);
-    // The viewer's sun (mesh.frag's kSun), on what the level did not light.
-    if (value(mesh::kLighting) != 0.0f) {
+    // The viewer's sun (mesh.frag's kSun), on what the level did not light. The blended mobys
+    // and the metal packets get none.
+    if (value(mesh::kLighting) != 0.0f && pass != MobyPass::Effects && pass != MobyPass::Metal) {
         c[1][0] = 0.45f * 0.36f;
         c[1][1] = 0.45f * 0.48f;
         c[1][2] = 0.45f * 0.80f;
@@ -614,7 +637,12 @@ void mesh_constants(const Program& program, float c[kMeshDrawConstants][4]) {
     c[2][0] = 1.0f / 255.0f;
     c[2][2] = 1.0e-20f;
     c[2][3] = 1.0f;
-    std::memcpy(c[3], program.uniforms[mesh::kMaterialColour].data(), sizeof(float) * 4);
+    // The metal packets' texel is the chrome or glass picture's, not the material's.
+    if (pass == MobyPass::Metal) {
+        c[3][0] = c[3][1] = c[3][2] = c[3][3] = 1.0f;
+    } else {
+        std::memcpy(c[3], program.uniforms[mesh::kMaterialColour].data(), sizeof(float) * 4);
+    }
     const auto& fog_colour = program.uniforms[mesh::kFogColour];
     const bool fog = fog_colour[3] > 0.5f;
     c[4][0] = fog_colour[0];
@@ -627,6 +655,26 @@ void mesh_constants(const Program& program, float c[kMeshDrawConstants][4]) {
     const bool translucent = value(mesh::kTranslucentPass) != 0.0f;
     c[5][1] = 1.0f;
     c[5][3] = 1.0f;
+    c[6][0] = fog ? 0.0f : 1.0f;
+    // The glow faces and the blended mobys: every texel at its alpha, or in two draws split at
+    // an alpha reference (glow_split: 1 the texels at or above it, 2 the rest). The metal
+    // packets: every texel.
+    if (pass != MobyPass::Solid) {
+        const float reference =
+            pass == MobyPass::Effects ? value(mesh::kEffectReference) : 96.0f / 128.0f;
+        const float split = pass == MobyPass::Metal ? 0.0f : value(mesh::kGlowSplit);
+        if (split == 1.0f) {
+            c[5][0] = 1.0f;
+            c[5][1] = -reference;
+        } else if (split != 0.0f) {
+            c[5][0] = -1.0f;
+            c[5][1] = reference - 1.0e-5f;
+        }
+        // An added moby's alpha is in its colour (pass_constants).
+        const bool added = pass == MobyPass::Effects && value(mesh::kEffectAdditive) != 0.0f;
+        c[6][1] = added ? 0.0f : 1.0f;
+        return;
+    }
     if (translucent && cutout) {
         c[5][0] = 1.0f;
         c[5][1] = -0.02f;
@@ -638,9 +686,38 @@ void mesh_constants(const Program& program, float c[kMeshDrawConstants][4]) {
         c[5][0] = 1.0f;
         c[5][1] = -0.99f;
     }
-    c[6][0] = fog ? 0.0f : 1.0f;
     c[6][1] = translucent ? 1.0f : 0.0f;
     c[6][2] = translucent ? 0.0f : 1.0f;
+}
+
+// The constants of a draw's pass, c[25] to c[29] (programs/moby.vp says what each is; mesh.vp
+// reads the first).
+void pass_constants(const Program& program, float c[kMeshPassConstants][4]) {
+    const MobyPass pass = moby_pass(program);
+    std::memset(c, 0, sizeof(float) * kMeshPassConstants * 4);
+    const bool added =
+        pass == MobyPass::Effects && program.uniforms[mesh::kEffectAdditive][0] != 0.0f;
+    c[0][0] = added ? 1.0f : 0.0f;
+    c[0][1] = added ? 0.0f : 1.0f;
+    c[0][2] = kOpaque;
+    // The glow packets' faces are the glow pass's and no other's; the blended mobys and the
+    // metal packets are drawn whole.
+    c[1][0] = pass == MobyPass::Solid ? -2.0f : pass == MobyPass::Glow ? 2.0f : 0.0f;
+    c[1][1] = pass == MobyPass::Glow ? -1.0f : 1.0f;
+    if (pass != MobyPass::Metal) {
+        return;
+    }
+    // MobyProc's pull toward the camera (mesh.vert).
+    c[1][2] = program.uniforms[mesh::kClipZeroToOne][0] != 0.0f ? 0.5e-4f : 1.0e-4f;
+    // st = (e.xy + 1) / 2, e the normal in camera space, t growing downward.
+    const auto* view = program.uniforms.data() + mesh::kView;
+    for (std::size_t column = 0; column < 3; ++column) {
+        c[2][column] = 0.5f * view[column][0];
+        c[3][column] = -0.5f * view[column][1];
+    }
+    c[2][3] = c[3][3] = 0.5f;
+    c[4][0] = c[4][1] = c[4][2] = 112.0f / 128.0f;
+    c[4][3] = 1.0f;
 }
 
 // Where the bound vertex array has the value of an instance for `attribute`: its first, and the
@@ -708,11 +785,26 @@ constexpr u32 kJointFirstConstant = 32;  // then the joints' matrices, three row
 constexpr u32 kJointsHeld = (468 - kJointFirstConstant) / 3;  // the RSX has 468 constants
 
 // The RSX program a draw with `program` bound takes: the mesh program's draws with `skinning`
-// set are the live mobys'.
+// set, or of a pass only the mobys have, are the live mobys'.
 ProgramKind drawn_kind(const Program& program) {
-    return program.kind == ProgramKind::Mesh && program.uniforms[mesh::kSkinning][0] != 0.0f
+    return program.kind == ProgramKind::Mesh
+                   && (program.uniforms[mesh::kSkinning][0] != 0.0f
+                       || moby_pass(program) != MobyPass::Solid)
                ? ProgramKind::Moby
                : program.kind;
+}
+
+// The metal pass's alpha of an instance (mesh.vert): MobyProc's gate, full up to 16 game units
+// nearer than the moby's shine distance (`lights` = -1 - distance; 0x18 unless the class changes
+// it), none past it.
+float moby_shine(const Program& program, const float* model, float lights) {
+    const auto* view = program.uniforms.data() + mesh::kView;
+    const float reach = lights < -1.5f ? -lights - 1.0f : 24.0f;
+    float centre = -view[3][2];
+    for (std::size_t k = 0; k < 3; ++k) {
+        centre -= view[k][2] * model[12 + k];
+    }
+    return std::clamp((reach - centre) / 16.0f, 0.0f, 1.0f);
 }
 
 // moby.vp's constants of an instance (programs/moby.vp says what each is): what mesh.vert works
@@ -723,13 +815,14 @@ void moby_instance_constants(
     const float* light,
     const float* ambient,
     bool skinned,
+    float shine,
     float c[kMobyInstanceConstants][4]
 ) {
     std::memset(c, 0, sizeof(float) * kMobyInstanceConstants * 4);
     c[0][0] = c[0][1] = c[0][2] = 1.0f;
     c[0][3] = skinned ? 1.0f : 0.0f;
     c[4][3] = kOpaque;
-    c[6][3] = -2.0f;
+    c[5][3] = shine;
     c[8][0] = 765.0f;
     c[8][1] = 0.5f;
     c[8][2] = -1.5f;
@@ -1071,7 +1164,6 @@ enum class LeftOut : u32 {
     NoTarget,    // the framebuffer has nothing to draw into
     NoVertices,  // an attribute the RSX cannot read, or no buffer behind one
     NoIndices,   // no element buffer, or indices of a type the RSX has not
-    NoPass,      // a pass of the GL program that the RSX program has not yet
     PastEnd,     // vertices past the end of their buffers
     ManyJoints,  // a moby of more joints than the RSX has constants for
 };
@@ -1082,7 +1174,6 @@ void leave_out(LeftOut reason) {
         "into a framebuffer with nothing to draw into",
         "of vertex arrays the RSX cannot read",
         "of indices the RSX cannot read",
-        "of passes the layer's program has not yet",
         "of vertices past the end of their buffers",
         "of mobys with more joints than the RSX's constants hold",
     };
@@ -1094,20 +1185,12 @@ void leave_out(LeftOut reason) {
     }
 }
 
-// Whether the bound program's draw is of a pass the layer's program has: the mesh program has
-// not the mobys' glow, the effects or the metal yet.
-bool pass_known(const Program& program) {
-    return program.kind != ProgramKind::Mesh
-           || (program.uniforms[mesh::kGlowPass][0] == 0.0f
-               && program.uniforms[mesh::kEffectPass][0] == 0.0f
-               && program.uniforms[mesh::kMetalPass][0] == 0.0f);
-}
-
 // Whether the bound program's draw has no pixel to write, whatever its vertices: the mesh
 // program's translucent pass of a material without a cutout (mesh_constants). The renderer draws
 // every instance in both passes, and an instance is a draw here.
 bool draws_nothing(const Program& program) {
-    return program.kind == ProgramKind::Mesh && program.uniforms[mesh::kTranslucentPass][0] != 0.0f
+    return program.kind == ProgramKind::Mesh && moby_pass(program) == MobyPass::Solid
+           && program.uniforms[mesh::kTranslucentPass][0] != 0.0f
            && program.uniforms[mesh::kCutout][0] == 0.0f;
 }
 
@@ -1117,10 +1200,6 @@ const Program* begin_draw(Target& target) {
     const auto program = g.programs.find(g.program);
     if (program == g.programs.end() || program->second.kind == ProgramKind::None) {
         leave_out(LeftOut::NoProgram);
-        return nullptr;
-    }
-    if (!pass_known(program->second)) {
-        leave_out(LeftOut::NoPass);
         return nullptr;
     }
     if (draws_nothing(program->second)) {
@@ -1180,6 +1259,14 @@ const Program* begin_draw(Target& target) {
                 kMeshDrawConstants,
                 &constants[0][0]
             );
+            float of_pass[kMeshPassConstants][4];
+            pass_constants(program->second, of_pass);
+            rsxLoadVertexProgramParameterBlock(
+                g.context,
+                loaded.vertex->const_start + kMeshPassFirstConstant,
+                kMeshPassConstants,
+                &of_pass[0][0]
+            );
             break;
         }
         case ProgramKind::None:
@@ -1201,9 +1288,11 @@ struct Instances {
     u32 model_stride = 0;
     u32 tint_stride = 0;
     const float* palette = nullptr;
+    const float* shine = nullptr;
     const float* light = nullptr;
     const float* ambient = nullptr;
     u32 palette_stride = 0;
+    u32 shine_stride = 0;
     u32 light_stride = 0;
     u32 ambient_stride = 0;
     const Image* matrices = nullptr;  // the palette texture
@@ -1219,6 +1308,7 @@ struct Instances {
         }
         if (kind == ProgramKind::Moby) {
             palette = instance_values(mesh::kPalette, palette_stride);
+            shine = instance_values(mesh::kLights, shine_stride);
             light = instance_values(mesh::kMobyLight, light_stride);
             ambient = instance_values(mesh::kMobyAmbient, ambient_stride);
             const auto texture = g.images.find(g.texture[mesh::kPaletteUnit]);
@@ -1236,9 +1326,10 @@ struct Instances {
         constexpr float kWhite[4] = {1, 1, 1, 1};
         const Loaded& loaded = kind == ProgramKind::Moby ? g_moby : g_mesh;
         float constants[kMeshInstanceConstants][4];
+        const float* placed = model != nullptr ? stepped(model, model_stride, instance) : kIdentity;
         mesh_instance_constants(
             *program,
-            model != nullptr ? stepped(model, model_stride, instance) : kIdentity,
+            placed,
             tint != nullptr ? stepped(tint, tint_stride, instance) : kWhite,
             constants
         );
@@ -1260,6 +1351,9 @@ struct Instances {
             light != nullptr ? stepped(light, light_stride, instance) : kNone,
             ambient != nullptr ? stepped(ambient, ambient_stride, instance) : kNone,
             skinned,
+            moby_shine(
+                *program, placed, shine != nullptr ? *stepped(shine, shine_stride, instance) : 0.0f
+            ),
             lit
         );
         rsxLoadVertexProgramParameterBlock(

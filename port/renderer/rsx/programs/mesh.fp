@@ -15,6 +15,8 @@
 #   texcoord[4]  the fog colour; w: the fog's weight, f = w fog + texcoord[6].x
 #   texcoord[5]  the cutout: the pixel is left out when x a + y < 0 or z a + w < 0
 #   texcoord[6]  the rest of f; alpha written = y a + z
+#   texcoord[7]  an added moby's colour is weighed by its alpha here (the GS's Cs As, As to
+#                about 2): the colour times min(a, z) x + y
 #
 # One interpolated input an instruction, each moved to a register first (direct.fp).
 MOV R1, fragment.texcoord[0];
@@ -41,6 +43,10 @@ MOV R9, fragment.texcoord[6];
 MAD R7.x, R7.x, R8.w, R9.x;
 ADD R10.xyz, R2, -R8;
 MAD R2.xyz, R10, R7.x, R8;
+MOV R11, fragment.texcoord[7];
+MIN R12.x, R2.w, R11.z;
+MAD R12.x, R12.x, R11.x, R11.y;
+MUL_SAT R2.xyz, R2, R12.x;
 MAD_SAT R2.w, R2.w, R9.y, R9.z;
 MOV result.color, R2;
 END

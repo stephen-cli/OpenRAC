@@ -20,7 +20,7 @@ rpcs3 --no-gui --config CONFIG build/ps3-window/openrac-rsxgl-test
 [probe](../rsx-probe/README.md)'s. What the program printed is in RPCS3's
 `TTY.log`.
 
-What it checks (85 checks, all passing on RPCS3 0.0.42, 2026-11-24):
+What it checks (94 checks, all passing on RPCS3 0.0.42, 2026-11-24):
 
 | Check | What it would catch |
 |---|---|
@@ -37,10 +37,12 @@ What it checks (85 checks, all passing on RPCS3 0.0.42, 2026-11-24):
 | mesh: the viewer's sun, fog | the normal through the model's rotation; the fog's arithmetic in the vertex program and its weight in the fragment program |
 | mesh: cutout, in the solid and the translucent pass | the two tests on the texel's alpha; a material without a cutout drawing nothing in the translucent pass |
 | mesh: 20000 draws a frame | more commands in a frame than the command buffer holds |
-| mesh: metal pass | a pass the RSX program has not is left out, not drawn wrong |
 | moby: two joints' skin; no palette | the joints' constants read through the address register, two joints weighted, from the instance's place in the palette texture; an instance without a palette as stored |
 | moby: MobyProc's lights; two sets cross-faded | the ambient, a light faced, a light leaking through from behind; the fade between two sets |
 | moby: glow vertices | drawn as any vertex without a glow colour, left out of the solid pass with one |
+| moby: glow pass | the glow faces in the glow colour and no others; the two draws split at the alpha reference; the alpha written, blended |
+| moby: effect pass | a blended moby whole and lit, at the texel's alpha times its own; the split; an added one's colour times an alpha past 1 |
+| moby: metal pass | the sphere map read by the normal as the camera sees it, the chip's 0x70 without the material's colour, the shine of the moby's distance as alpha |
 | frame 300 | 300 frames of 100 draws: the command buffer's segments filling and wrapping, buffers taking new memory within a frame |
 
 What it found on its first day, each of which the game had shown only as
