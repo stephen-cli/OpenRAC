@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 the OpenRAC contributors
-"""PSL1GHT's librsx made right for GCC 13 (toolchain.sh runs this on PSL1GHT's source, then builds
-and installs librsx again). Idempotent.
+"""PSL1GHT's librsx made right for GCC 13, and its assembler of RSX programs (cgcomp) for
+constants addressed through a register (toolchain.sh runs this on PSL1GHT's source, then builds
+and installs both again). Idempotent.
 
     psl1ght-lv2.py <PSL1GHT tree>
 
@@ -17,6 +18,12 @@ commands) with RPCS3's "FIFO error: possible desync event".
 The assembly now says what a call does: memory is written, the registers a call may change are
 changed, the two arguments are in r3 and r4 by declaration (they were there by luck). Its frame is
 also larger than the red zone, in which the compiler keeps the function's own saved registers.
+
+cgcomp's vertex assembler read `c[A0.x + 32]` as a register of a type it then wrote nothing for:
+the instruction came out reading c[0], not indexed. It is a constant, whose number is the offset,
+and the offset may be any of the RSX's 468 (the parser's limit of 63 is ARB's, not the chip's).
+The offset itself was never read: the loop over the address register's component took the four
+characters after the point whatever they were.
 """
 import sys
 from pathlib import Path
@@ -68,4 +75,20 @@ replace_once(
     "\t\t);\n"
     "\t\treturn (s32)first;\n",
 )
-print("PSL1GHT's librsx prepared for GCC 13")
+parser = tree / "tools" / "cgcomp" / "source" / "vpparser.cpp"
+replace_once(
+    parser,
+    "\t\treg->reg.type = NVFXSR_IMM;\n\t\treg->reg.index = 0;\n\n\t\treg->indirect = TRUE;\n",
+    "\t\treg->reg.type = NVFXSR_CONST;\n\t\treg->reg.index = 0;\n\n\t\treg->indirect = TRUE;\n",
+)
+replace_once(
+    parser,
+    "\t\t\t\t\tif(k<63) reg->reg.index = k;\n",
+    "\t\t\t\t\tif(k<468) reg->reg.index = k;\n",
+)
+replace_once(
+    parser,
+    "\t\t\tfor(k=0;p[k] && k<4;k++) {\n",
+    "\t\t\tfor(k=0;k<4 && p[k] && strchr(\"xyzw\",p[k]);k++) {\n",
+)
+print("PSL1GHT's librsx prepared for GCC 13, cgcomp for indexed constants")

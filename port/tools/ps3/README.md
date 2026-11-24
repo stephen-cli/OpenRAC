@@ -191,7 +191,10 @@ ps3toolchain's prebuilt compiler:
    end, and the RSX followed the jump into the middle of them: every
    program stopped drawing after its first 32 KB of commands. The
    assembly now says that memory is written and which registers a call
-   changes.
+   changes. The same script changes PSL1GHT's assembler of RSX programs,
+   `cgcomp`, which is built again as well: a vertex program's constant
+   addressed through a register (`c[A0.x + 32]`, a skinned vertex's joint
+   matrix) came out as `c[0]`, not indexed, the offset unread.
 
 `Containerfile` runs the script as its second step, so `podman build`
 gives the whole toolchain; while a step is being worked on, the script
