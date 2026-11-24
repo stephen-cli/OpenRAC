@@ -489,11 +489,24 @@ Not drawn yet: the mobys (their skin is a float texture the vertex
 program reads), the ties' own lighting (the same), effects, shadows, the
 metal pass.
 
+### The mobys posed and lit (2026-11-24)
+
+The live mobys are skinned and lit: Ratchet stands posed on Veldin under
+RPCS3. A vertex program of their own, `moby.vp`, takes an instance's
+joint matrices and lights as constants, which the layer works out from
+the palette texture and the instance
+([renderer/rsx](../../port/renderer/rsx/README.md)). PSL1GHT's assembler
+did not assemble a constant addressed through a register; the toolchain
+builds it with that put right
+([tools/ps3](../../port/tools/ps3/README.md)). The layer's test has 85
+checks. Not compared with another platform's picture; the mobys' glow,
+effect and metal passes are not drawn yet.
+
 ### A level within main memory (2026-11-24)
 
 The windowed program under RPCS3 reaches level 0 and draws Veldin's
 opening scenes: the terrain, the ties, the shrubs, the sky, and the mobys
-as stored (unposed: no skinning yet), about three thousand draws a frame.
+(as stored at first, unposed), about three thousand draws a frame.
 Its picture has not been compared with another platform's.
 
 A program has 213 MB of main memory (`sys_memory_get_user_memory_size`,
@@ -539,17 +552,18 @@ The proposal, in the order that gives a picture soonest:
    gamepad) and sound (the dummy device plays nothing).
 2. **GL carried out with the RSX**, a layer beside the Vulkan one for
    the functions the classic renderer calls: what the 2D path, the sky
-   and the stored level call is done (section 6). Left: float textures
-   (the ties' lights, the mobys' joints), mip chains, stencil, depth
-   copies, uniform blocks, as the world's renderers come to need them.
+   and the stored level and the mobys call is done (section 6). Left: the
+   ties' lights, mip chains, stencil, depth copies, uniform blocks, as
+   the world's renderers come to need them.
    A draw an instance has not been timed.
 3. **The shaders written again** as RSX programs, kept beside their
    GLSL and found by a line in it instead of compiled at run time: the
    direct renderer's pair is done, less its distance-field text. Its
    picture has not been compared with another platform's yet. The sky
    and the level as stored are done too (terrain, ties, shrubs), the
-   instancing on the CPU. Next the ties' lights and the mobys (skinning,
-   lights, glow, metal), then effects and shadows.
+   instancing on the CPU, and the mobys' solid pass, skinned and lit.
+   Next the ties' lights and the mobys' glow, effect and metal passes,
+   then shadows.
 4. Every level within the console's main memory (section 6: Veldin
    fits, with little to spare at the peak of its load), an allocation's
    failure ending with an error, textures within 256 MB of video memory (section 2), and the
