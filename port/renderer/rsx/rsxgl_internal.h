@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "renderer/gl.h"
+#include "renderer/gl/gl.h"
 #include "renderer/rsx/rsxgl.h"
 
 #include <ppu-types.h>

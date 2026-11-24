@@ -110,19 +110,22 @@ void set_app_metadata(const char* name, const char* id);
 void install_app_menus(bool developer);
 
 // Which OpenGL the window's context is: the desktop's 4.1 core profile, OpenGL ES 3.2 (Android,
-// whose drivers have only ES; renderer/gl.h and renderer/shader.h adapt to it), or the renderer's
-// GL carried out with Vulkan (renderer/vulkan/vkgl.h), where the build has it; a window that
-// cannot have Vulkan opens with the system's OpenGL instead. On the PlayStation 3 it is the
-// renderer's GL carried out with the RSX (renderer/rsx/rsxgl.h), the one kind there: the window
-// is the whole screen in the console's video mode.
+// whose drivers have only ES; renderer/gl/gl.h and renderer/gl/shader.h adapt to it), or the renderer's
+// GL carried out with Vulkan (renderer/vulkan/vkgl.h) or with Metal (renderer/metal/mtlgl.h),
+// where the build has them; a window that cannot have Metal or Vulkan opens with the system's
+// OpenGL instead. On the PlayStation 3 it is the renderer's GL carried out with the RSX
+// (renderer/rsx/rsxgl.h), the one kind there: the window is the whole screen in the console's
+// video mode.
 enum class GlApi {
     Desktop,
     ES,
     Vulkan,
     Rsx,
+    Metal,
 };
 
-// ES on Android, the RSX's on the PlayStation 3, the desktop's elsewhere; OPENRAC_GL_API=es, =desktop or =vulkan in the
+// ES on Android, the RSX's on the PlayStation 3, the desktop's elsewhere; OPENRAC_GL_API=es,
+// =desktop, =vulkan or =metal in the
 // environment chooses (es on a desktop draws through its driver's ES context, which is how the ES
 // path is checked without a phone).
 GlApi default_gl_api();
@@ -149,9 +152,25 @@ struct WindowConfig {
 };
 
 // The context's function loader, in SDL_GL_GetProcAddress's shape: what
-// renderer/gl.h's load() takes.
+// renderer/gl/gl.h's load() takes.
 using GlProc = void (*)();
 using GlLoader = GlProc (*)(const char* name);
+
+// The Metal renderer (renderer/metal/mtlgl.h) as a window opens and draws with it. The platform is
+// below the renderer, so it declares this and renderer/metal defines it, in a build with
+// OPENRAC_METAL. open presents to `window`, or to no screen when it is null, and fails when Metal
+// cannot open or lacks a function of renderer/gl/gl.h.
+struct MetalBackend {
+    bool (*open)(SDL_Window* window, int width, int height, bool vsync, std::string& error);
+    void (*close)();
+    bool (*active)();
+    GlLoader get_proc;
+    void (*present)();
+    void (*set_swap_interval)(int interval);
+    std::string (*device_name)();
+};
+
+const MetalBackend& metal_backend();
 
 class Window {
 public:
@@ -240,6 +259,8 @@ private:
 
     // Opens the window for GlApi::Vulkan; false (and nothing left open) when Vulkan cannot be had.
     bool open_vulkan(const WindowConfig& config, std::string& error);
+    // The same for GlApi::Metal, which must also carry out every function of renderer/gl/gl.h.
+    bool open_metal(const WindowConfig& config, std::string& error);
 
     // Opens the window for GlApi::Rsx; false (and nothing left open) when the RSX cannot be had.
     bool open_rsx(const WindowConfig& config, std::string& error);
@@ -248,6 +269,7 @@ private:
     SDL_GLContextState* m_context = nullptr;
     bool m_vulkan = false;
     bool m_rsx = false;
+    bool m_metal = false;
     bool m_low_latency = false;
     bool m_hdr_window = false;        // Android: the window's colour mode asked for HDR
     float m_hdr_headroom = 0.0f;      // Android: the headroom the window asked for

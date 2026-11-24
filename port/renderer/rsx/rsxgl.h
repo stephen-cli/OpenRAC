@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 the OpenRAC contributors
 //
-// The renderer's GL (renderer/gl.h) carried out with the PlayStation 3's RSX, through PSL1GHT's
+// The renderer's GL (renderer/gl/gl.h) carried out with the PlayStation 3's RSX, through PSL1GHT's
 // librsx: what renderer/vulkan/vkgl.h is to Vulkan. The window opens it for GlApi::Rsx
 // (platform/window.h) and hands its get_proc to gl::load, so the renderer calls it as any GL.
 // README.md says how much of GL is carried out yet; the rest is answered and does nothing.

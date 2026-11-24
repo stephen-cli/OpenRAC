@@ -122,7 +122,7 @@ Result OPENRAC_GLAPI nothing(Arguments...) {
     return Result();
 }
 
-// Every function gl::load asks for by name and stops without (renderer/gl.h's two lists).
+// Every function gl::load asks for by name and stops without (renderer/gl/gl.h's two lists).
 #define OPENRAC_RSXGL_NOTHING(ret, name, params) OPENRAC_RSXGL_ENTRY(name, nothing),
 const Entry kEveryFunction[] = {OPENRAC_GL_FUNCTIONS(OPENRAC_RSXGL_NOTHING)
                                     OPENRAC_GL_DESKTOP_FUNCTIONS(OPENRAC_RSXGL_NOTHING)};

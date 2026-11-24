@@ -575,7 +575,7 @@ three thousand draws a frame, whose cost on the console is not measured.
 
 The renderer backend, now that the game runs headless on the console.
 What it has to carry, measured in the tree: the renderer speaks OpenGL
-through 106 functions (`renderer/gl.h`), which the Vulkan build already
+through 106 functions (`renderer/gl/gl.h`), which the Vulkan build already
 answers with a layer of its own (`renderer/vulkan`, GL carried out with
 Vulkan); the classic picture is 23 GLSL 4.10 shaders, about 1,060
 lines (`renderer/shaders`, `scene/shaders`); the enhanced renderer's 39

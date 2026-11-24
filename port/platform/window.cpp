@@ -238,7 +238,7 @@ std::vector<DisplayInfo> displays() {
     return list;
 }
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(OPENRAC_IOS)
 void macos_set_app_name(const char* name);  // macos_app.mm
 #else
 void install_app_menus(bool) {}
@@ -252,7 +252,7 @@ void set_app_metadata(const char* name, const char* id) {
     if (name != nullptr) {
         SDL_SetHint(SDL_HINT_APP_NAME, name);
     }
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(OPENRAC_IOS)
     // Outside its bundle the menu bar would show the program file's name (openrac-rac1-pal).
     macos_set_app_name("OpenRAC");
 #endif
@@ -262,6 +262,9 @@ Platform::Platform(unsigned subsystems) {
     SDL_InitFlags flags = 0;
     if ((subsystems & kVideo) != 0) {
         flags |= SDL_INIT_VIDEO;
+#if defined(OPENRAC_IOS)
+        SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
 #if defined(__linux__) || defined(__FreeBSD__)
         // On Wayland, allow tearing / immediate presentation when vsync is disabled.
         SDL_SetHint("SDL_VIDEO_WAYLAND_ALLOW_TEARING", "1");
@@ -276,7 +279,10 @@ Platform::Platform(unsigned subsystems) {
         // ...and the controller still plays it. The keyboard counts only while the window has the
         // focus (Input::update), so typing elsewhere never moves Ratchet.
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-#if !defined(__ANDROID__)
+#if defined(OPENRAC_IOS)
+        // UIKit's GameController backend handles paired controllers without scanning Bluetooth.
+        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+#elif !defined(__ANDROID__)
         // A Steam Controller (2015 or 2026) is read by SDL's own driver, so it plays a game started
         // outside Steam as a gamepad. An SDL_JOYSTICK_HIDAPI_STEAM=0 in the environment still wins.
         SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
@@ -337,9 +343,14 @@ GlApi default_gl_api() {
         if (value == "vulkan" || value == "vk") {
             return GlApi::Vulkan;
         }
-        log::warn("OPENRAC_GL_API={}: not es, desktop or vulkan, ignored", value);
+        if (value == "metal") {
+            return GlApi::Metal;
+        }
+        log::warn("OPENRAC_GL_API={}: not es, desktop, vulkan or metal, ignored", value);
     }
-#if defined(__ANDROID__)
+#if defined(OPENRAC_IOS)
+    return GlApi::Vulkan;
+#elif defined(__ANDROID__)
     return GlApi::ES;
 #elif defined(OPENRAC_RSX)
     return GlApi::Rsx;
@@ -379,7 +390,12 @@ bool load_vulkan_library(bool validation, std::string& error) {
     if (!library.empty()) {
         paths.emplace_back(library);
     }
+#if defined(OPENRAC_IOS)
+    const std::string bundled =
+        (program_folder() / "Frameworks/MoltenVK.framework/MoltenVK").string();
+#else
     const std::string bundled = (program_folder().parent_path() / "Frameworks" / "libMoltenVK.dylib").string();
+#endif
     std::vector<std::string> folders;
     const std::string sdk = env::system_variable("VULKAN_SDK").value_or("");
     if (!sdk.empty()) {
@@ -539,6 +555,55 @@ bool Window::open_rsx([[maybe_unused]] const WindowConfig& config, std::string& 
 #endif
 }
 
+bool Window::open_metal(const WindowConfig& config, std::string& error) {
+#if defined(OPENRAC_METAL)
+    // A hidden window is a Metal one as well: macOS opens OpenGL for one without a graphics flag.
+    SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_METAL;
+    if (config.hidden) {
+        flags |= SDL_WINDOW_HIDDEN;
+    }
+    if (config.resizable) {
+        flags |= SDL_WINDOW_RESIZABLE;
+    }
+    m_window = SDL_CreateWindow(config.title.c_str(), config.width, config.height, flags);
+    if (m_window == nullptr) {
+        error = std::format("no window for Metal: {}", SDL_GetError());
+        return false;
+    }
+    int width = 0, height = 0;
+    SDL_GetWindowSizeInPixels(m_window, &width, &height);
+    SDL_Window* screen = config.hidden ? nullptr : m_window;
+    if (!metal_backend().open(screen, width, height, config.vsync, error)) {
+        SDL_DestroyWindow(m_window);
+        m_window = nullptr;
+        return false;
+    }
+    m_metal = true;
+    m_gl_api = GlApi::Metal;
+    m_gl_version = "Metal";
+    m_gl_renderer = metal_backend().device_name();
+    log::info("graphics: {}, Metal, the renderer's GL carried out with Metal", m_gl_renderer);
+    log::header(std::format("graphics  {}, Metal", m_gl_renderer), false);
+    if (config.display > 0 && config.mode == DisplayMode::Windowed) {
+        if (const SDL_DisplayID id = display_id(config.display)) {
+            SDL_SetWindowPosition(
+                m_window,
+                static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id)),
+                static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id))
+            );
+        }
+    }
+    if (config.mode != DisplayMode::Windowed) {
+        set_display_mode(config.mode, config.display);
+    }
+    return true;
+#else
+    (void)config;
+    error = "this build has no Metal renderer";
+    return false;
+#endif
+}
+
 std::unique_ptr<Window> Window::open(const WindowConfig& asked, std::string& error) {
     WindowConfig config = asked;
     if (config.gl_api == GlApi::Rsx) {
@@ -549,12 +614,26 @@ std::unique_ptr<Window> Window::open(const WindowConfig& asked, std::string& err
         }
         return window;
     }
+    if (config.gl_api == GlApi::Metal) {
+        std::unique_ptr<Window> window(new Window());
+        std::string why;
+        if (window->open_metal(config, why)) {
+            return window;
+        }
+        // Not Vulkan: on Apple's systems it is MoltenVK, on the same Metal that just failed.
+        log::warn("graphics: Metal could not be used ({}); drawing with OpenGL", why);
+        config.gl_api = GlApi::Desktop;
+    }
     if (config.gl_api == GlApi::Vulkan) {
         std::unique_ptr<Window> window(new Window());
         std::string why;
         if (window->open_vulkan(config, why)) {
             return window;
         }
+#if defined(OPENRAC_IOS)
+        error = std::format("Metal renderer could not start: {}", why);
+        return nullptr;
+#endif
         // Drawn with OpenGL instead: the game still runs.
         log::warn("graphics: Vulkan could not be used ({}); drawing with OpenGL", why);
 #if defined(__ANDROID__)
@@ -745,6 +824,11 @@ Window::~Window() {
         rsxgl::close();
     }
 #endif
+#if defined(OPENRAC_METAL)
+    if (m_metal) {
+        metal_backend().close();
+    }
+#endif
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan) {
         vkgl::close();
@@ -801,6 +885,12 @@ bool Window::set_display_mode(DisplayMode mode, int display) {
 }
 
 bool Window::set_vsync(bool on) {
+#if defined(OPENRAC_METAL)
+    if (m_metal) {
+        metal_backend().set_swap_interval(on ? 1 : 0);
+        return true;
+    }
+#endif
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan) {
         vkgl::set_swap_interval(on ? -1 : 0);
@@ -817,6 +907,14 @@ bool Window::set_vsync(bool on) {
 }
 
 SwapInterval Window::set_swap_interval(SwapInterval interval) {
+#if defined(OPENRAC_METAL)
+    if (m_metal) {
+        // The layer's display sync is on or off; there is no adaptive mode.
+        const bool on = interval != SwapInterval::Immediate;
+        metal_backend().set_swap_interval(on ? 1 : 0);
+        return on ? SwapInterval::VSync : SwapInterval::Immediate;
+    }
+#endif
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan) {
         const int got = vkgl::set_swap_interval(interval == SwapInterval::Adaptive ? -1
@@ -974,6 +1072,12 @@ void Window::swap() {
         return;
     }
 #endif
+#if defined(OPENRAC_METAL)
+    if (m_metal) {
+        metal_backend().present();
+        return;
+    }
+#endif
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan) {
         vkgl::present();
@@ -997,6 +1101,11 @@ GlLoader Window::gl_loader() {
 #if defined(OPENRAC_RSX)
     if (rsxgl::active()) {
         return rsxgl::get_proc;
+    }
+#endif
+#if defined(OPENRAC_METAL)
+    if (metal_backend().active()) {
+        return metal_backend().get_proc;
     }
 #endif
 #if defined(OPENRAC_VULKAN)

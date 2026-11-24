@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include "renderer/gl.h"
+#include "renderer/gl/gl.h"
 #include "renderer/rsx/rsxgl.h"
 
 using namespace openrac;
@@ -76,7 +76,7 @@ RSXGL(glDrawElementsInstanced);
 RSXGL(glReadPixels);
 #undef RSXGL
 
-// renderer/direct.h's DirectVertex.
+// renderer/direct/direct.h's DirectVertex.
 struct Vertex {
     float x, y, z;
     float s, t, q;
@@ -859,7 +859,7 @@ void tie_checks(int wide, int high) {
 // world, through a camera that puts it over the picture's bottom left quarter, a quarter of a
 // unit before the camera.
 void effect_checks(int wide, int high) {
-    // renderer/effects.h's vertex.
+    // renderer/effects/effects.h's vertex.
     struct EffectVertex {
         float x, y, z;
         float s, t;
@@ -1048,7 +1048,7 @@ void effect_checks(int wide, int high) {
 }
 
 // The checks. Within the namespace, so that the names above are the layer's functions and not
-// renderer/gl.h's pointers of the same names.
+// renderer/gl/gl.h's pointers of the same names.
 int run() {
     std::string error;
     if (!rsxgl::open(rsxgl::Config{}, error)) {

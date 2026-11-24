@@ -6,7 +6,7 @@ alone ([cmake/Window.cmake](../../cmake/Window.cmake)). It is to the RSX
 what [renderer/vulkan](../vulkan/README.md) is to Vulkan: the window opens
 it for `GlApi::Rsx` (`platform/window.h`) and hands its `get_proc` to
 `gl::load`, so the renderer calls it as it calls any OpenGL, by the
-function pointers of `renderer/gl.h`.
+function pointers of `renderer/gl/gl.h`.
 
 | File | What |
 |---|---|
