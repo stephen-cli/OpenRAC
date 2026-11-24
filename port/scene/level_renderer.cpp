@@ -558,7 +558,9 @@ bool LevelScene::upload(
     if (!level.light_colours.empty()) {
         const std::size_t rows = (level.light_colours.size() + kLightWidth - 1) / kLightWidth;
         std::vector<std::uint32_t> texels(rows * kLightWidth, 0u);
-        std::copy(level.light_colours.begin(), level.light_colours.end(), texels.begin());
+        std::transform(
+            level.light_colours.begin(), level.light_colours.end(), texels.begin(), light_texel
+        );
         glGenTextures(1, &m_lights);
         glBindTexture(GL_TEXTURE_2D, m_lights);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);

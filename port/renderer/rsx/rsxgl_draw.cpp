@@ -36,8 +36,9 @@ struct Loaded {
 Loaded g_direct;
 Loaded g_sky;
 Loaded g_mesh;
-Loaded g_moby;  // moby.vp with a copy of mesh.fp
-Image g_white;  // one white texel: what a unit samples when the draw binds nothing
+Loaded g_moby;    // moby.vp with a copy of mesh.fp
+Loaded g_effect;  // effect.vp with a copy of direct.fp
+Image g_white;    // one white texel: what a unit samples when the draw binds nothing
 
 // The layer's own vertices for a copy, in the direct program's layout.
 struct CopyVertex {
@@ -566,6 +567,35 @@ void load_direct(const float constants[7][4]) {
     load_program(ProgramKind::Direct, g_direct, &constants[0][0], 7);
 }
 
+// ---- The effect program's numbers ----
+
+constexpr u32 kEffectConstants = 13;
+
+// effect.vp's constants (programs/effect.vp says what each is) from effect.vert's uniforms and
+// direct.frag's.
+void effect_constants(const Program& program, float c[kEffectConstants][4]) {
+    std::memset(c, 0, sizeof(float) * kEffectConstants * 4);
+    const auto* projection = program.uniforms.data() + effect::kViewProjection;
+    const auto* view = program.uniforms.data() + effect::kView;
+    for (std::size_t column = 0; column < 4; ++column) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            c[row][column] = projection[column][row];
+        }
+        // The view looks down -z; the game's raw units are 1024 to one.
+        c[4][column] = -1024.0f * view[column][2];
+    }
+    const auto& fog_line = program.uniforms[effect::kFogLine];
+    c[5][0] = fog_line[0];
+    c[5][1] = fog_line[1];
+    c[5][2] = std::min(fog_line[2], fog_line[3]);
+    c[5][3] = std::max(fog_line[2], fog_line[3]);
+    c[6][0] = 1.0f / 255.0f;
+    c[6][3] = 1.0f;
+    float direct[7][4];
+    direct_constants(program, direct);
+    std::memcpy(c[7], direct[1], sizeof(float) * 6 * 4);
+}
+
 // ---- The sky program's numbers ----
 
 // sky.vp's five constants from sky.vert's uniforms: the rows of view_projection * shell (a
@@ -746,11 +776,13 @@ const float* stepped(const float* values, u32 stride, GLsizei instance) {
 }
 
 // mesh.vp's constants of an instance: what mesh.vert works out at every vertex from the
-// instance's matrix (columns, as GL has a matrix) and tint.
+// instance's matrix (columns, as GL has a matrix) and tint. `lit`: its vertices take its colours
+// of the light texture (load_lights).
 void mesh_instance_constants(
     const Program& program,
     const float* model,
     const float* tint,
+    bool lit,
     float c[kMeshInstanceConstants][4]
 ) {
     const auto* projection = program.uniforms.data() + mesh::kViewProjection;
@@ -775,6 +807,7 @@ void mesh_instance_constants(
         }
         c[6 + row][3] = 0.0f;
     }
+    c[8][3] = lit ? 1.0f : 0.0f;
 }
 
 // ---- The moby program's numbers ----
@@ -890,6 +923,21 @@ void moby_instance_constants(
     }
 }
 
+// A lit tie's or shrub's colours are mesh.vp's c[32] to c[95], where moby.vp has its joints: the
+// one's load is the end of the other's.
+constexpr u32 kLightFirstConstant = kJointFirstConstant;
+constexpr u32 kLightsHeld = 64;  // a tie's light slots; a shrub has 24
+
+// The colours the RSX's constants hold now: an instance is several draws (a material each).
+struct LightsLoaded {
+    const Image* texture = nullptr;
+    u32 frame = 0;
+    u32 written = 0;
+    u32 first = 0;
+};
+
+LightsLoaded g_lights_loaded;
+
 // The joints the RSX's constants hold now: a moby is several draws of a frame (a material each),
 // and the constants stay through them and through the other programs' draws.
 struct JointsLoaded {
@@ -915,6 +963,7 @@ bool load_joints(const Image& palette, u32 first, u32 joints) {
         return true;
     }
     g_joints_loaded = {&palette, g.frame, palette.written, first, joints};
+    g_lights_loaded = {};
     float rows[kJointsHeld * 3][4];
     const float* matrix = palette.floats.data() + static_cast<std::size_t>(first) * 16;
     for (u32 joint = 0; joint < joints; ++joint, matrix += 16) {
@@ -926,6 +975,37 @@ bool load_joints(const Image& palette, u32 first, u32 joints) {
     }
     rsxLoadVertexProgramParameterBlock(
         g.context, g_moby.vertex->const_start + kJointFirstConstant, joints * 3, &rows[0][0]
+    );
+    return true;
+}
+
+// Hands the RSX the 64 colours of the light texture from texel `first` as mesh.vp's c[32] up, as
+// mesh.vert has them: 0x80 is 1. The texture is read where the RSX has it (A8R8G8B8), which no
+// draw of the RSX's reads. False when the texture has no such texel.
+bool load_lights(const Image& texture, u32 first) {
+    const u32 held = texture.width * texture.height;
+    if (texture.memory.address == nullptr || texture.depth || first >= held) {
+        return false;
+    }
+    if (g_lights_loaded.texture == &texture && g_lights_loaded.frame == g.frame
+        && g_lights_loaded.written == texture.written && g_lights_loaded.first == first) {
+        return true;
+    }
+    g_lights_loaded = {&texture, g.frame, texture.written, first};
+    g_joints_loaded = {};
+    float colours[kLightsHeld][4] = {};
+    const u32 count = std::min(kLightsHeld, held - first);
+    for (u32 i = 0; i < count; ++i) {
+        const u32 texel = first + i;
+        const auto* argb = static_cast<const unsigned char*>(texture.memory.address)
+                           + static_cast<std::size_t>(texel / texture.width) * texture.pitch
+                           + static_cast<std::size_t>(texel % texture.width) * 4;
+        for (u32 channel = 0; channel < 4; ++channel) {
+            colours[i][channel] = static_cast<float>(argb[(channel + 1) % 4]) / 128.0f;
+        }
+    }
+    rsxLoadVertexProgramParameterBlock(
+        g.context, g_mesh.vertex->const_start + kLightFirstConstant, kLightsHeld, &colours[0][0]
     );
     return true;
 }
@@ -1057,8 +1137,11 @@ void unbind_attributes(u32 kept) {
 u32 attributes_read(ProgramKind kind) {
     switch (kind) {
         case ProgramKind::Direct:
-        case ProgramKind::Mesh:
             return 0b1111;
+        case ProgramKind::Mesh:
+            return 0b1111 | 1u << mesh::kLightSlot;
+        case ProgramKind::Effect:
+            return 0b0111;
         case ProgramKind::Moby:
             return 0b1111 | 1u << mesh::kJoints | 1u << mesh::kWeights | 1u << mesh::kLightSlot;
         case ProgramKind::Sky:
@@ -1222,6 +1305,12 @@ const Program* begin_draw(Target& target) {
             load_direct(constants);
             break;
         }
+        case ProgramKind::Effect: {
+            float constants[kEffectConstants][4];
+            effect_constants(program->second, constants);
+            load_program(ProgramKind::Effect, g_effect, &constants[0][0], kEffectConstants);
+            break;
+        }
         case ProgramKind::Sky: {
             float constants[5][4];
             sky_constants(program->second, constants);
@@ -1245,6 +1334,7 @@ const Program* begin_draw(Target& target) {
             static bool joints_cleared = false;
             if (kind == ProgramKind::Moby && !joints_cleared) {
                 joints_cleared = true;
+                g_lights_loaded = {};
                 static const float kNothing[kJointsHeld * 3][4] = {};
                 rsxLoadVertexProgramParameterBlock(
                     g.context,
@@ -1296,6 +1386,9 @@ struct Instances {
     u32 light_stride = 0;
     u32 ambient_stride = 0;
     const Image* matrices = nullptr;  // the palette texture
+    const float* lights = nullptr;
+    u32 lights_stride = 0;
+    const Image* colours = nullptr;  // the light texture
     u32 joints = 0;
 
     Instances(const Program* bound, u32 skinned_with)
@@ -1305,6 +1398,13 @@ struct Instances {
         if (program->kind == ProgramKind::Mesh) {
             model = instance_values(mesh::kModel, model_stride);
             tint = instance_values(mesh::kTint, tint_stride);
+        }
+        if (kind == ProgramKind::Mesh) {
+            lights = instance_values(mesh::kLights, lights_stride);
+            const auto texture = g.images.find(g.texture[mesh::kLightUnit]);
+            if (texture != g.images.end()) {
+                colours = &texture->second;
+            }
         }
         if (kind == ProgramKind::Moby) {
             palette = instance_values(mesh::kPalette, palette_stride);
@@ -1327,10 +1427,16 @@ struct Instances {
         const Loaded& loaded = kind == ProgramKind::Moby ? g_moby : g_mesh;
         float constants[kMeshInstanceConstants][4];
         const float* placed = model != nullptr ? stepped(model, model_stride, instance) : kIdentity;
+        // A lit tie's or shrub's first colour in the light texture, -1 for what has none.
+        const float first_colour =
+            lights != nullptr ? *stepped(lights, lights_stride, instance) : -1.0f;
+        const bool has_colours = first_colour >= 0.0f && colours != nullptr
+                                 && load_lights(*colours, static_cast<u32>(first_colour + 0.5f));
         mesh_instance_constants(
             *program,
             placed,
             tint != nullptr ? stepped(tint, tint_stride, instance) : kWhite,
+            has_colours,
             constants
         );
         rsxLoadVertexProgramParameterBlock(
@@ -1694,7 +1800,8 @@ bool prepare_programs(std::string& error) {
         || !load(g_direct, programs::direct_vpo, programs::direct_fpo)
         || !load(g_sky, programs::sky_vpo, programs::sky_fpo)
         || !load(g_mesh, programs::mesh_vpo, programs::mesh_fpo)
-        || !load(g_moby, programs::moby_vpo, programs::mesh_fpo)) {
+        || !load(g_moby, programs::moby_vpo, programs::mesh_fpo)
+        || !load(g_effect, programs::effect_vpo, programs::direct_fpo)) {
         error = "no RSX memory for the layer's programs";
         return false;
     }

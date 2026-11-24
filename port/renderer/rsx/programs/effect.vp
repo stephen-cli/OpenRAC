@@ -1,0 +1,39 @@
+!!ARBvp1.0
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 the OpenRAC contributors
+#
+# renderer/shaders/effect.vert for the RSX (README.md): the effect renderer's vertices, world
+# positions through the game's camera. direct.fp is its fragment program, as direct.frag is the
+# GLSL's. The attributes are GL's locations: 0 position, 1 st, 2 colour.
+#
+#   c[0] to c[3]  the rows of view_projection
+#   c[4]          the camera's depth in the game's raw units: depth = c[4] . position
+#   c[5]          fog_line: fog = floor(clamp(depth x + y, z, w)) / 255, z the lower of the
+#                 GLSL's two bounds and w the higher
+#   c[6]          1 / 255, 0, 0, 1
+#   c[7] to c[12]  direct.fp's texcoord[1] to texcoord[6]
+MOV R0, vertex.attrib[0];
+MOV R0.w, c[6].w;
+DP4 R1.x, c[0], R0;
+DP4 R1.y, c[1], R0;
+DP4 R1.z, c[2], R0;
+DP4 R1.w, c[3], R0;
+MOV result.position, R1;
+MOV result.color, vertex.attrib[2];
+DP4 R2.x, c[4], R0;
+MAD R2.x, R2.x, c[5].x, c[5].y;
+MAX R2.x, R2.x, c[5].z;
+MIN R2.x, R2.x, c[5].w;
+FLR R2.x, R2.x;
+MUL R2.x, R2.x, c[6].x;
+MOV R3, vertex.attrib[1];
+MOV R3.z, c[6].w;
+MOV R3.w, R2.x;
+MOV result.texcoord[0], R3;
+MOV result.texcoord[1], c[7];
+MOV result.texcoord[2], c[8];
+MOV result.texcoord[3], c[9];
+MOV result.texcoord[4], c[10];
+MOV result.texcoord[5], c[11];
+MOV result.texcoord[6], c[12];
+END

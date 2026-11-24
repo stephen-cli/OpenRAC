@@ -767,6 +767,8 @@ void LevelScene::relight_moved_tie(
 void LevelScene::upload_light_colours(std::size_t first, std::span<const std::uint32_t> colours) {
     // The texture's rows of 1024 colours that the instance's run crosses.
     constexpr std::size_t width = kLightWidth;
+    std::vector<std::uint32_t> texels(colours.size());
+    std::transform(colours.begin(), colours.end(), texels.begin(), light_texel);
     glBindTexture(GL_TEXTURE_2D, m_lights);
     for (std::size_t at = 0; at < colours.size();) {
         const std::size_t texel = first + at;
@@ -780,7 +782,7 @@ void LevelScene::upload_light_colours(std::size_t first, std::span<const std::ui
             1,
             GL_RGBA,
             GL_UNSIGNED_BYTE,
-            colours.data() + at
+            texels.data() + at
         );
         at += run;
     }

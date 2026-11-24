@@ -213,7 +213,7 @@ if(OPENRAC_PS3)
   # as arrays of bytes in rsx_programs.h.
   set(rsx_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/rsx")
   set(rsx_assembled "")
-  foreach(program direct.vp direct.fp sky.vp sky.fp mesh.vp mesh.fp moby.vp)
+  foreach(program direct.vp direct.fp sky.vp sky.fp mesh.vp mesh.fp moby.vp effect.vp)
     string(REGEX REPLACE "^.*[.](.)p$" "\\1" flag "${program}")
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/${program}")
     set(assembled "${rsx_generated}/${program}o")

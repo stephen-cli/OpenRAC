@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "renderer/gl.h"
 #include "renderer/rsx/rsxgl.h"
@@ -65,6 +66,9 @@ RSXGL(glEnable);
 RSXGL(glDisable);
 RSXGL(glBlendFuncSeparate);
 RSXGL(glBlendEquation);
+RSXGL(glDepthMask);
+RSXGL(glClearDepth);
+RSXGL(glDepthFunc);
 RSXGL(glClearColor);
 RSXGL(glClear);
 RSXGL(glDrawArrays);
@@ -675,6 +679,374 @@ void moby_checks(int wide, int high) {
     glUseProgram(g_program);
 }
 
+// A lit tie (mesh.vert's `lights`): a square over the picture's left half whose vertices take the
+// instance's colour for light slot 2, and one over the right half whose vertices have no slot.
+void tie_checks(int wide, int high) {
+    // scene/level.h's Vertex, without a moby's joints.
+    struct TieVertex {
+        float position[3];
+        float normal[3];
+        float uv[2];
+        float colour[4];
+        float light_slot;
+    };
+
+    // scene/level_renderer.h's InstanceData, as far as the program reads it.
+    struct Instance {
+        float matrix[16];
+        float tint[4];
+        float palette;
+        float lights;
+    };
+
+    const auto corner = [](float x, float y, float slot) {
+        return TieVertex{
+            {x, y, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.5f, 0.5f}, {0.0f, 1.0f, 0.0f, 1.0f}, slot
+        };
+    };
+    const TieVertex vertices[8] = {
+        corner(-1.0f, -1.0f, 2.0f),
+        corner(0.0f, -1.0f, 2.0f),
+        corner(0.0f, 1.0f, 2.0f),
+        corner(-1.0f, 1.0f, 2.0f),
+        corner(0.0f, -1.0f, -1.0f),
+        corner(1.0f, -1.0f, -1.0f),
+        corner(1.0f, 1.0f, -1.0f),
+        corner(0.0f, 1.0f, -1.0f),
+    };
+    const std::uint32_t indices[12] = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+    // The instance's colours are from texel 1030 of the light texture, 1024 texels a row: slot 2
+    // is the ninth texel of the second row.
+    constexpr int kLightWidth = 1024;
+    constexpr int kFirstColour = 1030;
+    Instance instance{
+        {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+        {1.0f, 1.0f, 1.0f, 1.0f},
+        -1.0f,
+        static_cast<float>(kFirstColour)
+    };
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, shader(GL_VERTEX_SHADER, "// rsx-program: mesh\n"));
+    glAttachShader(program, shader(GL_FRAGMENT_SHADER, "// rsx-program: mesh\n"));
+    glLinkProgram(program);
+    glUseProgram(program);
+    GLuint vertex_array = 0;
+    GLuint buffers[3] = {};
+    glGenVertexArrays(1, &vertex_array);
+    glGenBuffers(3, buffers);
+    glBindVertexArray(vertex_array);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof indices, indices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices, GL_STATIC_DRAW);
+    constexpr auto stride = static_cast<GLsizei>(sizeof(TieVertex));
+    const auto at = [](std::size_t offset) {
+        return reinterpret_cast<const void*>(offset);
+    };
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, at(offsetof(TieVertex, position)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, at(offsetof(TieVertex, normal)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, at(offsetof(TieVertex, uv)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, at(offsetof(TieVertex, colour)));
+    glEnableVertexAttribArray(12);
+    glVertexAttribPointer(12, 1, GL_FLOAT, GL_FALSE, stride, at(offsetof(TieVertex, light_slot)));
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof instance, &instance, GL_STREAM_DRAW);
+    constexpr auto instance_stride = static_cast<GLsizei>(sizeof(Instance));
+    for (GLuint column = 0; column < 4; ++column) {
+        glEnableVertexAttribArray(4 + column);
+        glVertexAttribPointer(
+            4 + column, 4, GL_FLOAT, GL_FALSE, instance_stride, at(column * 4 * sizeof(float))
+        );
+        glVertexAttribDivisor(4 + column, 1);
+    }
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 4, GL_FLOAT, GL_FALSE, instance_stride, at(offsetof(Instance, tint)));
+    glVertexAttribDivisor(8, 1);
+    glEnableVertexAttribArray(13);
+    glVertexAttribPointer(
+        13, 1, GL_FLOAT, GL_FALSE, instance_stride, at(offsetof(Instance, lights))
+    );
+    glVertexAttribDivisor(13, 1);
+
+    // The light texture, on its unit (scene/level_renderer_internal.h's kLightUnit): slot 2 is
+    // magenta, 0x80 a channel being 1.
+    std::vector<Colour> colours(static_cast<std::size_t>(kLightWidth) * 2, Colour{0, 0, 0, 0});
+    colours[kFirstColour + 2] = Colour{0x80, 0, 0x80, 0x80};
+    GLuint lights = 0;
+    GLuint white = 0;
+    glGenTextures(1, &lights);
+    glGenTextures(1, &white);
+    glActiveTexture(GL_TEXTURE0 + 2);
+    glBindTexture(GL_TEXTURE_2D, lights);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        static_cast<GLint>(GL_RGBA8),
+        kLightWidth,
+        2,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        colours.data()
+    );
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, white);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(GL_RGBA8), 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &kWhite
+    );
+    texture_parameters();
+
+    const auto uniform = [program](const char* name) {
+        return glGetUniformLocation(program, name);
+    };
+    const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, identity);
+    glUniformMatrix4fv(uniform("view"), 1, GL_FALSE, identity);
+    glUniform4f(uniform("material_colour"), 1.0f, 1.0f, 1.0f, 1.0f);
+    glUniform4f(uniform("fog_colour"), 0.0f, 0.0f, 1.0f, 0.0f);
+    glUniform4f(uniform("fog_params"), 0.0f, 128.0f, 0.0f, 255.0f);
+    const auto draw = [&] {
+        clear(0.0f, 0.0f, 0.0f);
+        glDrawElementsInstanced(GL_TRIANGLES, 12, GL_UNSIGNED_INT, at(0), 1);
+    };
+    const int left = wide / 4;
+    const int right = 3 * wide / 4;
+    const Colour magenta{255, 0, 255, 255};
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    draw();
+    expect("tie: a light slot's colour", 0, left, high / 2, magenta);
+    expect("tie: a vertex without a slot", 0, right, high / 2, Colour{0, 255, 0, 255});
+    // The viewer's sun is on what the level did not light: 0.55 + 0.45 x 0.80 of the stored colour.
+    glUniform1i(uniform("lighting"), 1);
+    draw();
+    expect("tie: lit, no sun", 0, left, high / 2, magenta);
+    expect("tie: a vertex without a slot, the sun", 0, right, high / 2, Colour{0, 232, 0, 255});
+    glUniform1i(uniform("lighting"), 0);
+    // The game lights an instance again: its texel written, the next draw has the new colour.
+    const Colour blue{0, 0, 0x80, 0x80};
+    glActiveTexture(GL_TEXTURE0 + 2);
+    glTexSubImage2D(
+        GL_TEXTURE_2D,
+        0,
+        (kFirstColour + 2) % kLightWidth,
+        (kFirstColour + 2) / kLightWidth,
+        1,
+        1,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        &blue
+    );
+    glActiveTexture(GL_TEXTURE0);
+    draw();
+    expect("tie: a colour written again", 0, left, high / 2, Colour{0, 0, 255, 255});
+    // An instance without colours keeps its vertices' own.
+    instance.lights = -1.0f;
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof instance, &instance, GL_STREAM_DRAW);
+    draw();
+    expect("tie: an instance without colours", 0, left, high / 2, Colour{0, 255, 0, 255});
+    glUseProgram(g_program);
+}
+
+// The effect renderer's program (renderer/shaders/effect.vert with direct.frag): a square in the
+// world, through a camera that puts it over the picture's bottom left quarter, a quarter of a
+// unit before the camera.
+void effect_checks(int wide, int high) {
+    // renderer/effects.h's vertex.
+    struct EffectVertex {
+        float x, y, z;
+        float s, t;
+        std::uint8_t rgba[4];
+    };
+
+    const auto corner = [](float x, float y) {
+        return EffectVertex{x, y, -0.25f, 0.5f, 0.5f, {255, 0, 0, 0x80}};
+    };
+    const EffectVertex vertices[6] = {
+        corner(-1.0f, -1.0f),
+        corner(1.0f, -1.0f),
+        corner(1.0f, 1.0f),
+        corner(-1.0f, -1.0f),
+        corner(1.0f, 1.0f),
+        corner(-1.0f, 1.0f),
+    };
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, shader(GL_VERTEX_SHADER, "// rsx-program: effect\n"));
+    glAttachShader(program, shader(GL_FRAGMENT_SHADER));
+    glLinkProgram(program);
+    glUseProgram(program);
+    GLuint vertex_array = 0;
+    GLuint buffer = 0;
+    glGenVertexArrays(1, &vertex_array);
+    glGenBuffers(1, &buffer);
+    glBindVertexArray(vertex_array);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices, GL_STATIC_DRAW);
+    constexpr auto stride = static_cast<GLsizei>(sizeof(EffectVertex));
+    const auto at = [](std::size_t offset) {
+        return reinterpret_cast<const void*>(offset);
+    };
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, at(offsetof(EffectVertex, x)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, at(offsetof(EffectVertex, s)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(
+        2, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, at(offsetof(EffectVertex, rgba))
+    );
+
+    const auto uniform = [program](const char* name) {
+        return glGetUniformLocation(program, name);
+    };
+    const float quarter[16] = {0.5f, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 1, 0, -0.5f, -0.5f, 0, 1};
+    const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, quarter);
+    glUniformMatrix4fv(uniform("view"), 1, GL_FALSE, identity);
+    glUniform1i(uniform("textured"), 0);
+    glUniform1i(uniform("tcc"), 1);
+    glUniform1i(uniform("tfx"), 0);
+    glUniform1f(uniform("tex_alpha_scale"), 1.0f);
+    glUniform1i(uniform("fog_enable"), 0);
+    glUniform3f(uniform("fog_colour"), 0.0f, 0.0f, 255.0f);
+    glUniform4f(uniform("fog_line"), 0.0f, 128.0f, 0.0f, 255.0f);
+    const auto draw = [&] {
+        clear(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    };
+    const Colour black{0, 0, 0, 255};
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    draw();
+    expect_quarters("effect: through the camera", 0, wide, high, kRed, black, black, black);
+    // The strip's fog line: its offset alone, 128 of 255 of the colour kept; then the slope on
+    // the depth in the game's raw units (256), a quarter kept; then the lower bound.
+    glUniform1i(uniform("fog_enable"), 1);
+    draw();
+    expect("effect: fog, the line's offset", 0, wide / 4, high / 4, Colour{128, 0, 127, 255});
+    glUniform4f(uniform("fog_line"), 0.25f, 0.0f, 0.0f, 255.0f);
+    draw();
+    expect("effect: fog, the line's slope", 0, wide / 4, high / 4, Colour{64, 0, 191, 255});
+    glUniform4f(uniform("fog_line"), 0.25f, 0.0f, 255.0f, 100.0f);
+    draw();
+    expect("effect: fog, the line's bounds", 0, wide / 4, high / 4, Colour{100, 0, 155, 255});
+    // Textured, as the strips and quads are: the texel at the vertices' coordinates times the
+    // colour, the chip's 0x80 being one.
+    const Colour texels[4] = {
+        Colour{0x80, 0x80, 0x80, 0x80},
+        Colour{0, 0x80, 0, 0x80},
+        Colour{0, 0x80, 0, 0x80},
+        Colour{0, 0x80, 0, 0x80},
+    };
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(GL_RGBA8), 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels
+    );
+    texture_parameters();
+    EffectVertex textured[6];
+    for (int i = 0; i < 6; ++i) {
+        textured[i] = vertices[i];
+        textured[i].s = textured[i].t = 0.25f;
+    }
+    glBufferData(GL_ARRAY_BUFFER, sizeof textured, textured, GL_STATIC_DRAW);
+    glUniform1i(uniform("fog_enable"), 0);
+    glUniform1i(uniform("textured"), 1);
+    draw();
+    expect("effect: textured", 0, wide / 4, high / 4, kRed);
+    // An added strip, as the game draws its fire: the colour weighed by the alpha in the program
+    // (source_scale 1), ONE and ONE in the blend.
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ZERO);
+    glUniform1i(uniform("source_scale"), 1);
+    draw();
+    expect("effect: added, weighed by its alpha", 0, wide / 4, high / 4, kRed);
+    // Under the reversed depth test, nearer than a cleared depth of nothing, no depth written.
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_GEQUAL);
+    glDepthMask(GL_FALSE);
+    glClearDepth(0.0);
+    draw();
+    expect("effect: added, under the depth test", 0, wide / 4, high / 4, kRed);
+    glClearDepth(1.0);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_DEPTH_TEST);
+    glUniform1i(uniform("source_scale"), 0);
+    glDisable(GL_BLEND);
+    // Texture coordinates that differ from vertex to vertex, over the quarter the square covers:
+    // its lower left has the first texel, the rest the others'. With the fog line's result
+    // above nothing, and at nothing (a strip that is not fogged has a line of zeros).
+    for (int i = 0; i < 6; ++i) {
+        textured[i].s = vertices[i].x * 0.5f + 0.5f;
+        textured[i].t = vertices[i].y * 0.5f + 0.5f;
+    }
+    glBufferData(GL_ARRAY_BUFFER, sizeof textured, textured, GL_STATIC_DRAW);
+    draw();
+    expect("effect: coordinates across a square, first texel", 0, wide / 8, high / 8, kRed);
+    expect("effect: coordinates across a square, another", 0, 3 * wide / 8, 3 * high / 8, black);
+    glUniform4f(uniform("fog_line"), 0.0f, 0.0f, 0.0f, 0.0f);
+    draw();
+    expect("effect: no fog line, first texel", 0, wide / 8, high / 8, kRed);
+    expect("effect: no fog line, another", 0, 3 * wide / 8, 3 * high / 8, black);
+    // Through a camera with perspective: w grows to the right, from 0.75 to 1.25 over the square.
+    const float perspective[16] =
+        {0.5f, 0, 0, 0.25f, 0, 0.5f, 0, 0, 0, 0, 1, 0, -0.5f, -0.5f, 0, 1};
+    glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, perspective);
+    draw();
+    expect("effect: perspective, first texel", 0, wide / 8, high / 8, kRed);
+    expect("effect: perspective, another", 0, 3 * wide / 8, 3 * high / 8, black);
+    glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, quarter);
+    // The game's smoke: a 64 by 64 texture of one colour, filtered and repeated, under a grey
+    // vertex colour of alpha 77, blended by the alpha: the colours' product over 128, times
+    // 77 / 128.
+    {
+        std::vector<Colour> smoke(64 * 64, Colour{160, 168, 191, 128});
+        GLuint smoke_texture = 0;
+        glGenTextures(1, &smoke_texture);
+        glBindTexture(GL_TEXTURE_2D, smoke_texture);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            static_cast<GLint>(GL_RGBA8),
+            64,
+            64,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            smoke.data()
+        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(GL_LINEAR));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(GL_LINEAR));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, static_cast<GLint>(GL_REPEAT));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, static_cast<GLint>(GL_REPEAT));
+        for (int i = 0; i < 6; ++i) {
+            textured[i].rgba[0] = 125;
+            textured[i].rgba[1] = 121;
+            textured[i].rgba[2] = 144;
+            textured[i].rgba[3] = 77;
+        }
+        glBufferData(GL_ARRAY_BUFFER, sizeof textured, textured, GL_STATIC_DRAW);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+        draw();
+        expect("effect: the game's smoke", 0, wide / 4, high / 4, Colour{94, 96, 129, 255});
+        glDisable(GL_BLEND);
+    }
+    glUseProgram(g_program);
+}
+
 // The checks. Within the namespace, so that the names above are the layer's functions and not
 // renderer/gl.h's pointers of the same names.
 int run() {
@@ -891,6 +1263,8 @@ int run() {
     sky_checks(wide, high);
     mesh_checks(wide, high);
     moby_checks(wide, high);
+    tie_checks(wide, high);
+    effect_checks(wide, high);
     glBindVertexArray(vertex_array);
 
     // Many frames: the command buffer wraps and the flips keep coming.

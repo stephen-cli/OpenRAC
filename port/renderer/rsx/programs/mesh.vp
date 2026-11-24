@@ -3,7 +3,8 @@
 # Copyright (c) 2026 the OpenRAC contributors
 #
 # viewer/shaders/mesh.vert for the RSX (README.md), for what is drawn as stored: terrain, ties,
-# shrubs. The attributes are GL's locations: 0 position, 1 normal, 2 uv, 3 colour. The GLSL
+# shrubs. The attributes are GL's locations: 0 position, 1 normal, 2 uv, 3 colour, 12 the light
+# slot (-1: none). The GLSL
 # reads a matrix, a tint and more for each instance; the RSX has no instances, so the layer
 # draws each by itself and works these numbers out for it (rsxgl_draw.cpp, mesh_constants).
 #
@@ -11,7 +12,8 @@
 #   c[0] to c[3]  the rows of view_projection * model
 #   c[4]          the camera's depth in the game's raw units: depth = c[4] . position
 #   c[5]          the instance's tint
-#   c[6] to c[8]  the rows of the model's rotation: the normal in the world
+#   c[6] to c[8]  the rows of the model's rotation: the normal in the world; c[8].w: 1 for a
+#                 lit tie or shrub, whose colours are c[32] up, one a light slot (0x80 is 1)
 # Of the draw:
 #   c[9]          fog_params: fog = floor(clamp(depth x + y, z, w)) / 255
 #   c[10]         the viewer's sun, light = |c[10] . normal| / |normal| + c[10].w: 0.45 times
@@ -20,8 +22,8 @@
 #   c[12] to c[15]  mesh.fp's texcoord[3] to texcoord[6]
 #   c[25]         mesh.fp's texcoord[7]
 #
-# The live mobys have a vertex program of their own, moby.vp. Not here yet: a tie's colours from
-# the light texture, the terrain's point lights.
+# The live mobys have a vertex program of their own, moby.vp. Not here yet: the terrain's point
+# lights.
 MOV R0, vertex.attrib[0];
 MOV R0.w, c[11].w;
 DP4 R1.x, c[0], R0;
@@ -30,7 +32,18 @@ DP4 R1.z, c[2], R0;
 DP4 R1.w, c[3], R0;
 MOV result.position, R1;
 MOV result.texcoord[0], vertex.attrib[2];
-MUL R2, vertex.attrib[3], c[5];
+# A lit instance's vertex with a light slot takes the slot's colour, and no sun below; another
+# keeps its stored colour.
+MOV R8, vertex.attrib[12];
+SGE R9.x, R8.x, c[11].y;
+MUL R9.x, R9.x, c[8].w;
+MAX R8.x, R8.x, c[11].y;
+ARL A0, R8;
+MOV R10, c[A0.x + 32];
+MOV R2, vertex.attrib[3];
+ADD R10, R10, -R2;
+MAD R2, R10, R9.x, R2;
+MUL R2, R2, c[5];
 MOV result.texcoord[1], R2;
 # The fog, times w beside w: their quotient in the fragment program is the fog as the screen
 # interpolates it, not as the surface does.
@@ -54,6 +67,8 @@ DP3 R7.x, R6, c[10];
 MUL R7.x, R7.x, R6.w;
 MAX R7.x, R7.x, -R7.x;
 ADD R4.z, R7.x, c[10].w;
+ADD R7.y, c[11].w, -R4.z;
+MAD R4.z, R7.y, R9.x, R4.z;
 MOV R4.w, c[11].w;
 MOV result.texcoord[2], R4;
 MOV result.texcoord[3], c[12];

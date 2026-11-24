@@ -22,9 +22,11 @@
 
 namespace openrac::rsxgl {
 
-inline constexpr u32 kBuffers = 2;       // the screen's colour buffers
-inline constexpr u32 kAttributes = 16;   // the RSX's vertex attributes
-inline constexpr u32 kTextureUnits = 2;  // the units the layer's programs sample
+inline constexpr u32 kBuffers = 2;      // the screen's colour buffers
+inline constexpr u32 kAttributes = 16;  // the RSX's vertex attributes
+// The units the layer keeps: the one its programs sample, and the palette's and the light
+// texture's, which it reads itself (mesh::kPaletteUnit, mesh::kLightUnit).
+inline constexpr u32 kTextureUnits = 3;
 
 // A piece of the RSX's memory.
 struct Memory {
@@ -48,7 +50,7 @@ struct Image {
     // An RGBA32F texture's numbers, four a texel, kept by the layer and not in the RSX's memory:
     // the mobys' joint matrices, which a draw hands the RSX as constants.
     std::vector<float> floats;
-    u32 written = 0;  // counts the writes of `floats`
+    u32 written = 0;  // counts the writes of its texels by glTexImage2D and glTexSubImage2D
 };
 
 struct Sampler {
@@ -99,6 +101,7 @@ enum class ProgramKind : std::uint8_t {
     Sky,     // viewer/shaders/sky.vert and sky.frag
     Mesh,    // viewer/shaders/mesh.vert and mesh.frag
     Moby,    // the same GL program where its `skinning` is set: programs/moby.vp with mesh.fp
+    Effect,  // renderer/shaders/effect.vert with direct.frag: programs/effect.vp with direct.fp
 };
 
 // A uniform of one of the layer's programs: its name in the GLSL, and where its numbers are kept
@@ -109,6 +112,14 @@ struct Uniform {
     u32 slot;
     u32 slots;
 };
+
+// The effect program's uniforms' slots: the direct program's (DirectUniform), then its own.
+namespace effect {
+inline constexpr u32 kViewProjection = 12;
+inline constexpr u32 kView = 16;
+inline constexpr u32 kFogLine = 20;
+inline constexpr u32 kSlots = 21;
+}  // namespace effect
 
 // The sky program's uniforms' slots (rsxgl_objects.cpp has their names).
 namespace sky {
@@ -140,8 +151,8 @@ inline constexpr u32 kEffectAdditive = 148;
 inline constexpr u32 kClipZeroToOne = 149;
 inline constexpr u32 kSlots = 150;
 // The attributes of an instance (scene/level_instances.cpp): the model's four columns, the tint,
-// a moby's first joint matrix in the palette texture, its shine distance (-1 - distance), its
-// lights and its ambient colour.
+// a moby's first joint matrix in the palette texture, a lit tie's first colour in the light
+// texture (a moby's shine distance, as -1 - distance), a moby's lights and its ambient colour.
 inline constexpr u32 kModel = 4;
 inline constexpr u32 kTint = 8;
 inline constexpr u32 kPalette = 9;
@@ -154,6 +165,8 @@ inline constexpr u32 kWeights = 11;
 inline constexpr u32 kLightSlot = 12;
 // The unit of the palette texture (scene/level_renderer_internal.h's kPaletteUnit).
 inline constexpr u32 kPaletteUnit = 1;
+// The unit of the light texture, the lit ties' and shrubs' colours (kLightUnit there).
+inline constexpr u32 kLightUnit = 2;
 }  // namespace mesh
 
 // The direct program's uniforms: a uniform's location is its number here (rsxgl_objects.cpp has

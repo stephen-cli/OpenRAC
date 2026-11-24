@@ -3,7 +3,9 @@
 // Private renderer utilities shared by scene uploads, instances, lighting and shadows.
 #pragma once
 #include <array>
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -30,6 +32,16 @@ inline constexpr gl::GLenum kPaletteUnit = 1;
 // The ties' lit colours: RGBA8, one texel per colour, this many a row.
 inline constexpr int kLightWidth = 1024;
 inline constexpr gl::GLenum kLightUnit = 2;
+
+// A lit colour's word (red in its low byte) as the word whose bytes in memory are the texel's,
+// red first, for an upload as GL_RGBA bytes: itself where the low byte is first in memory, its
+// bytes turned round on the PlayStation 3.
+inline std::uint32_t light_texel(std::uint32_t colour) {
+    if constexpr (std::endian::native == std::endian::big) {
+        return colour >> 24 | (colour >> 8 & 0xFF00u) | (colour << 8 & 0xFF0000u) | colour << 24;
+    }
+    return colour;
+}
 
 inline const void* offset(std::size_t bytes) {
     return reinterpret_cast<const void*>(bytes);

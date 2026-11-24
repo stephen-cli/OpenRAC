@@ -4,6 +4,9 @@
 //
 // The effect renderer's vertices: world positions through the game's camera; the rest as the
 // direct renderer's (direct.frag shades both).
+//
+// On the PlayStation 3 this stage is renderer/rsx/programs/effect.vp, which the RSX layer finds by
+// this line: rsx-program: effect
 
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec2 st;

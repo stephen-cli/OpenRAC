@@ -171,6 +171,7 @@ void tex_image(
         && type == GL_UNSIGNED_BYTE) {
         write_rgba(*into, 0, 0, into->width, into->height, pixels);
     }
+    ++into->written;
 }
 
 void tex_sub_image(
@@ -208,6 +209,7 @@ void tex_sub_image(
         return;
     }
     before_write(into->used);
+    ++into->written;
     write_rgba(
         *into,
         static_cast<u32>(x),
@@ -510,6 +512,14 @@ constexpr std::string_view kDirectUniforms[] = {
     "source_fix",
 };
 
+static_assert(std::size(kDirectUniforms) == effect::kViewProjection);
+
+constexpr Uniform kEffectUniforms[] = {
+    {"view_projection", effect::kViewProjection, 4},
+    {"view", effect::kView, 4},
+    {"fog_line", effect::kFogLine, 1},
+};
+
 constexpr Uniform kSkyUniforms[] = {
     {"view_projection", sky::kViewProjection, 4},
     {"shell", sky::kShell, 4},
@@ -538,19 +548,30 @@ constexpr Uniform kMeshUniforms[] = {
     {"clip_zero_to_one", mesh::kClipZeroToOne, 1},
 };
 
-// A kind of program: the line in the GLSL of both stages that names it, its uniforms (the direct
-// program's are kDirectUniforms, a slot each) and how many slots they take.
+// A kind of program: the lines in the GLSL of its two stages that name it, its uniforms (the
+// direct program's are kDirectUniforms, a slot each, and the effect program has them too) and how
+// many slots they take.
 struct Kind {
     ProgramKind kind;
-    std::string_view mark;
+    std::string_view vertex_mark;
+    std::string_view fragment_mark;
     std::span<const Uniform> uniforms;
     u32 slots;
 };
 
 constexpr Kind kKinds[] = {
-    {ProgramKind::Direct, "rsx-program: direct", {}, std::size(kDirectUniforms)},
-    {ProgramKind::Sky, "rsx-program: sky", kSkyUniforms, sky::kSlots},
-    {ProgramKind::Mesh, "rsx-program: mesh", kMeshUniforms, mesh::kSlots},
+    {ProgramKind::Direct,
+     "rsx-program: direct",
+     "rsx-program: direct",
+     {},
+     std::size(kDirectUniforms)},
+    {ProgramKind::Effect,
+     "rsx-program: effect",
+     "rsx-program: direct",
+     kEffectUniforms,
+     effect::kSlots},
+    {ProgramKind::Sky, "rsx-program: sky", "rsx-program: sky", kSkyUniforms, sky::kSlots},
+    {ProgramKind::Mesh, "rsx-program: mesh", "rsx-program: mesh", kMeshUniforms, mesh::kSlots},
 };
 
 const Kind* kind_of(ProgramKind kind) {
@@ -612,8 +633,8 @@ void link_program(GLuint program) {
         return;
     }
     for (const Kind& known : kKinds) {
-        if (vertex->second.source.find(known.mark) != std::string::npos
-            && fragment->second.source.find(known.mark) != std::string::npos) {
+        if (vertex->second.source.find(known.vertex_mark) != std::string::npos
+            && fragment->second.source.find(known.fragment_mark) != std::string::npos) {
             linked.kind = known.kind;
             linked.uniforms.assign(known.slots, {});
             return;
@@ -643,13 +664,12 @@ GLint uniform_location(GLuint program, const GLchar* name) {
         return -1;
     }
     const std::string_view wanted(name);
-    if (found->second.kind == ProgramKind::Direct) {
+    if (found->second.kind == ProgramKind::Direct || found->second.kind == ProgramKind::Effect) {
         for (std::size_t i = 0; i < std::size(kDirectUniforms); ++i) {
             if (kDirectUniforms[i] == wanted) {
                 return static_cast<GLint>(i);
             }
         }
-        return -1;
     }
     if (const Kind* kind = kind_of(found->second.kind)) {
         for (const Uniform& uniform : kind->uniforms) {
