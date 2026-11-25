@@ -13,7 +13,7 @@ function pointers of `renderer/gl/gl.h`.
 | `rsxgl.h` | `open`, `close`, `present`, `get_proc`, the picture's size |
 | `rsxgl.cpp` | the display (the console's video mode, two colour buffers and a depth buffer in RSX memory, the flip), GL's questions about the context, the RSX's state that GL has no say in (alpha test, stencil, logic op, antialiasing control: off, said once at the start), the table of every GL function `gl::load` asks for |
 | `rsxgl_internal.h` | GL's objects and state as the layer keeps them |
-| `rsxgl_objects.cpp` | textures and renderbuffers in RSX memory, buffers, vertex arrays, samplers, framebuffers, shaders, programs and their uniforms |
+| `rsxgl_objects.cpp` | RSX memory and the only functions that read and write it, textures and renderbuffers in it, buffers, vertex arrays, samplers, framebuffers, shaders, programs and their uniforms |
 | `rsxgl_draw.cpp` | what reaches the RSX: the surface drawn into, GL's state, the programs and their numbers, draws, clears, copies, the read-back |
 | `programs/` | the RSX's programs, in the assembly PSL1GHT's `cgcomp -a` takes (which needs no Cg toolkit), and `embed.cmake`, which makes arrays of bytes of the assembled ones (`rsx_programs.h` in the build directory) |
 
@@ -179,9 +179,30 @@ software rasteriser with the console run's arguments, writes the same
 frames (`OPENRAC_SHOT`), and the two are compared pixel for pixel. On
 Veldin (2026-11-25), frames of the opening without effects in view differ
 in 0.2% of their pixels by more than 16 of 255 in a channel. Frames with
-smoke and fire differ in about 38%: the effects are missing, for a reason
-not found yet ([docs/port/PS3.md](../../../docs/port/PS3.md)).
+smoke and fire differ in about 38%: the effects are missing, on a console
+as under RPCS3, for a reason not found yet
+([docs/port/PS3.md](../../../docs/port/PS3.md)).
 Also missing: the shadows and the haze, whose programs the layer has not.
+
+## On a console
+
+The layer's test passes on a console (a CECHA, 2026-11-25) and the game
+draws there what it draws under RPCS3. What the console asks that the
+emulator does not:
+
+- **RSX memory is read and written in its own alignment.** A load of
+  it wider than its address's alignment stops the program: an 8-byte
+  load at an address that is a multiple of 4 and not of 8, which GCC
+  makes of a 16-byte `memcpy` and may make of two neighbouring fields.
+  Loads of a word at a word's place and of bytes are fine. So nothing in the
+  layer takes a pointer into RSX memory and reads or writes through
+  it: `read_memory`, `write_memory`, `fill_memory`, `read_word` and
+  `write_word` (`rsxgl_internal.h`) move a word at a time where the
+  RSX's side is a word's place and a byte at a time before and after,
+  through volatile pointers, which the compiler does not join.
+- A program that does not end by itself is ended from outside only by
+  restarting the console: the layer does not yet hear the XMB's
+  request to quit.
 
 ## Under RPCS3
 

@@ -528,11 +528,47 @@ layer's test draws the same fire from the same numbers. In the game's
 frame a fire draw leaves its pixel as it was while the depth test and
 the blend are both on, and draws it rightly with either off, or with the
 alpha taken from the vertex colour alone: the texel's alpha comes out as
-nothing there. Not explained yet; whether the console does the same is
-not known.
+nothing there. Not explained yet. The console does the same (below):
+the fault is the port's, and RPCS3 shows it truly.
 
 Not drawn yet: the shadows and the haze (no RSX program: one or two draws
 a frame are left out).
+
+### On the console itself (2026-11-25)
+
+The layer's test and the game run on a console (a CECHA with custom
+firmware, 1920x1080): the test passes its 119 checks, and the game
+plays Veldin's opening to the 1,500 frames asked for, writes its
+shots, its state (the hero at 132.09 115.48 31.43, as on x86) and its
+log, and returns to the XMB. The picture is RPCS3's: the level, the
+mobys posed and lit, and no smoke or fire.
+
+What the console needed that RPCS3 had not asked for:
+
+- **RSX memory read in its own alignment.** The first skinned draw
+  stopped the program: the layer counts a draw's joints from the
+  vertices' weights, four floats copied out of RSX memory, which the
+  compiler made into two 8-byte loads at an address that is a
+  multiple of 4 and not of 8. The layer now touches RSX memory through
+  three functions that move a word at a time
+  ([renderer/rsx](../../port/renderer/rsx/README.md), "On a
+  console").
+- **Where the arguments are.** The XMB starts an installed program
+  with `/app_home` leading elsewhere: `openrac.args` is then read from
+  the title's `USRDIR` (`common/env.h`, `console_file`).
+
+Measured there: Veldin holds 204 MB of main memory with 8 MB left (196
+and 16 under RPCS3). The 1,400 frames to the last shot took about two minutes
+with a shot every 50; the sound mixer fell behind by up to a second
+while the level loaded. While the game ran, and for some minutes after
+its last shot, the console's FTP and web server (webMAN's) did not
+answer; why has not been looked into.
+
+How a program gets there without a hand on the console (the test's
+[README](../../port/tools/ps3/rsxgl-test/README.md) has the commands):
+a package made with PSL1GHT's tools, sent over FTP, installed and
+started through webMAN MOD's web commands, and its output read back
+over FTP from files it writes, as a console has no terminal.
 
 ### The mobys' glow, blended and metal passes (2026-11-24)
 

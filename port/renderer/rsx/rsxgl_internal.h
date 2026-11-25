@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -273,6 +274,23 @@ void wait_idle();
 // rsxgl_objects.cpp
 Memory allocate(u32 bytes);
 void retire(Memory& memory);
+// The RSX's memory from the program's side, the layer's only touches of it. On a console a load
+// of it wider than its address's alignment stops the program (README.md, "On a console"), and a
+// compiler makes such loads of a memcpy and of neighbouring fields: these move a word at a time
+// where the RSX's side is a word's place, a byte at a time before and after.
+void read_memory(void* to, const void* rsx, std::size_t bytes);
+void write_memory(void* rsx, const void* from, std::size_t bytes);
+void fill_memory(void* rsx, unsigned char value, std::size_t bytes);
+
+// A word of it, at a word's place.
+inline u32 read_word(const void* rsx) {
+    return *static_cast<const volatile u32*>(rsx);
+}
+
+inline void write_word(void* rsx, u32 word) {
+    *static_cast<volatile u32*>(rsx) = word;
+}
+
 // The image of that name with memory behind it, or null.
 Image* image(gl::GLuint name);
 // Waits for the RSX when it may still read what is about to be written.

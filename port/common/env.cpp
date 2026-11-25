@@ -574,10 +574,17 @@ struct StoredValue {
 using Snapshot = std::array<StoredValue, kVariableCount>;
 
 #if defined(__lv2ppu__)
+// Where the file is for a program installed from a package, which the XMB starts with /app_home
+// leading elsewhere: beside the program, in the folder of the package's title.
+constexpr const char* kInstalledConsoleFile = "/dev_hdd0/game/ORAC00001/USRDIR/openrac.args";
+
 // Reads the console's file (env.h, console_file): sets its variables, returns its other lines.
 std::vector<std::string> read_console_file() {
     std::vector<std::string> lines;
     std::ifstream file("/app_home/openrac.args");
+    if (!file) {
+        file.open(kInstalledConsoleFile);
+    }
     std::string line;
 
     while (std::getline(file, line)) {

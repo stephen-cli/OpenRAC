@@ -18,9 +18,31 @@ rpcs3 --no-gui --config CONFIG build/ps3-window/openrac-rsxgl-test
 
 `CONFIG` has a real renderer and `Write Color Buffers: true`, as the
 [probe](../rsx-probe/README.md)'s. What the program printed is in RPCS3's
-`TTY.log`.
+`TTY.log`, and in `/dev_hdd0/tmp/openrac-rsxgl-test.txt`, written line by
+line: a console has no terminal, and a program that stops there has left
+what it said before.
 
-What it checks (119 checks, all passing on RPCS3 0.0.42, 2026-11-25):
+On a console with custom firmware and webMAN MOD (`PS3` its address),
+without a hand on it:
+
+```sh
+ppu-strip build/ps3-window/openrac-rsxgl-test -o test.elf && sprxlinker test.elf
+make_self_npdrm test.elf pkg/USRDIR/EBOOT.BIN UP0001-ORAT00001_00-0000000000000000
+sfo --title "OpenRAC RSX layer test" --appid ORAT00001 -f $PS3DEV/bin/sfo.xml pkg/PARAM.SFO
+pkg --contentid UP0001-ORAT00001_00-0000000000000000 pkg/ test.pkg && package_finalize test.pkg
+curl -T test.pkg ftp://PS3/dev_hdd0/packages/test.pkg
+curl http://PS3/install_ps3/dev_hdd0/packages/test.pkg   # then /pad.ps3?circle leaves its screen
+curl "http://PS3/play.ps3?ORAT00001"
+curl ftp://PS3/dev_hdd0/tmp/openrac-rsxgl-test.txt
+```
+
+The program takes about a minute there (its 300 frames of 100
+full-screen draws) and returns to the XMB. An EBOOT replaced over FTP
+does not start: the package is installed again. webMAN's pages carry the
+console's identifiers; they are not for a log.
+
+What it checks (119 checks, all passing on RPCS3 0.0.42 and on a console,
+a CECHA at 1920x1080, 2026-11-25):
 
 | Check | What it would catch |
 |---|---|
@@ -65,3 +87,7 @@ a black picture or a stall:
   so a read-back takes the RSX off it first.
 - Onto an X8R8G8B8 surface RPCS3 blended with a source alpha of one: the
   screen's surface is A8R8G8B8.
+
+And on its first day on a console: the first skinned draw stopped the
+program at a load from RSX memory wider than its address's alignment
+([renderer/rsx](../../renderer/rsx/README.md), "On a console").

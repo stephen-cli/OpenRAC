@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -125,6 +126,25 @@ void rectangle(float x0, float y0, float x1, float y1, Colour colour) {
     glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
+// Where a console keeps what the program said: it has no terminal to print to.
+constexpr const char* kReportPath = "/dev_hdd0/tmp/openrac-rsxgl-test.txt";
+std::FILE* g_report = nullptr;
+
+// A line of the report: printed, and written to the report's file at once, so that a program
+// that hangs has left what it said before.
+[[gnu::format(printf, 1, 2)]] void say(const char* format, ...) {
+    std::va_list arguments;
+    va_start(arguments, format);
+    std::vprintf(format, arguments);
+    va_end(arguments);
+    if (g_report != nullptr) {
+        va_start(arguments, format);
+        std::vfprintf(g_report, format, arguments);
+        va_end(arguments);
+        std::fflush(g_report);
+    }
+}
+
 // The pixel of the read framebuffer at (x, y), GL's way up, against what GL would have there.
 void expect(const char* what, GLuint framebuffer, int x, int y, Colour wanted) {
     std::uint8_t got[4] = {};
@@ -136,8 +156,7 @@ void expect(const char* what, GLuint framebuffer, int x, int y, Colour wanted) {
     const bool passed = near(got[0], wanted.r) && near(got[1], wanted.g) && near(got[2], wanted.b);
     ++g_checked;
     g_failed += passed ? 0 : 1;
-    std::printf(
-        "%s %s at %d,%d: %d %d %d, wanted %d %d %d\n",
+    say("%s %s at %d,%d: %d %d %d, wanted %d %d %d\n",
         passed ? "ok  " : "FAIL",
         what,
         x,
@@ -147,8 +166,7 @@ void expect(const char* what, GLuint framebuffer, int x, int y, Colour wanted) {
         got[2],
         wanted.r,
         wanted.g,
-        wanted.b
-    );
+        wanted.b);
 }
 
 // The four quarters of a picture `wide` by `high`: bottom left, bottom right, top left, top right.
@@ -1092,14 +1110,15 @@ void effect_checks(int wide, int high) {
 // The checks. Within the namespace, so that the names above are the layer's functions and not
 // renderer/gl/gl.h's pointers of the same names.
 int run() {
+    g_report = std::fopen(kReportPath, "w");
     std::string error;
     if (!rsxgl::open(rsxgl::Config{}, error)) {
-        std::printf("FAIL the RSX: %s\n", error.c_str());
+        say("FAIL the RSX: %s\n", error.c_str());
         return 2;
     }
     const int wide = rsxgl::width();
     const int high = rsxgl::height();
-    std::printf("rsxgl-test: %s\n", rsxgl::device_name().c_str());
+    say("rsxgl-test: %s\n", rsxgl::device_name().c_str());
 
     g_program = glCreateProgram();
     glAttachShader(g_program, shader(GL_VERTEX_SHADER));
@@ -1323,12 +1342,12 @@ int run() {
         }
         rsxgl::present();
         if (frame % 50 == 0) {
-            std::printf("frame %d shown\n", frame);
+            say("frame %d shown\n", frame);
         }
     }
 
     rsxgl::close();
-    std::printf("rsxgl-test: %d of %d checks failed\n", g_failed, g_checked);
+    say("rsxgl-test: %d of %d checks failed\n", g_failed, g_checked);
     return g_failed == 0 ? 0 : 1;
 }
 

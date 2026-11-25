@@ -62,7 +62,7 @@ bool load(Loaded& into, const unsigned char* vertex, const unsigned char* fragme
     if (into.fragment_code.address == nullptr) {
         return false;
     }
-    std::memcpy(into.fragment_code.address, code, size);
+    write_memory(into.fragment_code.address, code, size);
     return true;
 }
 
@@ -769,10 +769,17 @@ const float* instance_values(u32 attribute, u32& stride) {
     );
 }
 
-const float* stepped(const float* values, u32 stride, GLsizei instance) {
-    return reinterpret_cast<const float*>(
-        reinterpret_cast<const unsigned char*>(values) + stride * static_cast<u32>(instance)
-    );
+// The value of `instance` read into `into`, which keeps what it has where the vertex array has
+// no such value (`values` null).
+template <std::size_t Count>
+void stepped(const float* values, u32 stride, GLsizei instance, float (&into)[Count]) {
+    if (values != nullptr) {
+        read_memory(
+            into,
+            reinterpret_cast<const unsigned char*>(values) + stride * static_cast<u32>(instance),
+            sizeof into
+        );
+    }
 }
 
 // mesh.vp's constants of an instance: what mesh.vert works out at every vertex from the
@@ -997,11 +1004,14 @@ bool load_lights(const Image& texture, u32 first) {
     const u32 count = std::min(kLightsHeld, held - first);
     for (u32 i = 0; i < count; ++i) {
         const u32 texel = first + i;
-        const auto* argb = static_cast<const unsigned char*>(texture.memory.address)
-                           + static_cast<std::size_t>(texel / texture.width) * texture.pitch
-                           + static_cast<std::size_t>(texel % texture.width) * 4;
+        const u32 argb = read_word(
+            static_cast<const unsigned char*>(texture.memory.address)
+            + static_cast<std::size_t>(texel / texture.width) * texture.pitch
+            + static_cast<std::size_t>(texel % texture.width) * 4
+        );
+        const u32 rgba[4] = {argb >> 16 & 255, argb >> 8 & 255, argb & 255, argb >> 24};
         for (u32 channel = 0; channel < 4; ++channel) {
-            colours[i][channel] = static_cast<float>(argb[(channel + 1) % 4]) / 128.0f;
+            colours[i][channel] = static_cast<float>(rgba[channel]) / 128.0f;
         }
     }
     rsxLoadVertexProgramParameterBlock(
@@ -1059,10 +1069,10 @@ u32 joints_drawn(u32 first, u32 count, u32 width) {
     for (u32 i = 0; i < count; ++i) {
         u32 vertex = first + i;
         if (width == 4) {
-            std::memcpy(&vertex, index_bytes + first + i * 4, 4);
+            read_memory(&vertex, index_bytes + first + i * 4, 4);
         } else if (width == 2) {
             u16 narrow = 0;
-            std::memcpy(&narrow, index_bytes + first + i * 2, 2);
+            read_memory(&narrow, index_bytes + first + i * 2, 2);
             vertex = narrow;
         }
         const std::size_t joint_at =
@@ -1074,10 +1084,12 @@ u32 joints_drawn(u32 first, u32 count, u32 width) {
             continue;
         }
         float weight[4];
-        std::memcpy(weight, weight_bytes + weight_at, sizeof weight);
+        read_memory(weight, weight_bytes + weight_at, sizeof weight);
+        unsigned char joint[4];
+        read_memory(joint, joint_bytes + joint_at, sizeof joint);
         for (u32 k = 0; k < 4; ++k) {
             if (weight[k] > 0.0f) {
-                highest = std::max(highest, joint_bytes[joint_at + k] + 1u);
+                highest = std::max(highest, joint[k] + 1u);
             }
         }
     }
@@ -1422,45 +1434,38 @@ struct Instances {
         if (program->kind != ProgramKind::Mesh) {
             return;
         }
-        constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-        constexpr float kWhite[4] = {1, 1, 1, 1};
         const Loaded& loaded = kind == ProgramKind::Moby ? g_moby : g_mesh;
         float constants[kMeshInstanceConstants][4];
-        const float* placed = model != nullptr ? stepped(model, model_stride, instance) : kIdentity;
+        float placed[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        stepped(model, model_stride, instance, placed);
+        float tinted[4] = {1, 1, 1, 1};
+        stepped(tint, tint_stride, instance, tinted);
         // A lit tie's or shrub's first colour in the light texture, -1 for what has none.
-        const float first_colour =
-            lights != nullptr ? *stepped(lights, lights_stride, instance) : -1.0f;
-        const bool has_colours = first_colour >= 0.0f && colours != nullptr
-                                 && load_lights(*colours, static_cast<u32>(first_colour + 0.5f));
-        mesh_instance_constants(
-            *program,
-            placed,
-            tint != nullptr ? stepped(tint, tint_stride, instance) : kWhite,
-            has_colours,
-            constants
-        );
+        float first_colour[1] = {-1.0f};
+        stepped(lights, lights_stride, instance, first_colour);
+        const bool has_colours = first_colour[0] >= 0.0f && colours != nullptr
+                                 && load_lights(*colours, static_cast<u32>(first_colour[0] + 0.5f));
+        mesh_instance_constants(*program, placed, tinted, has_colours, constants);
         rsxLoadVertexProgramParameterBlock(
             g.context, loaded.vertex->const_start, kMeshInstanceConstants, &constants[0][0]
         );
         if (kind != ProgramKind::Moby) {
             return;
         }
-        constexpr float kNone[4] = {0, 0, 0, 0};
         // The instance's first matrix in the palette, -1 for one drawn as stored.
-        const float first =
-            palette != nullptr ? *stepped(palette, palette_stride, instance) : -1.0f;
-        const bool skinned = first >= 0.0f && matrices != nullptr
-                             && load_joints(*matrices, static_cast<u32>(first + 0.5f), joints);
+        float first[1] = {-1.0f};
+        stepped(palette, palette_stride, instance, first);
+        const bool skinned = first[0] >= 0.0f && matrices != nullptr
+                             && load_joints(*matrices, static_cast<u32>(first[0] + 0.5f), joints);
+        float lights_of[4] = {0, 0, 0, 0};
+        stepped(light, light_stride, instance, lights_of);
+        float ambient_of[4] = {0, 0, 0, 0};
+        stepped(ambient, ambient_stride, instance, ambient_of);
+        float shine_of[1] = {0.0f};
+        stepped(shine, shine_stride, instance, shine_of);
         float lit[kMobyInstanceConstants][4];
         moby_instance_constants(
-            *program,
-            light != nullptr ? stepped(light, light_stride, instance) : kNone,
-            ambient != nullptr ? stepped(ambient, ambient_stride, instance) : kNone,
-            skinned,
-            moby_shine(
-                *program, placed, shine != nullptr ? *stepped(shine, shine_stride, instance) : 0.0f
-            ),
-            lit
+            *program, lights_of, ambient_of, skinned, moby_shine(*program, placed, shine_of[0]), lit
         );
         rsxLoadVertexProgramParameterBlock(
             g.context,
@@ -1579,9 +1584,7 @@ void draw_copy(Image& source, const GLint from[4], const GLint to[4], bool linea
     if (memory.address == nullptr) {
         return;
     }
-    auto* vertices = static_cast<CopyVertex*>(memory.address);
-    const u32 offset = memory.offset;
-    retire(memory);
+    CopyVertex vertices[kCopyVertices];
     const auto wide = static_cast<float>(target.width);
     const auto high = static_cast<float>(target.height);
     const float x[2] =
@@ -1612,6 +1615,9 @@ void draw_copy(Image& source, const GLint from[4], const GLint to[4], bool linea
             1.0f,
         };
     }
+    write_memory(memory.address, vertices, sizeof vertices);
+    const u32 offset = memory.offset;
+    retire(memory);
 
     const GLint whole[4] =
         {0, 0, static_cast<GLint>(target.width), static_cast<GLint>(target.height)};
@@ -1726,7 +1732,7 @@ void read_pixels(
     }
     park_target();
     wait_idle();
-    const auto* picture = static_cast<const u32*>(
+    const auto* picture = static_cast<const volatile u32*>(
         source.screen ? g.colour[g.drawn].address : source.colour->memory.address
     );
     const u32 pitch = source.screen ? g.colour_pitch : source.colour->pitch;
@@ -1805,7 +1811,7 @@ bool prepare_programs(std::string& error) {
         error = "no RSX memory for the layer's programs";
         return false;
     }
-    std::memset(g_white.memory.address, 0xFF, 4);
+    fill_memory(g_white.memory.address, 0xFF, 4);
     return true;
 }
 

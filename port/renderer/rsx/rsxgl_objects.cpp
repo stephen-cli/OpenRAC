@@ -28,6 +28,59 @@ Memory allocate(u32 bytes) {
     return memory;
 }
 
+namespace {
+
+bool at_word(const volatile unsigned char* place) {
+    return (reinterpret_cast<std::uintptr_t>(place) & 3) == 0;
+}
+
+}  // namespace
+
+void read_memory(void* to, const void* rsx, std::size_t bytes) {
+    auto* out = static_cast<unsigned char*>(to);
+    const auto* in = static_cast<const volatile unsigned char*>(rsx);
+    for (; bytes != 0 && !at_word(in); --bytes) {
+        *out++ = *in++;
+    }
+    for (; bytes >= 4; bytes -= 4, in += 4, out += 4) {
+        const u32 word = *reinterpret_cast<const volatile u32*>(in);
+        std::memcpy(out, &word, 4);
+    }
+    for (; bytes != 0; --bytes) {
+        *out++ = *in++;
+    }
+}
+
+void write_memory(void* rsx, const void* from, std::size_t bytes) {
+    auto* out = static_cast<volatile unsigned char*>(rsx);
+    const auto* in = static_cast<const unsigned char*>(from);
+    for (; bytes != 0 && !at_word(out); --bytes) {
+        *out++ = *in++;
+    }
+    for (; bytes >= 4; bytes -= 4, in += 4, out += 4) {
+        u32 word = 0;
+        std::memcpy(&word, in, 4);
+        *reinterpret_cast<volatile u32*>(out) = word;
+    }
+    for (; bytes != 0; --bytes) {
+        *out++ = *in++;
+    }
+}
+
+void fill_memory(void* rsx, unsigned char value, std::size_t bytes) {
+    auto* out = static_cast<volatile unsigned char*>(rsx);
+    for (; bytes != 0 && !at_word(out); --bytes) {
+        *out++ = value;
+    }
+    const u32 word = value * 0x01010101u;
+    for (; bytes >= 4; bytes -= 4, out += 4) {
+        *reinterpret_cast<volatile u32*>(out) = word;
+    }
+    for (; bytes != 0; --bytes) {
+        *out++ = value;
+    }
+}
+
 void retire(Memory& memory) {
     if (memory.address != nullptr) {
         g.retired.push_back(memory.address);
@@ -90,12 +143,13 @@ void store(Image& into, GLsizei width, GLsizei height, bool depth) {
     }
     into.memory = allocate(high * into.pitch);
     if (into.memory.address != nullptr) {
-        std::memset(into.memory.address, 0, high * into.pitch);
+        fill_memory(into.memory.address, 0, static_cast<std::size_t>(high) * into.pitch);
     }
     g.target_stale = true;
 }
 
-// GL's RGBA bytes into the RSX's A8R8G8B8, a rectangle of an image.
+// GL's RGBA bytes into the RSX's A8R8G8B8, a rectangle of an image: a texel is a word, its
+// alpha the highest byte.
 void write_rgba(Image& into, u32 x, u32 y, u32 wide, u32 high, const void* pixels) {
     const auto* from = static_cast<const unsigned char*>(pixels);
     for (u32 row = 0; row < high; ++row) {
@@ -103,10 +157,11 @@ void write_rgba(Image& into, u32 x, u32 y, u32 wide, u32 high, const void* pixel
                    + static_cast<std::size_t>(y + row) * into.pitch
                    + static_cast<std::size_t>(x) * 4;
         for (u32 column = 0; column < wide; ++column, from += 4, to += 4) {
-            to[0] = from[3];
-            to[1] = from[0];
-            to[2] = from[1];
-            to[3] = from[2];
+            write_word(
+                to,
+                static_cast<u32>(from[3]) << 24 | static_cast<u32>(from[0]) << 16
+                    | static_cast<u32>(from[1]) << 8 | static_cast<u32>(from[2])
+            );
         }
     }
 }
@@ -326,7 +381,14 @@ void new_store(Buffer& buffer, u32 bytes, bool keep) {
     Memory old = buffer.memory;
     buffer.memory = bytes != 0 ? allocate(bytes) : Memory{};
     if (keep && old.address != nullptr && buffer.memory.address != nullptr) {
-        std::memcpy(buffer.memory.address, old.address, std::min(bytes, buffer.size));
+        // Both are the RSX's: through the program's own memory, a piece at a time.
+        unsigned char piece[1024];
+        const u32 kept = std::min(bytes, buffer.size);
+        for (u32 at = 0; at < kept; at += sizeof piece) {
+            const std::size_t run = std::min<std::size_t>(sizeof piece, kept - at);
+            read_memory(piece, static_cast<const unsigned char*>(old.address) + at, run);
+            write_memory(static_cast<unsigned char*>(buffer.memory.address) + at, piece, run);
+        }
     }
     retire(old);
     buffer.size = bytes;
@@ -345,7 +407,7 @@ void buffer_data(GLenum target, GLsizeiptr size, const void* data, GLenum) {
     }
     ++into.written;
     if (data != nullptr && into.memory.address != nullptr) {
-        std::memcpy(into.memory.address, data, bytes);
+        write_memory(into.memory.address, data, bytes);
     }
 }
 
@@ -365,7 +427,7 @@ void buffer_sub_data(GLenum target, GLintptr offset, GLsizeiptr size, const void
         }
     }
     ++into.written;
-    std::memcpy(
+    write_memory(
         static_cast<unsigned char*>(into.memory.address) + offset, data, static_cast<u32>(size)
     );
 }

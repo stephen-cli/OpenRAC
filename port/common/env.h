@@ -273,7 +273,7 @@ struct Variable {
 #if defined(__lv2ppu__)
 // The console starts a program with no command line and no environment: both come from
 // /app_home/openrac.args, a file beside the program (RPCS3 and the homebrew loaders map /app_home
-// to its folder), one line each: an option, its value on the next line, or NAME=VALUE (a line
+// to its folder; a program installed from a package has it in its title's USRDIR), one line each: an option, its value on the next line, or NAME=VALUE (a line
 // without -- in front and with = in it), which sets the environment variable; # starts a
 // comment. The file is read once, before the variables are (code that runs before main reads
 // them): returns its other lines, the command line's (program/options.h, console_arguments).
