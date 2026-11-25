@@ -1024,6 +1024,14 @@ void effect_checks(int wide, int high) {
     draw();
     expect("effect: perspective, first texel", 0, wide / 8, high / 8, kRed);
     expect("effect: perspective, another", 0, 3 * wide / 8, 3 * high / 8, black);
+    // From far away: w is 16 over the whole square. Coordinates that reached the texture
+    // without their perspective correction would be a sixteenth of themselves: the first texel
+    // everywhere.
+    const float far_away[16] = {8, 0, 0, 0, 0, 8, 0, 0, 0, 0, 16, 0, -8, -8, 0, 16};
+    glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, far_away);
+    draw();
+    expect("effect: from far away, first texel", 0, wide / 8, high / 8, kRed);
+    expect("effect: from far away, another", 0, 3 * wide / 8, 3 * high / 8, black);
     glUniformMatrix4fv(uniform("view_projection"), 1, GL_FALSE, quarter);
     // The game's smoke: a 64 by 64 texture of one colour, filtered and repeated, under a grey
     // vertex colour of alpha 77, blended by the alpha: the colours' product over 128, times

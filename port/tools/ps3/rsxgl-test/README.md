@@ -41,8 +41,8 @@ full-screen draws) and returns to the XMB. An EBOOT replaced over FTP
 does not start: the package is installed again. webMAN's pages carry the
 console's identifiers; they are not for a log.
 
-What it checks (119 checks, all passing on RPCS3 0.0.42 and on a console,
-a CECHA at 1920x1080, 2026-11-25):
+What it checks (121 checks, all passing on RPCS3 0.0.42 and on a console,
+a CECHA at 1920x1080, 2026-11-26):
 
 | Check | What it would catch |
 |---|---|
@@ -67,7 +67,7 @@ a CECHA at 1920x1080, 2026-11-25):
 | moby: metal pass | the sphere map read by the normal as the camera sees it, the chip's 0x70 without the material's colour, the shine of the moby's distance as alpha |
 | tie: a light slot's colour; a vertex without a slot; a colour written again; an instance without colours | a lit instance's colours read from the light texture across its rows and handed over as constants, by the vertex's slot; the stored colour and the viewer's sun kept elsewhere; the constants sent again when the texture is written |
 | effect: through the camera; the fog line | the effect renderer's world positions; the strip's fog from the depth, its slope, offset and bounds |
-| effect: textured; added; under the depth test; coordinates across a square; perspective; the game's smoke; the game's fire | the texel times the colour; the colour weighed by its alpha for an added strip; the reversed depth test; coordinates that differ from vertex to vertex, with and without perspective; a blended strip and an added sprite with the game's numbers |
+| effect: textured; added; under the depth test; coordinates across a square; perspective; from far away; the game's smoke; the game's fire | the texel times the colour; the colour weighed by its alpha for an added strip; the reversed depth test; coordinates that differ from vertex to vertex, with and without perspective; coordinates that reach the texture without their perspective correction (a w of 16 puts them all on the first texel); a blended strip and an added sprite with the game's numbers |
 | frame 300 | 300 frames of 100 draws: the command buffer's segments filling and wrapping, buffers taking new memory within a frame |
 
 What it found on its first day, each of which the game had shown only as
@@ -91,3 +91,9 @@ a black picture or a stall:
 And on its first day on a console: the first skinned draw stopped the
 program at a load from RSX memory wider than its address's alignment
 ([renderer/rsx](../../renderer/rsx/README.md), "On a console").
+
+What it did not find: `cgcomp -a` marks a `MUL` that reads an interpolated
+input as not corrected for perspective, and the game's smoke and fire
+were drawn from one texel. Its perspective check had a w between 0.75 and
+1.25, which moves a coordinate too little to leave its texel; the check
+from far away has a w of 16.

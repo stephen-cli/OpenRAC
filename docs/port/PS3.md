@@ -522,14 +522,23 @@ of a tick on both builds):
   guest's byte order, as the shrub classes' set-up beside it now writes
   (`rac1/host/render_native.c`).
 
-Smoke and fire are still not in the picture under RPCS3. The game hands
-the same quads over as the x86 build does, with their textures, and the
-layer's test draws the same fire from the same numbers. In the game's
-frame a fire draw leaves its pixel as it was while the depth test and
-the blend are both on, and draws it rightly with either off, or with the
-alpha taken from the vertex colour alone: the texel's alpha comes out as
-nothing there. Not explained yet. The console does the same (below):
-the fault is the port's, and RPCS3 shows it truly.
+Smoke and fire were missing for a third reason, in the fragment program
+they share with the 2D path (2026-11-26). PSL1GHT's assembler marks a
+`MUL`, a `DP3`, a `DP4` or a `DIV` that reads an interpolated input as
+not corrected for perspective, and the chip then hands the instruction
+the input divided by the pixel's w. `direct.fp` multiplied its texture
+coordinates so: in the 2D path w is 1 and nothing shows, and a quad in
+the world read the texture's first texel at every pixel, a transparent
+corner. The program reads its inputs with `MOV` alone
+([renderer/rsx](../../port/renderer/rsx/README.md), "Programs"). The
+console showed the same fault as RPCS3 (below).
+
+How it was found, as the layer's test drew the same fire rightly: one
+effect draw of the game's frame sent again with one thing changed at a
+time and the pixel under it read back. A white texture drew, the
+texture's own did not, and its texels in memory were right; a texture
+whose colour is its own coordinates then showed a third of the way
+across the quad as a third divided by the quad's w.
 
 Not drawn yet: the shadows and the haze (no RSX program: one or two draws
 a frame are left out).
@@ -537,11 +546,13 @@ a frame are left out).
 ### On the console itself (2026-11-25)
 
 The layer's test and the game run on a console (a CECHA with custom
-firmware, 1920x1080): the test passes its 119 checks, and the game
+firmware, 1920x1080): the test passes its 121 checks, and the game
 plays Veldin's opening to the 1,500 frames asked for, writes its
 shots, its state (the hero at 132.09 115.48 31.43, as on x86) and its
-log, and returns to the XMB. The picture is RPCS3's: the level, the
-mobys posed and lit, and no smoke or fire.
+log, and returns to the XMB. The picture was RPCS3's of the same build:
+the level, the mobys posed and lit, and no smoke or fire. The build with
+smoke and fire passes the layer's test there; its game run has not been
+seen yet.
 
 What the console needed that RPCS3 had not asked for:
 

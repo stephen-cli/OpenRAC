@@ -19,7 +19,7 @@ function pointers of `renderer/gl/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 119 checks that RPCS3 starts in seconds: a change here is run
+program of 121 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs
@@ -55,6 +55,16 @@ texture coordinates the vertex program copies from its constants. A vertex
 program's constants travel in the command buffer with the draw; a fragment
 program's are written into the program's own memory, which the RSX may
 still be reading for an earlier draw.
+
+A fragment program reads an interpolated input with `MOV` into a register
+and with nothing else. `cgcomp` marks a `MUL`, a `DP2`, a `DP3`, a `DP4`, a
+`DIV` or an `NRM` that reads one as not corrected for perspective (bit 31
+of the instruction's last word), and the chip, as RPCS3, then hands that
+instruction the input divided by the pixel's w: right where w is 1, the
+2D path, and wrong for everything drawn in the world.
+A compiled program's instructions and that bit can be read from its
+`.fpo`: a 36-byte header (`rsxFragmentProgram`), then four words an
+instruction, each with its halves exchanged.
 
 Not in `direct.fp` yet: text drawn sharp from a distance field (a second
 texture), and the texture packs' upscaled colours.
@@ -178,10 +188,9 @@ The port's own OpenGL renderer, built for x86 and run under Mesa's
 software rasteriser with the console run's arguments, writes the same
 frames (`OPENRAC_SHOT`), and the two are compared pixel for pixel. On
 Veldin (2026-11-25), frames of the opening without effects in view differ
-in 0.2% of their pixels by more than 16 of 255 in a channel. Frames with
-smoke and fire differ in about 38%: the effects are missing, on a console
-as under RPCS3, for a reason not found yet
-([docs/port/PS3.md](../../../docs/port/PS3.md)).
+in 0.2% of their pixels by more than 16 of 255 in a channel. Smoke and
+fire are drawn since; their frames have not been measured again (the
+reference is of the tree before the last merge of `master`).
 Also missing: the shadows and the haze, whose programs the layer has not.
 
 ## On a console

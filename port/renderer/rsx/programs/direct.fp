@@ -17,12 +17,17 @@
 #   texcoord[6]  255, 0.5, what a is multiplied by on its way out, 0
 #
 # The chip reads one interpolated input an instruction (the assembler takes more and keeps the
-# last), so each is moved to a register first: R7 the colour, R8 to R13 texcoord[1] to [6].
+# last), so each is moved to a register first: R1 texcoord[0], R7 the colour, R8 to R13
+# texcoord[1] to [6]. Moved by a MOV and nothing else: the assembler marks a MUL, a DP3, a DP4
+# or a DIV that reads an input as not corrected for perspective, and the chip then hands it the
+# input divided by the pixel's w (a MUL of texcoord[0] put every pixel of a quad in the world on
+# the texture's first texel).
 # R0 is the colour written, and only the last instruction writes it. The assembler leaves out
 # what the chip has no instruction for and says nothing (SUB: an ADD of the negated operand).
-RCP R1.w, fragment.texcoord[0].z;
-MUL R1.xy, fragment.texcoord[0], R1.w;
-MOV R1.z, fragment.texcoord[0].w;
+MOV R1, fragment.texcoord[0];
+RCP R6.w, R1.z;
+MUL R1.xy, R1, R6.w;
+MOV R1.z, R1.w;
 TEX R2, R1, texture[0], 2D;
 MOV R7, fragment.color;
 MUL R3, R7, R2;
