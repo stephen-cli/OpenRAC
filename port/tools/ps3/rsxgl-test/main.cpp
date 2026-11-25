@@ -1042,6 +1042,48 @@ void effect_checks(int wide, int high) {
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
         draw();
         expect("effect: the game's smoke", 0, wide / 4, high / 4, Colour{94, 96, 129, 255});
+        // The game's fire: a white sprite of 32 by 32 whose alpha is its shape (124 in the middle,
+        // nothing at the edges), clamped, under an orange vertex colour of alpha 114, added with
+        // the colour weighed by the alpha: twice the colour, times 114 x 124 / 128 / 128.
+        std::vector<Colour> fire(32 * 32, Colour{255, 255, 255, 0});
+        for (int y = 8; y < 24; ++y) {
+            for (int x = 8; x < 24; ++x) {
+                fire[static_cast<std::size_t>(y * 32 + x)].a = 124;
+            }
+        }
+        GLuint fire_texture = 0;
+        glGenTextures(1, &fire_texture);
+        glBindTexture(GL_TEXTURE_2D, fire_texture);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            static_cast<GLint>(GL_RGBA8),
+            32,
+            32,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            fire.data()
+        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(GL_LINEAR));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(GL_LINEAR));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, static_cast<GLint>(GL_CLAMP_TO_EDGE));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, static_cast<GLint>(GL_CLAMP_TO_EDGE));
+        for (int i = 0; i < 6; ++i) {
+            textured[i].rgba[0] = 128;
+            textured[i].rgba[1] = 64;
+            textured[i].rgba[2] = 32;
+            textured[i].rgba[3] = 114;
+        }
+        glBufferData(GL_ARRAY_BUFFER, sizeof textured, textured, GL_STATIC_DRAW);
+        glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ZERO);
+        glUniform1i(uniform("source_scale"), 1);
+        draw();
+        expect(
+            "effect: the game's fire, its middle", 0, wide / 4, high / 4, Colour{220, 110, 55, 255}
+        );
+        expect("effect: the game's fire, its edge", 0, wide / 32, high / 32, black);
+        glUniform1i(uniform("source_scale"), 0);
         glDisable(GL_BLEND);
     }
     glUseProgram(g_program);

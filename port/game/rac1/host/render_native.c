@@ -34,30 +34,28 @@ void func_001F91B8(void) {
 void func_00204340(gaddr a0, gaddr a1, gaddr a2, gaddr a3, int a4) {
     (void)a1;
     (void)a3;
-    uint8_t* cls = G(a0);
     const uint32_t slot = GREF(uint32_t, OPENRAC_DATA(RAC1_ADDR(0x001604CCu)));
 
     GREF(uint8_t, OPENRAC_DATA(RAC1_ADDR(0x001D8440u)) + (uint32_t)a4) = (uint8_t)slot;
     GREF(uint16_t, OPENRAC_DATA(RAC1_ADDR(0x001D83C0u)) + slot * 2) = (uint16_t)a4;
     GREF(gaddr, OPENRAC_DATA(RAC1_ADDR(0x001D82C0u)) + slot * 4) = a0;
-    *(uint16_t*)(cls + 0x26) = (uint16_t)slot;
+    GREF(uint16_t, a0 + 0x26) = (uint16_t)slot;
 
-    float distance;
-    memcpy(&distance, cls + 0x10, 4);
+    const float distance = GREF(float, a0 + 0x10);
     GREF(int, OPENRAC_DATA(RAC1_ADDR(0x001D9040u)) + slot * 4) = func_001FA898(distance * 1024.0f);
     GREF(uint32_t, OPENRAC_DATA(RAC1_ADDR(0x001604CCu))) = slot + 1;
 
-    *(uint32_t*)(cls + 0x18) = 0;
-    *(uint16_t*)(cls + 0x16) = 0;
-    if (*(uint32_t*)(cls + 0x2C) != 0) {
-        *(uint32_t*)(cls + 0x2C) += a0;
+    GREF(uint32_t, a0 + 0x18) = 0;
+    GREF(uint16_t, a0 + 0x16) = 0;
+    if (GREF(uint32_t, a0 + 0x2C) != 0) {
+        GREF(uint32_t, a0 + 0x2C) += a0;
     }
-    const int16_t packets = *(int16_t*)(cls + 0x28);
+    const int16_t packets = GREF(int16_t, a0 + 0x28);
     for (int i = 0; i < packets; ++i) {
-        *(uint32_t*)(cls + 0x40 + i * 8) += a0;
+        GREF(uint32_t, a0 + 0x40 + (gaddr)i * 8) += a0;
     }
-    if (*(uint32_t*)(cls + 0x1C) != 0) {
-        *(uint32_t*)(cls + 0x1C) += a0;
+    if (GREF(uint32_t, a0 + 0x1C) != 0) {
+        GREF(uint32_t, a0 + 0x1C) += a0;
     }
 
     memcpy(G(OPENRAC_DATA(RAC1_ADDR(0x001D9640u)) + slot * 16), G(a2), 16);
@@ -164,17 +162,17 @@ static void mark_drawn_mobys(gaddr first, int count) {
         if (state < 0) {
             continue;
         }
-        const uint16_t mode = *(uint16_t*)(b + 0x34);
+        const uint16_t mode = GREF(uint16_t, m + 0x34);
         int drawn = (b[0x36] & groups[b[0x37]]) != 0 && (mode & 0x81) == 0;
         if (drawn) {
             float sphere[4];
-            memcpy(sphere, b, sizeof(sphere));
+            openrac_guest_read_words(sphere, m, sizeof(sphere) / 4);
             const float r = sphere[3] / 1024.0f;
             const float d[3] =
                 {sphere[0] / 1024.0f - cam[0],
                  sphere[1] / 1024.0f - cam[1],
                  sphere[2] / 1024.0f - cam[2]};
-            int distance = *(int16_t*)(b + 0x32);
+            int distance = GREF(int16_t, m + 0x32);
             if (distance > max_distance) {
                 distance = max_distance;  // pminw with the global draw distance
             }

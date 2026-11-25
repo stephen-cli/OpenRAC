@@ -505,14 +505,31 @@ arguments and writes the same frames. Frames of Veldin's opening without
 effects in view differ in 0.2% of their pixels (more than 16 of 255 in a
 channel); before the ties were lit, in about half.
 
-Smoke and fire are not in the picture, and the layer draws what it is
-given: the game hands over other effect quads on the console. At tick
-1400 of the same run the x86 build's quads have four corners and their
-texture coordinates; the console build's have one point for all four
-corners, a depth of about -1.1e28 and 0.5 for every texture coordinate,
-and it has 178 particles where the x86 build has 298 (`OPENRAC_DEBUG=1`
-with `OPENRAC_FX_DUMP`). A big-endian fault in the game's own code that
-builds the quads, not found yet.
+Two faults of byte order in the port's own code came out of the
+comparison (`OPENRAC_DEBUG=1` with `OPENRAC_FX_DUMP` logs the effect quads
+of a tick on both builds):
+
+- **The joint matrices the game asks for.** `openrac_game_moby_chain`
+  copied the port's posed matrices into the game's scratchpad as the
+  host has them. Whatever the game then built from a moby's joint (the
+  ship's glass, the vendor's orb) had no rotation and a depth of about
+  -1.1e28: effect quads with all four corners on one point. They are
+  written in the console's byte order (`program/game_host.cpp`, and the
+  mods' joint offsets beside it).
+- **MobyProc's drawn flag.** `mark_drawn_mobys` read a moby's mode, its
+  sphere and its draw distance through plain pointers, and the flag is
+  the game's logic as much as its drawing. It reads them through the
+  guest's byte order, as the shrub classes' set-up beside it now writes
+  (`rac1/host/render_native.c`).
+
+Smoke and fire are still not in the picture under RPCS3. The game hands
+the same quads over as the x86 build does, with their textures, and the
+layer's test draws the same fire from the same numbers. In the game's
+frame a fire draw leaves its pixel as it was while the depth test and
+the blend are both on, and draws it rightly with either off, or with the
+alpha taken from the vertex colour alone: the texel's alpha comes out as
+nothing there. Not explained yet; whether the console does the same is
+not known.
 
 Not drawn yet: the shadows and the haze (no RSX program: one or two draws
 a frame are left out).

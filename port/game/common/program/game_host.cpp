@@ -26,16 +26,19 @@
 #include "openrac/game_host.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/byte_order.h"
 #include "common/c_boundary.h"
 #include "common/crash.h"
 #include "common/env.h"
@@ -634,9 +637,16 @@ void openrac_game_moby_chain(gaddr moby, gaddr marks) {
         const auto* mark = static_cast<const std::uint8_t*>(G(marks));
         const std::size_t count = std::min<std::size_t>(mark[0x7F], pose.size());
 
+        // The scratchpad is the game's memory: its numbers are in the console's byte order.
         for (std::size_t j = 0; j < count; ++j) {
             if (mark[j] != 0) {
-                std::memcpy(G(0x70000000u + static_cast<gaddr>(j) * 0x40), pose[j].data(), 0x40);
+                std::uint32_t matrix[16];
+                for (std::size_t k = 0; k < 16; ++k) {
+                    matrix[k] = byte_order::from_little_endian(
+                        std::bit_cast<std::uint32_t>(pose[j][k / 4][k % 4])
+                    );
+                }
+                std::memcpy(G(0x70000000u + static_cast<gaddr>(j) * 0x40), matrix, sizeof matrix);
             }
         }
 #else
@@ -653,7 +663,7 @@ void openrac_game_moby_local_pose(gaddr moby) {
         if (mods.empty()) {
             return;
         }
-        const gaddr cls = *static_cast<const gaddr*>(G(moby + 0x24));
+        const auto cls = byte_order::read_little_endian<gaddr>(G(moby + 0x24));
         if (cls == 0) {
             return;
         }
@@ -664,7 +674,11 @@ void openrac_game_moby_local_pose(gaddr moby) {
             if (m.joint >= joints || m.joint >= 0x7F || m.mode != 0) {
                 continue;
             }
-            auto* rec = static_cast<float*>(G(0x70000000u + static_cast<gaddr>(m.joint) * 0x40));
+            // The record's quaternion, scale and translation, read and written back in the
+            // console's byte order.
+            void* stored = G(0x70000000u + static_cast<gaddr>(m.joint) * 0x40);
+            float rec[11];
+            byte_order::copy_little_endian(rec, stored, std::size(rec));
             const float q[4] = {rec[0], rec[1], rec[2], rec[3]};
             const auto& r = m.quat;
             rec[0] = q[3] * r[0] + r[3] * q[0] + (q[1] * r[2] - q[2] * r[1]);
@@ -675,6 +689,11 @@ void openrac_game_moby_local_pose(gaddr moby) {
                 rec[4 + k] *= m.scale[k];
                 rec[8 + k] += m.trans[k];
             }
+            std::uint32_t words[std::size(rec)];
+            for (std::size_t k = 0; k < std::size(rec); ++k) {
+                words[k] = byte_order::from_little_endian(std::bit_cast<std::uint32_t>(rec[k]));
+            }
+            std::memcpy(stored, words, sizeof words);
         }
 #else
         (void)moby;

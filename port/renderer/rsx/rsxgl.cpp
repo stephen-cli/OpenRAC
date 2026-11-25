@@ -137,6 +137,21 @@ Proc find(const Entry* entries, std::size_t count, std::string_view wanted) {
     return nullptr;
 }
 
+// The RSX's state that the renderer's GL has no say in, said once: the registers hold what the
+// program before this one left in them.
+void set_fixed_state() {
+    rsxSetAlphaTestEnable(g.context, GCM_FALSE);
+    rsxSetAlphaFunc(g.context, GCM_ALWAYS, 0);
+    rsxSetStencilTestEnable(g.context, GCM_FALSE);
+    rsxSetTwoSidedStencilTestEnable(g.context, GCM_FALSE);
+    rsxSetLogicOpEnable(g.context, GCM_FALSE);
+    rsxSetAntialiasingControl(g.context, GCM_FALSE, GCM_FALSE, GCM_FALSE, 0xFFFF);
+    rsxSetTwoSideLightEnable(g.context, GCM_FALSE);
+    rsxSetPolygonOffsetFillEnable(g.context, GCM_FALSE);
+    rsxSetRestartIndexEnable(g.context, GCM_FALSE);
+    rsxSetShadeModel(g.context, GCM_SHADE_MODEL_SMOOTH);
+}
+
 }  // namespace
 
 bool open(const Config& config, std::string& error) {
@@ -194,6 +209,7 @@ bool open(const Config& config, std::string& error) {
     g.viewport[2] = g.scissor[2] = static_cast<GLint>(g.width);
     g.viewport[3] = g.scissor[3] = static_cast<GLint>(g.height);
     g.target_stale = true;
+    set_fixed_state();
     gcmResetFlipStatus();
     g.open = true;
     return true;

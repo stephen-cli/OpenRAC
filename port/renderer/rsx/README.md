@@ -11,7 +11,7 @@ function pointers of `renderer/gl/gl.h`.
 | File | What |
 |---|---|
 | `rsxgl.h` | `open`, `close`, `present`, `get_proc`, the picture's size |
-| `rsxgl.cpp` | the display (the console's video mode, two colour buffers and a depth buffer in RSX memory, the flip), GL's questions about the context, the table of every GL function `gl::load` asks for |
+| `rsxgl.cpp` | the display (the console's video mode, two colour buffers and a depth buffer in RSX memory, the flip), GL's questions about the context, the RSX's state that GL has no say in (alpha test, stencil, logic op, antialiasing control: off, said once at the start), the table of every GL function `gl::load` asks for |
 | `rsxgl_internal.h` | GL's objects and state as the layer keeps them |
 | `rsxgl_objects.cpp` | textures and renderbuffers in RSX memory, buffers, vertex arrays, samplers, framebuffers, shaders, programs and their uniforms |
 | `rsxgl_draw.cpp` | what reaches the RSX: the surface drawn into, GL's state, the programs and their numbers, draws, clears, copies, the read-back |
@@ -19,7 +19,7 @@ function pointers of `renderer/gl/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 117 checks that RPCS3 starts in seconds: a change here is run
+program of 119 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs
@@ -179,14 +179,20 @@ software rasteriser with the console run's arguments, writes the same
 frames (`OPENRAC_SHOT`), and the two are compared pixel for pixel. On
 Veldin (2026-11-25), frames of the opening without effects in view differ
 in 0.2% of their pixels by more than 16 of 255 in a channel. Frames with
-smoke and fire differ in about 38%: the effects are missing, and that is
-not the layer's doing ([docs/port/PS3.md](../../../docs/port/PS3.md)).
+smoke and fire differ in about 38%: the effects are missing, for a reason
+not found yet ([docs/port/PS3.md](../../../docs/port/PS3.md)).
 Also missing: the shadows and the haze, whose programs the layer has not.
 
 ## Under RPCS3
 
 What the emulator needs of the layer, none of it wrong on the console:
 
+- `Shader Mode: Shader Recompiler`. With the asynchronous one a draw is
+  left out while its pipeline is compiled, and a check that draws once
+  reads the picture without it.
+- The first draw into a framebuffer that has never been drawn into is
+  lost; the same draw after it is not. Seen in the layer's test, not
+  explained.
 - A read-back needs a real renderer and `Write Color Buffers: true`, as
   the probe's ([tools/ps3/rsx-probe](../../tools/ps3/rsx-probe/README.md)).
   RPCS3 writes a surface back to the program's memory when it stops
