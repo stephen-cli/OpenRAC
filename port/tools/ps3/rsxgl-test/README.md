@@ -41,8 +41,8 @@ full-screen draws) and returns to the XMB. An EBOOT replaced over FTP
 does not start: the package is installed again. webMAN's pages carry the
 console's identifiers; they are not for a log.
 
-What it checks (121 checks, all passing on RPCS3 0.0.42 and on a console,
-a CECHA at 1920x1080, 2026-11-26):
+What it checks (124 checks, all passing on RPCS3 0.0.42, 2026-11-26; the
+121 before the mip chain's pass on a console, a CECHA at 1920x1080):
 
 | Check | What it would catch |
 |---|---|
@@ -54,6 +54,7 @@ a CECHA at 1920x1080, 2026-11-26):
 | vertex alpha above and below the reference | the colour's alpha byte |
 | blend, added and by the source's alpha | the blend state; the alpha the fragment program writes |
 | framebuffer, blit to the screen, framebuffer as a texture, copied texture | a texture as the RSX's surface and back, the copy between framebuffers, `glCopyTexSubImage2D` |
+| mip chain | `glGenerateMipmap`'s levels where the RSX reads them (a chain packed without the first level's pitch draws black) and the filter between levels reaching the RSX (without a chain the stripes are not averaged) |
 | sky | an indexed draw; the two matrices multiplied in the right order; a vertex colour above one; the tint |
 | mesh: two instances | a matrix and a tint for each instance from the instance buffer |
 | mesh: the viewer's sun, fog | the normal through the model's rotation; the fog's arithmetic in the vertex program and its weight in the fragment program |

@@ -31,6 +31,8 @@ RSXGL(glGenTextures);
 RSXGL(glBindTexture);
 RSXGL(glActiveTexture);
 RSXGL(glTexImage2D);
+RSXGL(glGenerateMipmap);
+RSXGL(glDeleteTextures);
 RSXGL(glTexSubImage2D);
 RSXGL(glTexParameteri);
 RSXGL(glCopyTexSubImage2D);
@@ -227,6 +229,59 @@ void set_mode(Mode mode) {
 void clear(float r, float g, float b) {
     glClearColor(r, g, b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+// A mip chain (glGenerateMipmap), with the direct program: a texture of 512 texels a side over
+// 64 pixels a side, an eighth, so each pixel is a texel of the fourth level. The texture's
+// columns are three of a colour and one black, the colour red in the lower left quarter, green
+// in the lower right and blue above: a level's texel from the third on is three quarters of
+// its quarter's colour, where the first level alone gives a pixel the whole colour. A chain
+// laid out in memory another way than the RSX reads it shows another quarter's colour or none.
+void mip_checks(int wide, int high) {
+    constexpr int kSide = 512;
+    constexpr int kShown = 64;
+    std::vector<Colour> texels(static_cast<std::size_t>(kSide) * kSide);
+    for (int row = 0; row < kSide; ++row) {
+        for (int column = 0; column < kSide; ++column) {
+            const Colour colour = row >= kSide / 2 ? kBlue : column >= kSide / 2 ? kGreen : kRed;
+            texels[static_cast<std::size_t>(row) * kSide + static_cast<std::size_t>(column)] =
+                column % 4 == 3 ? Colour{0, 0, 0, 0x80}
+                                : Colour{colour.r, colour.g, colour.b, 0x80};
+        }
+    }
+    GLuint striped = 0;
+    glGenTextures(1, &striped);
+    glBindTexture(GL_TEXTURE_2D, striped);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        static_cast<GLint>(GL_RGBA8),
+        kSide,
+        kSide,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        texels.data()
+    );
+    glGenerateMipmap(GL_TEXTURE_2D);
+    texture_parameters();
+    glTexParameteri(
+        GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(GL_LINEAR_MIPMAP_LINEAR)
+    );
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    clear(0.0f, 0.0f, 0.0f);
+    set_mode(Mode::Decal);
+    rectangle(
+        -1.0f,
+        -1.0f,
+        -1.0f + 2.0f * kShown / static_cast<float>(wide),
+        -1.0f + 2.0f * kShown / static_cast<float>(high),
+        kWhite
+    );
+    expect("mip chain: lower left", 0, kShown / 4, kShown / 4, Colour{191, 0, 0, 255});
+    expect("mip chain: lower right", 0, kShown * 3 / 4, kShown / 4, Colour{0, 191, 0, 255});
+    expect("mip chain: above", 0, kShown * 3 / 4, kShown * 3 / 4, Colour{0, 0, 191, 255});
+    glDeleteTextures(1, &striped);
 }
 
 // The sky program (viewer/shaders/sky.vert): a square of four vertices and six indices, moved by
@@ -1329,6 +1384,7 @@ int run() {
     rectangle(-1.0f, -1.0f, 1.0f, 1.0f, kWhite);
     expect_quarters("copied texture", 0, wide, high, kRed, green, green, green);
 
+    mip_checks(wide, high);
     sky_checks(wide, high);
     mesh_checks(wide, high);
     moby_checks(wide, high);

@@ -123,13 +123,13 @@ bool is_colour_format(GLenum format) {
     return format == GL_RGBA8 || format == GL_RGBA || format == GL_RGBA16F;
 }
 
-// Memory for an image of that size, kept when the size is the one it has.
+// Memory for one level of that size, kept when it is what the image has.
 void store(Image& into, GLsizei width, GLsizei height, bool depth) {
     const auto wide = static_cast<u32>(std::max(width, 0));
     const auto high = static_cast<u32>(std::max(height, 0));
     std::vector<float>().swap(into.floats);
     if (into.memory.address != nullptr && into.width == wide && into.height == high
-        && into.depth == depth) {
+        && into.depth == depth && into.levels == 1) {
         before_write(into.used);
         return;
     }
@@ -137,6 +137,7 @@ void store(Image& into, GLsizei width, GLsizei height, bool depth) {
     into.width = wide;
     into.height = high;
     into.pitch = wide * 4;
+    into.levels = 1;
     into.depth = depth;
     if (wide == 0 || high == 0) {
         return;
@@ -197,7 +198,7 @@ void tex_image(
 ) {
     Image* into = bound_texture(target);
     if (into == nullptr || level != 0) {
-        return;  // one level: the RSX's mip chains come with the textures' own step
+        return;  // the first level: the others are glGenerateMipmap's
     }
     const auto internal = static_cast<GLenum>(internal_format);
     // A texture of floats is the layer's own to read (Image::floats).
@@ -273,6 +274,92 @@ void tex_sub_image(
         static_cast<u32>(height),
         pixels
     );
+}
+
+// A side of the level below one of `side` texels.
+u32 halved(u32 side) {
+    return std::max(side / 2, 1u);
+}
+
+// The mean of four texels, channel by channel.
+u32 mean(u32 a, u32 b, u32 c, u32 d) {
+    u32 texel = 0;
+    for (u32 shift = 0; shift < 32; shift += 8) {
+        const u32 sum =
+            (a >> shift & 255) + (b >> shift & 255) + (c >> shift & 255) + (d >> shift & 255);
+        texel |= (sum + 2) / 4 << shift;
+    }
+    return texel;
+}
+
+// The bound texture's chain from its first level: each texel the mean of the four above it.
+// The chain takes new memory, the first level copied into it.
+void generate_mipmap(GLenum target) {
+    Image* of = bound_texture(target);
+    if (of == nullptr || of->memory.address == nullptr || of->depth
+        || (of->width == 1 && of->height == 1)) {
+        return;
+    }
+    u32 levels = 1;
+    u32 rows = of->height;
+    for (u32 wide = of->width, high = of->height; wide > 1 || high > 1; ++levels) {
+        wide = halved(wide);
+        high = halved(high);
+        rows += high;
+    }
+    before_write(of->used);
+    const auto row_at = [of](const Memory& memory, u32 row) {
+        return static_cast<unsigned char*>(memory.address)
+               + static_cast<std::size_t>(row) * of->pitch;
+    };
+    u32 wide = of->width;
+    u32 high = of->height;
+    std::vector<u32> above(static_cast<std::size_t>(wide) * high);
+    for (u32 row = 0; row < high; ++row) {
+        read_memory(
+            &above[static_cast<std::size_t>(row) * wide], row_at(of->memory, row), wide * 4
+        );
+    }
+    if (of->levels != levels) {
+        const Memory chain = allocate(rows * of->pitch);
+        if (chain.address == nullptr) {
+            return;
+        }
+        fill_memory(chain.address, 0, static_cast<std::size_t>(rows) * of->pitch);
+        for (u32 row = 0; row < high; ++row) {
+            write_memory(
+                row_at(chain, row), &above[static_cast<std::size_t>(row) * wide], wide * 4
+            );
+        }
+        retire(of->memory);
+        of->memory = chain;
+        of->levels = levels;
+        g.target_stale = true;
+    }
+    std::vector<u32> below;
+    for (u32 first_row = high; wide > 1 || high > 1; above.swap(below)) {
+        const u32 wide_above = wide;
+        const u32 high_above = high;
+        wide = halved(wide);
+        high = halved(high);
+        below.resize(static_cast<std::size_t>(wide) * high);
+        for (u32 row = 0; row < high; ++row) {
+            // A side of one texel has one above it, taken twice.
+            const u32* upper = &above[static_cast<std::size_t>(row * 2) * wide_above];
+            const u32* lower =
+                &above
+                    [static_cast<std::size_t>(std::min(row * 2 + 1, high_above - 1)) * wide_above];
+            u32* out = &below[static_cast<std::size_t>(row) * wide];
+            for (u32 column = 0; column < wide; ++column) {
+                const u32 left = column * 2;
+                const u32 right = std::min(left + 1, wide_above - 1);
+                out[column] = mean(upper[left], upper[right], lower[left], lower[right]);
+            }
+            write_memory(row_at(of->memory, first_row + row), out, wide * 4);
+        }
+        first_row += high;
+    }
+    ++of->written;
 }
 
 void set_parameter(GLenum& min, GLenum& mag, GLenum& s, GLenum& t, GLenum name, GLint value) {
@@ -806,6 +893,7 @@ const Entry kObjectFunctions[] = {
     OPENRAC_RSXGL_ENTRY(glActiveTexture, active_texture),
     OPENRAC_RSXGL_ENTRY(glTexImage2D, tex_image),
     OPENRAC_RSXGL_ENTRY(glTexSubImage2D, tex_sub_image),
+    OPENRAC_RSXGL_ENTRY(glGenerateMipmap, generate_mipmap),
     OPENRAC_RSXGL_ENTRY(glTexParameteri, tex_parameter),
     OPENRAC_RSXGL_ENTRY(glSamplerParameteri, sampler_parameter),
     OPENRAC_RSXGL_ENTRY(glBindSampler, bind_sampler),

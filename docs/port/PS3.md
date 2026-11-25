@@ -652,8 +652,10 @@ The proposal, in the order that gives a picture soonest:
    gamepad) and sound (the dummy device plays nothing).
 2. **GL carried out with the RSX**, a layer beside the Vulkan one for
    the functions the classic renderer calls: what the 2D path, the sky
-   and the stored level and the mobys call is done (section 6). Left: the
-   ties' lights, mip chains, stencil, depth copies, uniform blocks, as
+   and the stored level and the mobys call is done (section 6), and mip
+   chains (2026-11-26, under RPCS3;
+   [renderer/rsx](../../port/renderer/rsx/README.md), "Mip chains"). Left: the
+   ties' lights, stencil, depth copies, uniform blocks, as
    the world's renderers come to need them.
    A draw an instance has not been timed.
 3. **The shaders written again** as RSX programs, kept beside their

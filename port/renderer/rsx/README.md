@@ -19,7 +19,7 @@ function pointers of `renderer/gl/gl.h`.
 
 The layer is checked by its pictures in
 [tools/ps3/rsxgl-test](../../tools/ps3/rsxgl-test/README.md), a console
-program of 121 checks that RPCS3 starts in seconds: a change here is run
+program of 124 checks that RPCS3 starts in seconds: a change here is run
 there before the game.
 
 ## Programs
@@ -137,7 +137,7 @@ Carried out:
 | GL | On the RSX |
 |---|---|
 | `glGetString`, `glGetIntegerv`, `glGetFloatv` | the layer's name ("4.1 OpenRAC on RSX": the desktop's GL to `gl::api()`), no extensions, a 4096 texture limit, one sample a pixel, the viewport |
-| textures: `glTexImage2D`, `glTexSubImage2D`, `glTexParameteri`, samplers | one level of A8R8G8B8 in RSX memory, rows in GL's order, GL's RGBA bytes turned to the RSX's order on the way in; a depth format is 24-bit depth with stencil; a float format is held as eight bits a channel; any other format has no memory and samples white |
+| textures: `glTexImage2D`, `glTexSubImage2D`, `glTexParameteri`, samplers | A8R8G8B8 in RSX memory, one level or a chain (below), rows in GL's order, GL's RGBA bytes turned to the RSX's order on the way in; a depth format is 24-bit depth with stencil; a float format is held as eight bits a channel; any other format has no memory and samples white |
 | renderbuffers | as textures; one sample a pixel whatever was asked |
 | buffers: `glBufferData`, `glBufferSubData` | RSX memory, vertices and indices alike (the element buffer is the vertex array's). A buffer a draw of this frame read is not written in place, since that draw may still be queued: it takes new memory (kept contents for `glBufferSubData`) and the old is left to the draw, without a wait. A texture's writes wait for the RSX first when a queued draw uses the texture |
 | vertex arrays | float attributes and normalised bytes, at GL's locations; of a vertex array's attributes the RSX is told those the bound program reads; an attribute with a divisor is one value an instance, read by the layer |
@@ -152,9 +152,23 @@ Carried out:
 | `glFinish` | waits for the RSX |
 
 Answered and not carried out yet: stencil, depth copies between
-framebuffers, mip chains (`glGenerateMipmap`: a mip filter is linear
-within the one level, so the world's far textures shimmer), float
-textures, compressed textures, uniform blocks.
+framebuffers, float textures, compressed textures, uniform blocks.
+
+## Mip chains
+
+`glGenerateMipmap` makes a texture's chain on the CPU, each texel the
+mean of the four above it, down to one texel. The levels follow one
+another in one piece of RSX memory, every level with the first's pitch:
+the RSX's layout of a texture that is not swizzled, so a chain takes
+about twice its first level where a tight one takes a third more
+(Veldin: 31 MiB of first levels). A texture with a chain takes GL's
+filters between levels as the RSX's own, and the RSX chooses the level
+from the texture coordinates' change across a pixel, as a desktop GPU
+does for the same GL calls; a texture of one level takes such a filter
+as the filter within the level. Levels are not uploaded one by one
+(`glTexImage2D` of a level other than the first does nothing), and no
+anisotropic filter is asked for. Seen under RPCS3 (2026-11-26); on a
+console not yet.
 
 ## Which way up
 

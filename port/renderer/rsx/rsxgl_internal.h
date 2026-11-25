@@ -35,15 +35,19 @@ struct Memory {
     u32 offset = 0;
 };
 
-// A texture, or a renderbuffer: one level of A8R8G8B8 or of 24-bit depth with stencil, its rows
-// in GL's order (the first row is t = 0, and y = 0 of a framebuffer it is attached to).
+// A texture, or a renderbuffer: A8R8G8B8 or 24-bit depth with stencil, its rows in GL's order
+// (the first row is t = 0, and y = 0 of a framebuffer it is attached to). One level, or after
+// glGenerateMipmap a chain: each level half the one above down to one texel, one after the
+// other in the same memory, every one with the first's pitch (the RSX's layout of a texture
+// that is not swizzled).
 struct Image {
     Memory memory;
     u32 width = 0;
     u32 height = 0;
     u32 pitch = 0;
+    u32 levels = 1;
     bool depth = false;
-    gl::GLenum min_filter = gl::GL_LINEAR;  // one level: GL's own default asks for a mip chain
+    gl::GLenum min_filter = gl::GL_LINEAR;  // GL's own default asks for a mip chain
     gl::GLenum mag_filter = gl::GL_LINEAR;
     gl::GLenum wrap_s = gl::GL_REPEAT;
     gl::GLenum wrap_t = gl::GL_REPEAT;
@@ -55,7 +59,7 @@ struct Image {
 };
 
 struct Sampler {
-    gl::GLenum min_filter = gl::GL_LINEAR;  // one level: GL's own default asks for a mip chain
+    gl::GLenum min_filter = gl::GL_LINEAR;  // GL's own default asks for a mip chain
     gl::GLenum mag_filter = gl::GL_LINEAR;
     gl::GLenum wrap_s = gl::GL_REPEAT;
     gl::GLenum wrap_t = gl::GL_REPEAT;

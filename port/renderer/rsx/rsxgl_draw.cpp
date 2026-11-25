@@ -364,8 +364,17 @@ void clear(GLbitfield mask) {
 
 // ---- Textures ----
 
-u8 filter(GLenum gl) {
-    // One level a texture: a mip filter (the renderer's are linear) is linear within the level.
+// GL's filters between levels, GL_NEAREST_MIPMAP_NEAREST to GL_LINEAR_MIPMAP_LINEAR: the RSX has
+// its own in the same order.
+constexpr GLenum kFirstMipFilter = 0x2700;
+constexpr GLenum kLastMipFilter = 0x2703;
+
+// A filter for a texture of that many levels. With one level a filter between levels is the
+// filter within the level (the renderer's are linear).
+u8 filter(GLenum gl, u32 levels) {
+    if (levels > 1 && gl >= kFirstMipFilter && gl <= kLastMipFilter) {
+        return static_cast<u8>(GCM_TEXTURE_NEAREST_MIPMAP_NEAREST + (gl - kFirstMipFilter));
+    }
     return gl == GL_NEAREST ? GCM_TEXTURE_NEAREST : GCM_TEXTURE_LINEAR;
 }
 
@@ -381,7 +390,7 @@ void load_texture(u32 unit, Image& texture, const Sampler* sampler) {
         (texture.depth ? GCM_TEXTURE_FORMAT_DEPTH24_D8 : GCM_TEXTURE_FORMAT_A8R8G8B8)
         | GCM_TEXTURE_FORMAT_LIN
     );
-    loaded.mipmap = 1;
+    loaded.mipmap = static_cast<u8>(texture.levels);
     loaded.dimension = GCM_TEXTURE_DIMS_2D;
     loaded.cubemap = GCM_FALSE;
     loaded.remap = GCM_TEXTURE_REMAP_TYPE_REMAP << GCM_TEXTURE_REMAP_TYPE_B_SHIFT
@@ -405,8 +414,8 @@ void load_texture(u32 unit, Image& texture, const Sampler* sampler) {
         g.context,
         index,
         0,
-        filter(sampler != nullptr ? sampler->min_filter : texture.min_filter),
-        filter(sampler != nullptr ? sampler->mag_filter : texture.mag_filter),
+        filter(sampler != nullptr ? sampler->min_filter : texture.min_filter, texture.levels),
+        filter(sampler != nullptr ? sampler->mag_filter : texture.mag_filter, 1),
         GCM_TEXTURE_CONVOLUTION_QUINCUNX
     );
     rsxTextureWrapMode(
