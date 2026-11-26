@@ -91,7 +91,7 @@ else()
   endif()
   # The PS3: SDL has no platform for it. It is built as a Unix without a desktop (pthreads, the
   # dummy video and audio drivers, which the window asks for by name), with its source changed in
-  # five places (tools/ps3/sdl3-lv2.py). The toolchain file's checks compile without linking, so a
+  # six places (tools/ps3/sdl3-lv2.py). The toolchain file's checks compile without linking, so a
   # function that newlib declares and lv2 has not is taken as there: those are answered here.
   if(OPENRAC_PS3)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)

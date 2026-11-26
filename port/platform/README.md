@@ -15,6 +15,7 @@ the screen, the pads, sound and time, replaced at the game's library calls
 | `audio_ring.h` | `AudioRing`: the frames mixed ahead, between the mixer and SDL's thread, without a lock |
 | `clock.h` | a monotonic clock and `FramePacer`, which holds the loop to the rate it is given (the games run at 60 Hz) |
 | `pump.h` | `run_pumped` and `poll_event`: the program beside the window's event pump on one thread (a fiber on Windows), so it goes on drawing while Windows holds the pump in its own loop (the window dragged by its title bar, sized, a menu open) |
+| `lv2_events.h` | the PlayStation 3 alone: the console's pads as SDL virtual gamepads (buttons, sticks, the triggers' pressures, rumble) and the XMB's request to quit as SDL's quit event, read where the pump reads SDL's events |
 
 As in OpenGOAL ([OPENGOAL_NOTES.md](../../docs/port/OPENGOAL_NOTES.md),
 section 6), OpenGL 4.1 core is requested everywhere, so macOS gets the same

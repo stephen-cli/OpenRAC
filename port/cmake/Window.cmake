@@ -254,6 +254,10 @@ if(OPENRAC_PS3)
   target_link_libraries(openrac-rsxgl-test PRIVATE openrac_renderer_rsx)
   openrac_warnings(openrac-rsxgl-test)
   target_compile_definitions(openrac_platform PRIVATE OPENRAC_RSX=1)
+  # The console's pads and the XMB's requests, which SDL does not read there (platform/lv2_events.h):
+  # PSL1GHT's libio.
+  target_sources(openrac_platform PRIVATE platform/lv2_events.cpp)
+  target_link_libraries(openrac_platform PRIVATE -lio)
 endif()
 
 # ---- renderer/metal (renderer/metal/README.md) ----

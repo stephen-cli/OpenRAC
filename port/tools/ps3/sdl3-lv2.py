@@ -7,8 +7,8 @@ when the target is the PS3). Idempotent.
     sdl3-lv2.py <SDL tree>
 
 SDL has no PS3 platform. The port builds it as a Unix without a desktop (pthreads, the dummy video
-and audio drivers; cmake/Dependencies.cmake has the options), which its sources take but for five
-places that assume more of the system than lv2 and pthreads-embedded give:
+and audio drivers; cmake/Dependencies.cmake has the options), which its sources take but for six
+places that assume more of the system than lv2 and pthreads-embedded give, or less:
 
   - a thread's ID is the pthread_t cast to an integer (in two functions), and pthreads-embedded's
     pthread_t is a structure (a pointer and a reuse count): the pointer is the ID;
@@ -19,7 +19,10 @@ places that assume more of the system than lv2 and pthreads-embedded give:
   - struct tm has no tm_gmtoff in newlib, which SDL reads for the offset from UTC: newlib has no time
     zone on the console, where local time is UTC and the offset zero;
   - the dynamic API (SDL calling itself through a table another SDL can replace) is for shared
-    libraries, and its switch is in a header that refuses a command-line definition.
+    libraries, and its switch is in a header that refuses a command-line definition;
+  - the virtual joystick, by which the console's pads reach SDL (platform/lv2_events.h), is built
+    only with HIDAPI, which the console has not and the virtual joystick's sources do not use: it
+    is built with the joysticks.
 """
 import sys
 from pathlib import Path
@@ -87,4 +90,11 @@ replace_once(
     "#if defined(__lv2ppu__) // OpenRAC: the console links SDL statically (sdl3-lv2.py)\n"
     "#define SDL_DYNAMIC_API 0\n"
     "#elif defined(SDL_PLATFORM_PRIVATE) // probably not useful on private platforms.\n",
+)
+
+replace_once(
+    tree / "CMakeLists.txt",
+    'dep_option(SDL_VIRTUAL_JOYSTICK    "Enable the virtual-joystick driver" ON SDL_HIDAPI OFF)\n',
+    "# OpenRAC: without HIDAPI too (sdl3-lv2.py)\n"
+    'dep_option(SDL_VIRTUAL_JOYSTICK    "Enable the virtual-joystick driver" ON SDL_JOYSTICK OFF)\n',
 )

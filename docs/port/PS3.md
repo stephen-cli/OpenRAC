@@ -380,7 +380,7 @@ draws nothing yet but the clear, and the port's own screenshots
   platform layer, the frontend and the debug interface; cutting it out
   of them would have forked the port. SDL 3.4 has no PS3 platform, and
   builds as a Unix without a desktop: pthreads, its dummy video and
-  audio drivers, six places of its source changed
+  audio drivers, seven places of its source changed
   (`tools/ps3/sdl3-lv2.py`) and nine answers its configure got wrong
   given to it (`cmake/Dependencies.cmake`; the toolchain file's checks
   compile without linking). Every other source of the windowed program
@@ -647,9 +647,16 @@ more, with compute, are beyond a GeForce 7 and stay off the console.
 The proposal, in the order that gives a picture soonest:
 
 1. **The window on the console**: done (section 6), with SDL built
-   for the console instead of taken out. Left of it: the pad (SDL has
-   no joystick driver there; PSL1GHT's `io/pad` behind SDL's virtual
-   gamepad) and sound (the dummy device plays nothing).
+   for the console instead of taken out, and the pad: SDL has no
+   joystick driver there, so PSL1GHT's `io/pad` is read into SDL's
+   virtual gamepads (`platform/lv2_events.h`), and the bindings, the
+   players' ports and rumble are every platform's. Under RPCS3
+   (2026-11-26) a pad on port 1 is found, and Start, the directions
+   and the left stick move the main menu; with no pad on the port
+   nothing is found and nothing moves. Not seen yet: the pad on a
+   console, rumble, the triggers' pressures, and the XMB's request to
+   quit, which the same file turns into SDL's quit event. Left of the
+   window: sound (the dummy device plays nothing).
 2. **GL carried out with the RSX**, a layer beside the Vulkan one for
    the functions the classic renderer calls: what the 2D path, the sky
    and the stored level and the mobys call is done (section 6), and mip

@@ -16,6 +16,9 @@
 
 #include "common/env.h"
 #include "common/log.h"
+#if defined(__lv2ppu__)
+#include "platform/lv2_events.h"
+#endif
 
 namespace openrac::platform {
 
@@ -156,11 +159,20 @@ int run_pumped(int (*program)(void*), void* argument) {
 }
 
 void pump_events() {
+#if defined(__lv2ppu__)
+    read_lv2_events();
+#endif
     SDL_PumpEvents();
 }
 
 bool poll_event(SDL_Event& event) {
-#if defined(OPENRAC_IOS)
+#if defined(__lv2ppu__)
+    // Once for each time the queue is read to its end, not once an event.
+    if (!SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST)) {
+        read_lv2_events();
+    }
+    return SDL_PollEvent(&event);
+#elif defined(OPENRAC_IOS)
     const bool found = SDL_PollEvent(&event);
     while (backgrounded) {
         SDL_Event pending;
