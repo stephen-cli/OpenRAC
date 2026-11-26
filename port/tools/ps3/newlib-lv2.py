@@ -241,6 +241,16 @@ replace_once(
     "#if !defined (_ATEXIT_DYNAMIC_ALLOC) || !defined (MALLOC_PROVIDED)\n",
     "#if !defined (_ATEXIT_DYNAMIC_ALLOC) || (!defined (MALLOC_PROVIDED) && !defined (__lv2ppu__))\n",
 )
+# And exit() runs the handlers of the table's newest block alone under the same condition, so with
+# the table grown the older blocks' handlers were never called: the statics made before the last
+# thirty-two or so kept their destructors (a thread one of them should have joined was still
+# running when librt gave the heap back), and the report at the end of a run was not written. The
+# console's exit goes through every block.
+replace_once(
+    tree / "newlib" / "libc" / "stdlib" / "__call_atexit.c",
+    "#if !defined (_ATEXIT_DYNAMIC_ALLOC) || !defined (MALLOC_PROVIDED)\n",
+    "#if !defined (_ATEXIT_DYNAMIC_ALLOC) || (!defined (MALLOC_PROVIDED) && !defined (__lv2ppu__))\n",
+)
 
 # exit() closes every stream after the exit handlers have run, and closing one frees its buffer.
 # PSL1GHT's librt gives the heap back to the system from .fini, which is one of those handlers: the

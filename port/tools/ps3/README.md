@@ -124,7 +124,12 @@ ps3toolchain's prebuilt compiler:
    Its table of exit handlers grows past the first 32 only where the
    system provides malloc; the console's grows it with newlib's own (a
    C++ program fills 32 with its statics' destructors, and the port's
-   `atexit` for the end of a run was refused). Its `exit` flushes the
+   `atexit` for the end of a run was refused), and its `exit` goes
+   through every block of the table, where newlib's stops after the
+   newest one under the same condition: the older handlers, most of
+   the statics' destructors and the report at the end of a run among
+   them, were never called, and a thread one of them should have
+   joined was still running when librt gave the heap back. Its `exit` flushes the
    streams and does not close them: closing frees their buffers, after
    PSL1GHT's librt has given the heap back from `.fini`, and a program
    that had printed stopped in `free` on its way out.
@@ -172,7 +177,7 @@ ps3toolchain's prebuilt compiler:
    pthreads-embedded only (ps3dev's stages 2 and 3, `PS3LIBRARIES_STAGES`):
    the other forty are old ports (libunrar, polarssl) that do not compile
    against newlib 4.6, and the port has no use for them.
-   pthreads-embedded is then built again with two changes
+   pthreads-embedded is then built again with four changes
    (`pthread-emb-lv2.py`, on the source ps3libraries left unpacked): it
    calls its own `pthread_init` in a constructor of priority 105, after
    PSL1GHT's that wires the heap's system calls (104) and before the
