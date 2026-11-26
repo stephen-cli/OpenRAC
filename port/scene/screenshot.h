@@ -17,8 +17,9 @@ bool write_png(
 );
 
 // As write_png, on a thread of its own: encoding a window's PNG stops a frame for about a second.
-// Logs `written` once the file is written (a warning if it cannot be). Those still waiting at
-// exit are written then.
+// Logs `written` once the file is written (a warning if it cannot be). One shot may wait behind
+// the one being written; with one waiting already the call waits for the writer, so that the
+// frames held are never more than two. One still waiting at exit is written then.
 void write_png_later(
     std::string path, int width, int height, std::vector<std::uint8_t> rgba, std::string written
 );

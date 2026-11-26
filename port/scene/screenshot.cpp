@@ -16,10 +16,15 @@ namespace openrac::scene {
 
 namespace {
 
+// The shots that may wait for the writer. Each holds its frame's pixels (8 MB at 1920x1080), and
+// a machine that draws frames faster than it encodes them would otherwise run out of memory.
+constexpr std::size_t kWaiting = 1;
+
 // One thread, so a run's shots are written one at a time, in order.
 struct Writer {
     std::mutex lock;
     std::condition_variable wake;
+    std::condition_variable room;  // a waiting shot was taken
     std::deque<std::function<void()>> jobs;
     bool closing = false;
     std::thread thread{[this] { run(); }};
@@ -46,6 +51,7 @@ struct Writer {
             const std::function<void()> job = std::move(jobs.front());
             jobs.pop_front();
             held.unlock();
+            room.notify_one();
             job();
             held.lock();
         }
@@ -65,7 +71,8 @@ void write_png_later(
 ) {
     static Writer writer;
     {
-        const std::lock_guard held(writer.lock);
+        std::unique_lock held(writer.lock);
+        writer.room.wait(held, [] { return writer.jobs.size() < kWaiting; });
         writer.jobs.emplace_back([=, rgba = std::move(rgba)] {
             if (write_png(path, width, height, rgba)) {
                 log::info("{}", written);
