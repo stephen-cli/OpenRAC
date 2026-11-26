@@ -23,7 +23,12 @@ places that assume more of the system than lv2 and pthreads-embedded give, or le
   - the virtual joystick, by which the console's pads reach SDL (platform/lv2_events.h), is built
     only with HIDAPI, which the console has not and the virtual joystick's sources do not use: it
     is built with the joysticks.
+
+And SDL has no sound device there but the dummy one: the driver for the console's audio port
+(sdl3-lv2/SDL_lv2audio.c beside this script) is copied into the tree, built with it and put
+into SDL's list of drivers, before the dummy one.
 """
+import shutil
 import sys
 from pathlib import Path
 
@@ -97,4 +102,32 @@ replace_once(
     'dep_option(SDL_VIRTUAL_JOYSTICK    "Enable the virtual-joystick driver" ON SDL_HIDAPI OFF)\n',
     "# OpenRAC: without HIDAPI too (sdl3-lv2.py)\n"
     'dep_option(SDL_VIRTUAL_JOYSTICK    "Enable the virtual-joystick driver" ON SDL_JOYSTICK OFF)\n',
+)
+
+driver = tree / "src" / "audio" / "lv2"
+driver.mkdir(exist_ok=True)
+shutil.copyfile(Path(__file__).parent / "sdl3-lv2" / "SDL_lv2audio.c", driver / "SDL_lv2audio.c")
+
+replace_once(
+    tree / "CMakeLists.txt",
+    "  # CheckDummyAudio/CheckDiskAudio - valid for all platforms\n",
+    "  # OpenRAC: the console's audio port (sdl3-lv2.py)\n"
+    '  sdl_glob_sources("${SDL3_SOURCE_DIR}/src/audio/lv2/*.c")\n'
+    "  # CheckDummyAudio/CheckDiskAudio - valid for all platforms\n",
+)
+
+replace_once(
+    tree / "src" / "audio" / "SDL_audio.c",
+    "#ifdef SDL_AUDIO_DRIVER_DISK\n    &DISKAUDIO_bootstrap,\n",
+    "#ifdef __lv2ppu__  /* OpenRAC: the console's audio port (sdl3-lv2.py) */\n"
+    "    &LV2AUDIO_bootstrap,\n"
+    "#endif\n"
+    "#ifdef SDL_AUDIO_DRIVER_DISK\n    &DISKAUDIO_bootstrap,\n",
+)
+
+replace_once(
+    tree / "src" / "audio" / "SDL_sysaudio.h",
+    "extern AudioBootStrap DUMMYAUDIO_bootstrap;\n",
+    "extern AudioBootStrap LV2AUDIO_bootstrap;  // OpenRAC: the console's audio port (sdl3-lv2.py)\n"
+    "extern AudioBootStrap DUMMYAUDIO_bootstrap;\n",
 )

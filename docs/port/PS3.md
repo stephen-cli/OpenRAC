@@ -379,9 +379,10 @@ draws nothing yet but the clear, and the port's own screenshots
 - **SDL3 itself, built for the console.** SDL reaches 45 files of the
   platform layer, the frontend and the debug interface; cutting it out
   of them would have forked the port. SDL 3.4 has no PS3 platform, and
-  builds as a Unix without a desktop: pthreads, its dummy video and
-  audio drivers, seven places of its source changed
-  (`tools/ps3/sdl3-lv2.py`) and nine answers its configure got wrong
+  builds as a Unix without a desktop: pthreads, its dummy video
+  driver, seven places of its source changed and a driver for the
+  console's audio port added (`tools/ps3/sdl3-lv2.py`), and nine
+  answers its configure got wrong
   given to it (`cmake/Dependencies.cmake`; the toolchain file's checks
   compile without linking). Every other source of the windowed program
   compiled for the console unchanged.
@@ -573,7 +574,76 @@ and 16 under RPCS3). The 1,400 frames to the last shot took about two minutes
 with a shot every 50; the sound mixer fell behind by up to a second
 while the level loaded. While the game ran, and for some minutes after
 its last shot, the console's FTP and web server (webMAN's) did not
-answer; why has not been looked into.
+answer: the next subsection has why.
+
+### The end of a run, the waits, and sound (2026-11-27)
+
+Two later runs of the game on the console stood still on their last
+frame and did not come back to the XMB; the console had to be
+switched off by hand. Under RPCS3 the same build stood still too, and
+its log (every line the program prints, with the thread and the time,
+and the system calls counted every ten seconds) showed three faults of
+the toolchain, none of the game's:
+
+- **pthreads-embedded waited without sleeping.** Every wait on a
+  condition variable and every join asked and yielded in a loop: some
+  150 million system calls a second from idle threads. They kept both
+  hardware threads busy, which is why webMAN was silent, and a thread
+  of lower priority than two waiting ones never ran: at the exit the
+  main thread joined the sound mixer, the shot writer waited for work,
+  and the mixer never got the time to see it was asked to stop. The
+  waits sleep now.
+- **Priorities went to lv2 the wrong way round.** The threads SDL
+  makes time-critical (the sound device's, the mixer) were the least
+  urgent of the program, which is the mixer that fell behind by a
+  second above.
+- **`exit` ran only the newest block of exit handlers.** The older
+  ones, most statics' destructors and the report at the end of a run,
+  were never called on the console; the shot writer's thread was not
+  joined, and PSL1GHT gives the whole heap back after the handlers,
+  under a thread that was still running.
+
+The three are changed in `tools/ps3` (`pthread-emb-lv2.py`,
+`newlib-lv2.py`; its README has them). The shot writer also holds one
+waiting shot at most now, on every platform: a machine that draws
+frames faster than it encodes them kept every frame's pixels (8 MB at
+1920x1080) until memory ran out.
+
+Sound: SDL's device on the console is the audio port, by a driver the
+port adds to the SDL it builds (`tools/ps3/sdl3-lv2/SDL_lv2audio.c`).
+Under RPCS3 the audio it dumps holds the boot's tone and the level's
+sound for as long as the level runs, where the desktop's (SDL's disk
+driver) has them, every block of 256 frames of the sounding seconds
+filled; with the dummy device asked for by name no port is opened.
+The driver first read the number of the block being played as 32
+bits where the system keeps 64, and filled one block of the ring's
+eight: noise on a console, and an eighth of the blocks in the dump,
+which a loudness for each second had not shown.
+
+On the console with all of it: the layer's test passes its 124 checks,
+and Veldin's opening runs its 1500 frames, writes its shots (the fire,
+the smoke and the mip chains as under RPCS3), reports "1500 frames"
+and returns to the XMB, within three minutes of its start and with
+webMAN answering throughout. Two pads were found on its ports, the
+mixer reported no silence, and 15 MB of main memory were left with the
+level drawn.
+
+A person at the pad, the same day, from the title screen: Start and
+New Game, the opening played through, then Veldin walked: the sticks,
+the jumps, the wrench, crates broken and bolts taken, R3 for the HUD.
+What it showed:
+
+- **Speed.** Four to five frames a second in play. Nothing of the
+  port has been measured or made faster for the console; a frame is
+  some 3,500 draws, an instance each.
+- **Memory.** By way of the title and New Game the level is drawn
+  with 3 MB of main memory left (209 MB held; 15 MB left when the
+  level is asked for by `--level`). The sound engine's next thread, a
+  music track's reader, then finds none: under RPCS3 the program
+  faults in the unwinder there, and on the console the game stood
+  still when the pause menu was asked for, the sound going on.
+- **Sound** was the noise of the one block in eight; the corrected
+  driver has not been heard on a console yet.
 
 How a program gets there without a hand on the console (the test's
 [README](../../port/tools/ps3/rsxgl-test/README.md) has the commands):
@@ -655,8 +725,11 @@ The proposal, in the order that gives a picture soonest:
    and the left stick move the main menu; with no pad on the port
    nothing is found and nothing moves. Not seen yet: the pad on a
    console, rumble, the triggers' pressures, and the XMB's request to
-   quit, which the same file turns into SDL's quit event. Left of the
-   window: sound (the dummy device plays nothing).
+   quit, which the same file turns into SDL's quit event. Sound goes
+   to the console's audio port by a driver added to SDL (section 6,
+   2026-11-27). Before anything else of the game can be tried at the
+   pad: main memory by way of New Game, and the speed of a frame on
+   the console (the same section).
 2. **GL carried out with the RSX**, a layer beside the Vulkan one for
    the functions the classic renderer calls: what the 2D path, the sky
    and the stored level and the mobys call is done (section 6), and mip

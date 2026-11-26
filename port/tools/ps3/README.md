@@ -187,6 +187,20 @@ ps3toolchain's prebuilt compiler:
    code (the registration of the exception tables), before any
    constructor: the library made that mutex on the spot, with locks and
    a heap it did not have yet, and the program stopped before `main`.
+   Its PSL1GHT layer waited by asking and yielding without a pause, in
+   every wait `pthread_cancel` may end (a condition variable's) and in
+   every join: a waiting thread kept one of the console's two hardware
+   threads busy, the system's own threads (webMAN's servers) got no
+   time while a program ran, and a thread of lower priority than two
+   waiting ones never ran, which stopped the game at its exit. The
+   wait now sleeps on the semaphore in slices of 10 ms, between which
+   it looks at the thread's cancel semaphore, and the join sleeps 1 ms
+   between its looks. And the layer handed a pthread's priority to
+   lv2 as it was, where lv2 counts the other way (0 is the most
+   urgent, 3071 the least): the threads SDL makes time-critical, the
+   sound device's and the game's mixer, were the last to run. The
+   priority is turned over in both directions; the default is lv2's
+   1001.
    PSL1GHT's librsx is built again too, with one change
    (`psl1ght-lv2.py`, on the source ps3dev left checked out): its call
    of libgcm's callback for a full segment of the command buffer was
@@ -283,17 +297,24 @@ port's log rotation leaves its old logs there; a data folder under
 
 The windowed program (preset `ps3-window`) links SDL 3.4, which has no
 PS3 platform. `cmake/Dependencies.cmake` builds the SDL it fetches as
-a Unix without a desktop (pthreads, the dummy video and audio
-drivers, nothing of X11, Wayland, GL, HIDAPI or processes), runs
+a Unix without a desktop (pthreads, the dummy video driver,
+nothing of X11, Wayland, GL, HIDAPI or processes), runs
 `sdl3-lv2.py` on its source (the thread ID out of pthreads-embedded's
 structure in two places, no signal mask for a new thread, `usleep`
-for the delay, no `tm_gmtoff`, the dynamic API off) and answers the
+for the delay, no `tm_gmtoff`, the dynamic API off, the virtual
+joystick without HIDAPI; and a driver for the console's audio port,
+`sdl3-lv2/SDL_lv2audio.c`, copied into the tree and put into SDL's
+list before the dummy one) and answers the
 checks the toolchain file cannot make by linking (`fdatasync`,
 `gethostname`, `getpagesize`, `sigaction`, `sysconf`,
 `pthread_setname_np` and `posix_spawn` are declared and not there).
 `include/` gained `dlfcn.h` and `poll.h` for SDL's Unix code. SDL's
-dummy drivers are used only when asked for by name, which the window
-does on the console (`platform/window.cpp`); the picture goes to the
+dummy video driver is used only when asked for by name, which the
+window does on the console (`platform/window.cpp`); the sound device
+is the audio port (a ring of blocks of 256 stereo frames of 32-bit
+floats at 48 kHz, an event at each block the system starts, the
+block after it written), and `SDL_AUDIO_DRIVER=dummy` in the
+arguments file still gives the silent one; the picture goes to the
 RSX beside SDL's window ([renderer/rsx](../../renderer/rsx/README.md)).
 ImGui's default way of opening a link forks a program and is compiled
 out there.

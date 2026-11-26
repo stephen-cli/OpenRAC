@@ -90,8 +90,8 @@ else()
     list(APPEND openrac_sdl_options EXCLUDE_FROM_ALL)
   endif()
   # The PS3: SDL has no platform for it. It is built as a Unix without a desktop (pthreads, the
-  # dummy video and audio drivers, which the window asks for by name), with its source changed in
-  # six places (tools/ps3/sdl3-lv2.py). The toolchain file's checks compile without linking, so a
+  # dummy video driver, which the window asks for by name), with its source changed in six places
+  # and a driver for the console's audio port added (tools/ps3/sdl3-lv2.py). The toolchain file's checks compile without linking, so a
   # function that newlib declares and lv2 has not is taken as there: those are answered here.
   if(OPENRAC_PS3)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -134,6 +134,11 @@ if(NOT TARGET openrac_sdl3)
     target_link_libraries(openrac_sdl3 INTERFACE SDL3::SDL3-static)
   else()
     message(FATAL_ERROR "SDL3 provides neither SDL3::SDL3 nor SDL3::SDL3-static")
+  endif()
+  # The PS3: SDL's driver of the console's audio port (tools/ps3/sdl3-lv2) calls PSL1GHT's
+  # libaudio, which has to follow SDL at the link.
+  if(OPENRAC_PS3)
+    target_link_libraries(openrac_sdl3 INTERFACE -laudio)
   endif()
 endif()
 

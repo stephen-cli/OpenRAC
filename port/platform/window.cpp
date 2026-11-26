@@ -292,11 +292,10 @@ Platform::Platform(unsigned subsystems) {
         flags |= SDL_INIT_AUDIO;
     }
 #if defined(__lv2ppu__)
-    // SDL has no drivers for the console (cmake/Dependencies.cmake): its window and its sound
-    // device are the dummy ones, which it uses only when asked for by name. The picture goes to
-    // the RSX beside it (open_rsx).
+    // SDL has no video driver for the console (cmake/Dependencies.cmake): its window is the dummy
+    // one, which it uses only when asked for by name. The picture goes to the RSX beside it
+    // (open_rsx). The sound device is the console's audio port (tools/ps3/sdl3-lv2).
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
-    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
 #endif
     m_ok = SDL_Init(flags);
     if (!m_ok) {
