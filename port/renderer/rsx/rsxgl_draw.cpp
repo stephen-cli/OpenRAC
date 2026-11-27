@@ -954,6 +954,7 @@ struct LightsLoaded {
     u32 frame = 0;
     u32 written = 0;
     u32 first = 0;
+    u32 slots = 0;
 };
 
 LightsLoaded g_lights_loaded;
@@ -999,20 +1000,21 @@ bool load_joints(const Image& palette, u32 first, u32 joints) {
     return true;
 }
 
-// Hands the RSX the 64 colours of the light texture from texel `first` as mesh.vp's c[32] up, as
-// mesh.vert has them: 0x80 is 1. The texture's texels (A8R8G8B8, which no draw of the RSX's
+// Hands the RSX `slots` colours of the light texture from texel `first` as mesh.vp's c[32] up,
+// as mesh.vert has them: 0x80 is 1. The texture's texels (A8R8G8B8, which no draw of the RSX's
 // reads) are read in the program's memory, where they are kept from its first such draw and
 // read again from the RSX's when it has been written. False when the texture has no such texel.
-bool load_lights(const Image& texture, u32 first) {
+bool load_lights(const Image& texture, u32 first, u32 slots) {
     const u32 held = texture.width * texture.height;
     if (texture.memory.address == nullptr || texture.depth || first >= held) {
         return false;
     }
     if (g_lights_loaded.texture == &texture && g_lights_loaded.frame == g.frame
-        && g_lights_loaded.written == texture.written && g_lights_loaded.first == first) {
+        && g_lights_loaded.written == texture.written && g_lights_loaded.first == first
+        && g_lights_loaded.slots >= slots) {
         return true;
     }
-    g_lights_loaded = {&texture, g.frame, texture.written, first};
+    g_lights_loaded = {&texture, g.frame, texture.written, first, slots};
     g_joints_loaded = {};
     if (texture.kept.size() != held || texture.kept_at != texture.written) {
         texture.kept.resize(held);
@@ -1027,7 +1029,7 @@ bool load_lights(const Image& texture, u32 first) {
         texture.kept_at = texture.written;
     }
     float colours[kLightsHeld][4] = {};
-    const u32 count = std::min(kLightsHeld, held - first);
+    const u32 count = std::min(slots, held - first);
     for (u32 i = 0; i < count; ++i) {
         const u32 argb = texture.kept[first + i];
         const u32 rgba[4] = {argb >> 16 & 255, argb >> 8 & 255, argb & 255, argb >> 24};
@@ -1036,9 +1038,70 @@ bool load_lights(const Image& texture, u32 first) {
         }
     }
     rsxLoadVertexProgramParameterBlock(
-        g.context, g_mesh.vertex->const_start + kLightFirstConstant, kLightsHeld, &colours[0][0]
+        g.context, g_mesh.vertex->const_start + kLightFirstConstant, slots, &colours[0][0]
     );
     return true;
+}
+
+// One past the highest light slot that the draw's vertices name, and no more than the RSX's
+// constants hold; 0 where none names one. Read once for a draw, as joints_drawn is. `width` is
+// the bytes of an index, 0 for a draw without indices.
+struct SlotsDrawn {
+    u32 written = 0;  // the buffers' counts of writes, summed
+    u32 slots = 0;
+    bool read = false;
+};
+
+std::map<std::array<u32, 4>, SlotsDrawn> g_slots_drawn;
+
+u32 slots_drawn(u32 first, u32 count, u32 width) {
+    const auto array = g.vertex_arrays.find(g.vertex_array);
+    if (array == g.vertex_arrays.end()) {
+        return 0;
+    }
+    const Attribute& slot = array->second.attributes[mesh::kLightSlot];
+    const auto slot_buffer = g.buffers.find(slot.buffer);
+    const auto elements = width != 0 ? g.buffers.find(array->second.elements) : g.buffers.end();
+    if (!slot.enabled || slot.type != GL_FLOAT || slot_buffer == g.buffers.end()
+        || slot_buffer->second.memory.address == nullptr
+        || (width != 0 && elements == g.buffers.end())) {
+        return 0;
+    }
+    const u32 written = slot_buffer->second.written + (width != 0 ? elements->second.written : 0);
+    if (g_slots_drawn.size() > 16384) {
+        g_slots_drawn.clear();  // draws of buffers long gone
+    }
+    SlotsDrawn& kept =
+        g_slots_drawn[{slot.buffer, width != 0 ? array->second.elements : 0, first, count}];
+    if (kept.read && kept.written == written) {
+        return kept.slots;
+    }
+    const u32 stride = slot.stride > 0 ? static_cast<u32>(slot.stride) : 4;
+    const auto* slot_bytes = static_cast<const unsigned char*>(slot_buffer->second.memory.address);
+    const auto* index_bytes =
+        width != 0 ? static_cast<const unsigned char*>(elements->second.memory.address) : nullptr;
+    float highest = -1.0f;
+    for (u32 i = 0; i < count; ++i) {
+        u32 vertex = first + i;
+        if (width == 4) {
+            read_memory(&vertex, index_bytes + first + i * 4, 4);
+        } else if (width == 2) {
+            u16 narrow = 0;
+            read_memory(&narrow, index_bytes + first + i * 2, 2);
+            vertex = narrow;
+        }
+        const std::size_t at = slot.pointer + static_cast<std::size_t>(vertex) * stride;
+        if (at + 4 > slot_buffer->second.size) {
+            continue;
+        }
+        float named = -1.0f;
+        read_memory(&named, slot_bytes + at, sizeof named);
+        highest = std::max(highest, named);
+    }
+    kept.read = true;
+    kept.written = written;
+    kept.slots = highest < 0.0f ? 0 : std::min(kLightsHeld, static_cast<u32>(highest) + 1);
+    return kept.slots;
 }
 
 // One past the highest joint that the draw's vertices give a weight; 0 where they have none. The
@@ -1402,7 +1465,8 @@ const Program* begin_draw(Target& target) {
 // What a draw's instances are to the bound program: the mesh program's numbers of each, from
 // the vertex array's values an instance, and a moby's joints and lights besides; nothing to the
 // others, whose instances are the same draw again. `joints` is how many joints the draw's
-// vertices are skinned with (joints_drawn).
+// vertices are skinned with (joints_drawn), `slots` how many light slots they name
+// (slots_drawn).
 struct Instances {
     const Program* program = nullptr;
     ProgramKind kind = ProgramKind::None;
@@ -1423,11 +1487,13 @@ struct Instances {
     u32 lights_stride = 0;
     const Image* colours = nullptr;  // the light texture
     u32 joints = 0;
+    u32 slots = 0;
 
-    Instances(const Program* bound, u32 skinned_with)
+    Instances(const Program* bound, u32 skinned_with, u32 slots_named)
         : program(bound),
           kind(drawn_kind(*bound)),
-          joints(skinned_with) {
+          joints(skinned_with),
+          slots(slots_named) {
         if (program->kind == ProgramKind::Mesh) {
             model = instance_values(mesh::kModel, model_stride);
             tint = instance_values(mesh::kTint, tint_stride);
@@ -1464,8 +1530,9 @@ struct Instances {
         // A lit tie's or shrub's first colour in the light texture, -1 for what has none.
         float first_colour[1] = {-1.0f};
         stepped(lights, lights_stride, instance, first_colour);
-        const bool has_colours = first_colour[0] >= 0.0f && colours != nullptr
-                                 && load_lights(*colours, static_cast<u32>(first_colour[0] + 0.5f));
+        const bool has_colours =
+            slots != 0 && first_colour[0] >= 0.0f && colours != nullptr
+            && load_lights(*colours, static_cast<u32>(first_colour[0] + 0.5f), slots);
         mesh_instance_constants(*program, placed, tinted, has_colours, constants);
         rsxLoadVertexProgramParameterBlock(
             g.context, loaded.vertex->const_start, kMeshInstanceConstants, &constants[0][0]
@@ -1508,6 +1575,11 @@ bool joints_of_draw(const Program& program, u32 first, u32 count, u32 width, u32
     return true;
 }
 
+// How many light slots a tie's or shrub's draw names: 0 for another program's draw.
+u32 slots_of_draw(const Program& program, u32 first, u32 count, u32 width) {
+    return drawn_kind(program) == ProgramKind::Mesh ? slots_drawn(first, count, width) : 0;
+}
+
 // A draw with a program the layer has for the RSX; one without is left out. The RSX has no
 // instances: each is a draw of its own.
 void draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
@@ -1528,7 +1600,11 @@ void draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
     if (!joints_of_draw(*program, static_cast<u32>(first), static_cast<u32>(count), 0, joints)) {
         return;
     }
-    const Instances each(program, joints);
+    const Instances each(
+        program,
+        joints,
+        slots_of_draw(*program, static_cast<u32>(first), static_cast<u32>(count), 0)
+    );
     u64 before = __builtin_ppc_get_timebase();
     g.ticks_state += before - began;
     for (GLsizei instance = 0; instance < instances; ++instance) {
@@ -1579,7 +1655,9 @@ void draw_elements_instanced(
     if (!joints_of_draw(*program, first, static_cast<u32>(count), width, joints)) {
         return;
     }
-    const Instances each(program, joints);
+    const Instances each(
+        program, joints, slots_of_draw(*program, first, static_cast<u32>(count), width)
+    );
     u64 before = __builtin_ppc_get_timebase();
     g.ticks_state += before - began;
     for (GLsizei instance = 0; instance < instances; ++instance) {
