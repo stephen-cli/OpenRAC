@@ -667,10 +667,28 @@ What was done about the first two, the same day:
   the RSX's memory, which the processor reads slowly, some 3,300
   times a frame. The layer keeps those bytes in the program's memory
   as well now (the buffers a draw reads values an instance from, and
-  the light texture): a frame takes 89 ms there. Of what is left, 20
-  to 40 ms are still the instances' constants (the 64 colours go to
-  the RSX as constants for every instance of every material) and 10
-  to 57 ms are waits for the RSX.
+  the light texture): a frame takes 89 ms there.
+- **Speed: the rest was the RSX filling pixels.** The layer's line
+  counts a wait for room in the command buffer with the instances'
+  constants, so its 20 to 40 ms of constants and 10 to 57 ms of waits
+  were one thing: the RSX behind. What it was behind on, by probes in
+  the game and a benchmark of whole layers in the layer's test program
+  (2026-11-27, 1440 by 1080): a frame with every draw cut to one pixel
+  takes the layer 12.7 ms where it took 68.5; Veldin draws a pixel 4
+  to 4.6 times, 7 to 10 in the crash's fire, all into one surface; a
+  draw costs the RSX next to nothing (2,000 of a pixel each, 4.8 ms)
+  and a change of texture nothing. Two limits stood one behind the
+  other, so that lifting either alone showed nothing in the game: the
+  fragment programs' length (36 instructions 2.27 ms a million pixels,
+  three or seven 0.94) and surfaces in memory the RSX was told nothing
+  of (a blended, depth-tested pixel of a short program 3.07 ms a
+  million, 1.03 in a tiled region). With both lifted
+  ([renderer/rsx](../../port/renderer/rsx/README.md), "Tiled surfaces"
+  and "Fragment programs by their parts") the layer's part of Veldin's
+  frame is 29.6 ms where it was 63, and 58.6 where it was 98 in the
+  fire. Of no use there: fewer light colours a draw, the RSX's z-cull
+  (the renderer's depth is reversed: its direction is GREATER), and
+  the RSX's count of pixels passed, which reads nothing.
 
 How a program gets there without a hand on the console (the test's
 [README](../../port/tools/ps3/rsxgl-test/README.md) has the commands):
