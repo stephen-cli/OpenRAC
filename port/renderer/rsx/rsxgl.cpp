@@ -182,7 +182,10 @@ bool open(const Config& config, std::string& error) {
     video.resolution = state.displayMode.resolution;
     video.format = VIDEO_BUFFER_FORMAT_XRGB;
     video.aspect = VIDEO_ASPECT_AUTO;
-    video.pitch = g.width * 4;
+    // The screen's buffers are tiled regions too (rsxgl_internal.h, allocate_surface).
+    const u32 tiled = surface_pitch(g.width);
+    g.colour_pitch = g.depth_pitch = tiled != 0 ? tiled : g.width * 4;
+    video.pitch = g.colour_pitch;
     if (videoConfigure(VIDEO_PRIMARY, &video, nullptr, 0) != 0) {
         error = "the console's video mode could not be set";
         return false;
@@ -190,17 +193,15 @@ bool open(const Config& config, std::string& error) {
     wait_idle();
     gcmSetFlipMode(config.vsync ? GCM_FLIP_VSYNC : GCM_FLIP_HSYNC);
 
-    g.colour_pitch = g.width * 4;
-    g.depth_pitch = g.width * 4;
     for (u32 i = 0; i < kBuffers; ++i) {
-        g.colour[i] = allocate(g.height * g.colour_pitch);
+        g.colour[i] = allocate_surface(g.colour_pitch, g.height);
         if (g.colour[i].address == nullptr) {
             error = "no RSX memory for the colour buffers";
             return false;
         }
         gcmSetDisplayBuffer(i, g.colour[i].offset, g.colour_pitch, g.width, g.height);
     }
-    g.depth = allocate(g.height * g.depth_pitch);
+    g.depth = allocate_surface(g.depth_pitch, g.height);
     if (g.depth.address == nullptr) {
         error = "no RSX memory for the depth buffer";
         return false;
@@ -300,6 +301,9 @@ void present() {
     // The frame is shown: nothing queued reads what GL gave up during it.
     ++g.frame;
     for (void* memory : g.retired) {
+        u32 offset = 0;
+        rsxAddressToOffset(memory, &offset);
+        unbind_surface(offset);
         rsxFree(memory);
     }
     g.retired.clear();

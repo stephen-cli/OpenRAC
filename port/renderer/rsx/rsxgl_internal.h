@@ -47,6 +47,7 @@ struct Image {
     u32 pitch = 0;
     u32 levels = 1;
     bool depth = false;
+    bool surface = false;  // its memory is laid out for a tiled region (allocate_surface)
     gl::GLenum min_filter = gl::GL_LINEAR;  // GL's own default asks for a mip chain
     gl::GLenum mag_filter = gl::GL_LINEAR;
     gl::GLenum wrap_s = gl::GL_REPEAT;
@@ -293,6 +294,20 @@ void wait_idle();
 
 // rsxgl_objects.cpp
 Memory allocate(u32 bytes);
+
+// What the RSX draws into is a tiled region of its memory: rows of one of the RSX's own
+// pitches, from a multiple of 64 KB and 64 KB whole, and bound as a region while it is drawn
+// into. The RSX fills a pixel of such a region about three times as fast as one of memory
+// it was told nothing of (README.md, "Tiled surfaces"); the bytes are where they would be
+// without the region, so a surface is read and sampled as any other image.
+// The pitch of a surface so wide in pixels; 0 where the RSX has none for a row so short.
+u32 surface_pitch(u32 width);
+Memory allocate_surface(u32 pitch, u32 rows);
+// Binds the region of the surface at `offset` (it stays bound while there is room: the RSX
+// has 15 regions, and the one longest out of use gives way).
+void bind_surface(u32 offset, u32 pitch, u32 rows);
+// The region of memory that is about to be freed.
+void unbind_surface(u32 offset);
 void retire(Memory& memory);
 // The RSX's memory from the program's side, the layer's only touches of it. On a console a load
 // of it wider than its address's alignment stops the program (README.md, "On a console"), and a

@@ -30,6 +30,96 @@ Memory allocate(u32 bytes) {
 
 namespace {
 
+constexpr u32 kRegionAlignment = 0x10000;  // a tiled region's offset and size: 64 KB whole
+constexpr u32 kRegions = 15;
+
+u32 region_size(u32 pitch, u32 rows) {
+    return (pitch * rows + kRegionAlignment - 1) & ~(kRegionAlignment - 1);
+}
+
+struct Region {
+    u32 offset = 0;
+    u32 pitch = 0;
+    u32 size = 0;
+    u32 used = 0;  // State::frame when a surface was last set to it
+    bool bound = false;
+};
+
+Region g_regions[kRegions];
+
+}  // namespace
+
+u32 surface_pitch(u32 width) {
+    constexpr u32 kShortest = 0x200;  // the RSX's shortest tiled pitch
+    return width * 4 >= kShortest ? gcmGetTiledPitchSize(width * 4) : 0;
+}
+
+Memory allocate_surface(u32 pitch, u32 rows) {
+    Memory memory;
+    memory.address = rsxMemalign(kRegionAlignment, region_size(pitch, rows));
+    if (memory.address == nullptr) {
+        log::error("rsxgl: no RSX memory for a surface of {} rows of {} bytes", rows, pitch);
+        return memory;
+    }
+    rsxAddressToOffset(memory.address, &memory.offset);
+    return memory;
+}
+
+void bind_surface(u32 offset, u32 pitch, u32 rows) {
+    const u32 size = region_size(pitch, rows);
+    Region* free_one = nullptr;
+    Region* oldest = &g_regions[0];
+    for (Region& region : g_regions) {
+        if (region.bound && region.offset == offset && region.pitch == pitch
+            && region.size == size) {
+            region.used = g.frame;
+            return;
+        }
+        if (!region.bound && free_one == nullptr) {
+            free_one = &region;
+        }
+        if (region.used < oldest->used) {
+            oldest = &region;
+        }
+    }
+    Region* into = free_one != nullptr ? free_one : oldest;
+    const auto index = static_cast<u8>(into - g_regions);
+    if (into->bound) {
+        // Draws into the surface that gives way may be queued still.
+        wait_idle();
+        gcmUnbindTile(index);
+    }
+    const bool bound =
+        gcmSetTileInfo(index, GCM_LOCATION_RSX, offset, size, pitch, GCM_COMPMODE_DISABLED, 0, 0)
+            == 0
+        && gcmBindTile(index) == 0;
+    if (!bound) {
+        static bool told = false;
+        if (!told) {
+            told = true;
+            log::warn(
+                "rsxgl: the RSX took no tiled region at {:#x} ({} bytes, pitch {}): the surface "
+                "is drawn into as plain memory, slowly",
+                offset,
+                size,
+                pitch
+            );
+        }
+    }
+    *into = Region{offset, pitch, size, g.frame, bound};
+}
+
+void unbind_surface(u32 offset) {
+    for (Region& region : g_regions) {
+        if (region.bound && region.offset == offset) {
+            gcmUnbindTile(static_cast<u8>(&region - g_regions));
+            region = Region{};
+        }
+    }
+}
+
+namespace {
+
 bool at_word(const volatile unsigned char* place) {
     return (reinterpret_cast<std::uintptr_t>(place) & 3) == 0;
 }
@@ -123,26 +213,29 @@ bool is_colour_format(GLenum format) {
     return format == GL_RGBA8 || format == GL_RGBA || format == GL_RGBA16F;
 }
 
-// Memory for one level of that size, kept when it is what the image has.
-void store(Image& into, GLsizei width, GLsizei height, bool depth) {
+// Memory for one level of that size, kept when it is what the image has. `surface`: it is
+// to be drawn into, and laid out for a tiled region where the RSX has a pitch for its rows.
+void store(Image& into, GLsizei width, GLsizei height, bool depth, bool surface) {
     const auto wide = static_cast<u32>(std::max(width, 0));
     const auto high = static_cast<u32>(std::max(height, 0));
+    const u32 tiled = surface ? surface_pitch(wide) : 0;
     std::vector<float>().swap(into.floats);
     if (into.memory.address != nullptr && into.width == wide && into.height == high
-        && into.depth == depth && into.levels == 1) {
+        && into.depth == depth && into.levels == 1 && into.surface == (tiled != 0)) {
         before_write(into.used);
         return;
     }
     retire(into.memory);
     into.width = wide;
     into.height = high;
-    into.pitch = wide * 4;
+    into.pitch = tiled != 0 ? tiled : wide * 4;
     into.levels = 1;
     into.depth = depth;
+    into.surface = tiled != 0;
     if (wide == 0 || high == 0) {
         return;
     }
-    into.memory = allocate(high * into.pitch);
+    into.memory = into.surface ? allocate_surface(into.pitch, high) : allocate(high * into.pitch);
     if (into.memory.address != nullptr) {
         fill_memory(into.memory.address, 0, static_cast<std::size_t>(high) * into.pitch);
     }
@@ -222,7 +315,8 @@ void tex_image(
         retire(into->memory);
         return;
     }
-    store(*into, width, height, is_depth_format(internal));
+    // A texture given no texels is one to draw into or to copy into: a framebuffer's.
+    store(*into, width, height, is_depth_format(internal), pixels == nullptr);
     if (pixels != nullptr && into->memory.address != nullptr && format == GL_RGBA
         && type == GL_UNSIGNED_BYTE) {
         write_rgba(*into, 0, 0, into->width, into->height, pixels);
@@ -334,6 +428,7 @@ void generate_mipmap(GLenum target) {
         retire(of->memory);
         of->memory = chain;
         of->levels = levels;
+        of->surface = false;  // a chain's memory is not laid out for a tiled region
         g.target_stale = true;
     }
     std::vector<u32> below;
@@ -428,7 +523,7 @@ void bind_renderbuffer(GLenum, GLuint renderbuffer) {
 
 void renderbuffer_storage(GLenum, GLenum format, GLsizei width, GLsizei height) {
     if (g.renderbuffer != 0) {
-        store(g.images[g.renderbuffer], width, height, is_depth_format(format));
+        store(g.images[g.renderbuffer], width, height, is_depth_format(format), true);
     }
 }
 

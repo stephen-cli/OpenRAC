@@ -170,6 +170,26 @@ as the filter within the level. Levels are not uploaded one by one
 anisotropic filter is asked for. Seen under RPCS3 (2026-11-26); on a
 console not yet.
 
+## Tiled surfaces
+
+What the RSX draws into is a tiled region of its memory: rows of one of
+the RSX's own pitches (`gcmGetTiledPitchSize`), from a multiple of 64 KB
+and 64 KB whole, bound with `gcmSetTileInfo` and `gcmBindTile` (no
+compression). The screen's buffers are laid out so, and so is a
+renderbuffer and a texture given no texels, which is a framebuffer's;
+a surface's region is bound when the surface is set, and the RSX's 15
+regions go to the surfaces last drawn into. The bytes are where they
+would be without a region, so a surface is read back and sampled as any
+other image.
+
+Measured on a console (2026-11-27, 20 layers of 1440 by 1080 with a
+fragment program of three instructions): a blended, depth-tested pixel
+takes 3.07 ms a million in memory the RSX was told nothing of and 1.03
+in a region; a plain one 0.94 and 0.60. With the layer's long fragment
+programs the program is the limit either way (2.27 and 2.25), which is
+why the regions alone change little in the game. The game's pictures on
+the console are the same byte for byte with and without them.
+
 ## Which way up
 
 A texture's and an off-screen framebuffer's rows are in GL's order in

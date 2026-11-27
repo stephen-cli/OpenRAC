@@ -150,6 +150,19 @@ void set_surface(const Target& target, u32 screen_buffer) {
     surface.depthLocation = GCM_LOCATION_RSX;
     surface.depthOffset = target.depth != nullptr ? target.depth->memory.offset : g.depth.offset;
     surface.depthPitch = target.depth != nullptr ? target.depth->pitch : g.depth_pitch;
+    // Its buffers' tiled regions (rsxgl_internal.h, allocate_surface): the screen's are laid
+    // out for one, an image where it was made to be drawn into.
+    if (surface.colorTarget != GCM_SURFACE_TARGET_NONE
+        && (target.screen || target.colour->surface)) {
+        bind_surface(surface.colorOffset[0], surface.colorPitch[0], target.height);
+    }
+    if (target.depth == nullptr || target.depth->surface) {
+        bind_surface(
+            surface.depthOffset,
+            surface.depthPitch,
+            target.depth != nullptr ? target.depth->height : g.height
+        );
+    }
     rsxSetSurface(g.context, &surface);
 }
 
