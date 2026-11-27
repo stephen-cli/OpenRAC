@@ -16,6 +16,7 @@
 #include "common/log.h"
 #include "renderer/rsx/rsxgl_internal.h"
 
+#include <sys/systime.h>
 #include <sysutil/video.h>
 
 namespace openrac::rsxgl {
@@ -49,6 +50,7 @@ void wait_a_little(const char* what, u32& waited) {
 // everything before it, and memory GL gave up since the last wait is no longer read.
 void wait_idle() {
     constexpr u32 kLabel = 255;
+    const u64 began = __builtin_ppc_get_timebase();
     rsxSetWriteBackendLabel(g.context, kLabel, g.label);
     rsxFlushBuffer(g.context);
     u32 waited = 0;
@@ -57,6 +59,7 @@ void wait_idle() {
     }
     ++g.label;
     ++g.sync;
+    g.ticks_waits += __builtin_ppc_get_timebase() - began;
 }
 
 namespace {
@@ -264,23 +267,35 @@ void present() {
     rsxFlushBuffer(g.context);
     gcmSetWaitFlip(g.context);
     u32 waited = 0;
+    const u64 flip_began = __builtin_ppc_get_timebase();
     while (gcmGetFlipStatus() != 0) {
         wait_a_little("waiting for the flip", waited);
     }
+    g.ticks_waits += __builtin_ppc_get_timebase() - flip_began;
     g.drawn ^= 1;
     g.target_stale = true;
     // What the layer did, every two seconds of frames: a black picture with draws left out is a
     // program the layer has no RSX program for (README.md).
     constexpr u32 kFramesALine = 120;
+    static const double ticks_a_ms = static_cast<double>(sysGetTimebaseFrequency()) / 1000.0;
+    const auto ms_a_frame = [](u64 ticks) {
+        return static_cast<double>(ticks) / ticks_a_ms / kFramesALine;
+    };
     if (g.frame % kFramesALine == 0) {
         log::verbose(
-            "rsxgl: {} frames: {} draws, {} left out, {} copies",
+            "rsxgl: {} frames: {} draws, {} left out, {} copies; ms a frame: {:.1f} a draw's "
+            "state, {:.1f} the instances' constants, {:.1f} the draw commands, {:.1f} waiting",
             kFramesALine,
             g.draws,
             g.draws_left_out,
-            g.copies
+            g.copies,
+            ms_a_frame(g.ticks_state),
+            ms_a_frame(g.ticks_constants),
+            ms_a_frame(g.ticks_commands),
+            ms_a_frame(g.ticks_waits)
         );
         g.draws = g.draws_left_out = g.copies = 0;
+        g.ticks_state = g.ticks_constants = g.ticks_commands = g.ticks_waits = 0;
     }
     // The frame is shown: nothing queued reads what GL gave up during it.
     ++g.frame;

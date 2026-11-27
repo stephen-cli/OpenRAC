@@ -496,6 +496,12 @@ void buffer_data(GLenum target, GLsizeiptr size, const void* data, GLenum) {
     if (data != nullptr && into.memory.address != nullptr) {
         write_memory(into.memory.address, data, bytes);
     }
+    if (!into.kept.empty()) {
+        into.kept.resize(into.memory.address != nullptr ? bytes : 0);
+        if (data != nullptr && !into.kept.empty()) {
+            std::memcpy(into.kept.data(), data, bytes);
+        }
+    }
 }
 
 void buffer_sub_data(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
@@ -517,6 +523,9 @@ void buffer_sub_data(GLenum target, GLintptr offset, GLsizeiptr size, const void
     write_memory(
         static_cast<unsigned char*>(into.memory.address) + offset, data, static_cast<u32>(size)
     );
+    if (into.kept.size() == into.size) {
+        std::memcpy(into.kept.data() + offset, data, static_cast<std::size_t>(size));
+    }
 }
 
 void delete_buffers(GLsizei count, const GLuint* names) {

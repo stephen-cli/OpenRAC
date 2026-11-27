@@ -760,7 +760,8 @@ void pass_constants(const Program& program, float c[kMeshPassConstants][4]) {
 }
 
 // Where the bound vertex array has the value of an instance for `attribute`: its first, and the
-// bytes from one to the next. Null when the attribute is not one value an instance.
+// bytes from one to the next. Null when the attribute is not one value an instance. They are
+// read in the program's memory, where the buffer's bytes are kept from its first such draw.
 const float* instance_values(u32 attribute, u32& stride) {
     const auto array = g.vertex_arrays.find(g.vertex_array);
     if (array == g.vertex_arrays.end()) {
@@ -772,10 +773,13 @@ const float* instance_values(u32 attribute, u32& stride) {
         || buffer == g.buffers.end() || buffer->second.memory.address == nullptr) {
         return nullptr;
     }
+    Buffer& values = buffer->second;
+    if (values.kept.size() != values.size) {
+        values.kept.resize(values.size);
+        read_memory(values.kept.data(), values.memory.address, values.size);
+    }
     stride = static_cast<u32>(instanced.stride);
-    return reinterpret_cast<const float*>(
-        static_cast<const unsigned char*>(buffer->second.memory.address) + instanced.pointer
-    );
+    return reinterpret_cast<const float*>(values.kept.data() + instanced.pointer);
 }
 
 // The value of `instance` read into `into`, which keeps what it has where the vertex array has
@@ -783,7 +787,7 @@ const float* instance_values(u32 attribute, u32& stride) {
 template <std::size_t Count>
 void stepped(const float* values, u32 stride, GLsizei instance, float (&into)[Count]) {
     if (values != nullptr) {
-        read_memory(
+        std::memcpy(
             into,
             reinterpret_cast<const unsigned char*>(values) + stride * static_cast<u32>(instance),
             sizeof into
@@ -996,8 +1000,9 @@ bool load_joints(const Image& palette, u32 first, u32 joints) {
 }
 
 // Hands the RSX the 64 colours of the light texture from texel `first` as mesh.vp's c[32] up, as
-// mesh.vert has them: 0x80 is 1. The texture is read where the RSX has it (A8R8G8B8), which no
-// draw of the RSX's reads. False when the texture has no such texel.
+// mesh.vert has them: 0x80 is 1. The texture's texels (A8R8G8B8, which no draw of the RSX's
+// reads) are read in the program's memory, where they are kept from its first such draw and
+// read again from the RSX's when it has been written. False when the texture has no such texel.
 bool load_lights(const Image& texture, u32 first) {
     const u32 held = texture.width * texture.height;
     if (texture.memory.address == nullptr || texture.depth || first >= held) {
@@ -1009,15 +1014,22 @@ bool load_lights(const Image& texture, u32 first) {
     }
     g_lights_loaded = {&texture, g.frame, texture.written, first};
     g_joints_loaded = {};
+    if (texture.kept.size() != held || texture.kept_at != texture.written) {
+        texture.kept.resize(held);
+        for (u32 row = 0; row < texture.height; ++row) {
+            read_memory(
+                texture.kept.data() + static_cast<std::size_t>(row) * texture.width,
+                static_cast<const unsigned char*>(texture.memory.address)
+                    + static_cast<std::size_t>(row) * texture.pitch,
+                static_cast<std::size_t>(texture.width) * 4
+            );
+        }
+        texture.kept_at = texture.written;
+    }
     float colours[kLightsHeld][4] = {};
     const u32 count = std::min(kLightsHeld, held - first);
     for (u32 i = 0; i < count; ++i) {
-        const u32 texel = first + i;
-        const u32 argb = read_word(
-            static_cast<const unsigned char*>(texture.memory.address)
-            + static_cast<std::size_t>(texel / texture.width) * texture.pitch
-            + static_cast<std::size_t>(texel % texture.width) * 4
-        );
+        const u32 argb = texture.kept[first + i];
         const u32 rgba[4] = {argb >> 16 & 255, argb >> 8 & 255, argb & 255, argb >> 24};
         for (u32 channel = 0; channel < 4; ++channel) {
             colours[i][channel] = static_cast<float>(rgba[channel]) / 128.0f;
@@ -1503,6 +1515,7 @@ void draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
     if (count <= 0 || instances <= 0) {
         return;
     }
+    const u64 began = __builtin_ppc_get_timebase();
     const Program* program = begin_draw(target);
     if (program == nullptr) {
         return;
@@ -1516,12 +1529,19 @@ void draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
         return;
     }
     const Instances each(program, joints);
+    u64 before = __builtin_ppc_get_timebase();
+    g.ticks_state += before - began;
     for (GLsizei instance = 0; instance < instances; ++instance) {
         ++g.draws;
         each.load(instance);
+        const u64 loaded = __builtin_ppc_get_timebase();
         rsxDrawVertexArray(
             g.context, primitive(mode), static_cast<u32>(first), static_cast<u32>(count)
         );
+        const u64 drawn = __builtin_ppc_get_timebase();
+        g.ticks_constants += loaded - before;
+        g.ticks_commands += drawn - loaded;
+        before = drawn;
     }
     mark_used(target);
 }
@@ -1549,6 +1569,7 @@ void draw_elements_instanced(
         return;
     }
     Target target;
+    const u64 began = __builtin_ppc_get_timebase();
     const Program* program = begin_draw(target);
     if (program == nullptr) {
         return;
@@ -1559,9 +1580,12 @@ void draw_elements_instanced(
         return;
     }
     const Instances each(program, joints);
+    u64 before = __builtin_ppc_get_timebase();
+    g.ticks_state += before - began;
     for (GLsizei instance = 0; instance < instances; ++instance) {
         ++g.draws;
         each.load(instance);
+        const u64 loaded = __builtin_ppc_get_timebase();
         rsxDrawIndexArray(
             g.context,
             primitive(mode),
@@ -1570,6 +1594,10 @@ void draw_elements_instanced(
             width == 4 ? GCM_INDEX_TYPE_32B : GCM_INDEX_TYPE_16B,
             GCM_LOCATION_RSX
         );
+        const u64 drawn = __builtin_ppc_get_timebase();
+        g.ticks_constants += loaded - before;
+        g.ticks_commands += drawn - loaded;
+        before = drawn;
     }
     mark_used(target);
 }

@@ -56,6 +56,12 @@ struct Image {
     // the mobys' joint matrices, which a draw hands the RSX as constants.
     std::vector<float> floats;
     u32 written = 0;  // counts the writes of its texels by glTexImage2D and glTexSubImage2D
+    // Its first level's texels (A8R8G8B8, row after row) in the program's memory too, once a draw
+    // has read it for an instance's colours (the light texture): the RSX's memory is slow for
+    // the processor to read, and that read is made for every instance. As `written` was at
+    // `kept_at`.
+    mutable std::vector<u32> kept;
+    mutable u32 kept_at = 0;
 };
 
 struct Sampler {
@@ -70,6 +76,9 @@ struct Buffer {
     u32 size = 0;
     u32 drawn = 0;    // State::frame when a draw last read it
     u32 written = 0;  // counts its writes: what the layer worked out of its bytes holds until one
+    // Its bytes in the program's memory too, once a draw has read it for values an instance,
+    // and written with it from then on: the RSX's memory is slow for the processor to read.
+    std::vector<unsigned char> kept;
 };
 
 struct Attribute {
@@ -261,6 +270,13 @@ struct State {
     u32 draws_left_out = 0;
     u32 left_out_logged = 0;  // a bit for each reason a draw was left out that the log has had
     u32 copies = 0;
+    // And the layer's time since that line, in ticks of the processor's time base: a draw's
+    // state, an instance's constants, the draw commands themselves (which wait when the
+    // command buffer is full), and the waits for the RSX to catch up and for the flip.
+    u64 ticks_state = 0;
+    u64 ticks_constants = 0;
+    u64 ticks_commands = 0;
+    u64 ticks_waits = 0;
 
     // What the RSX was last told, so that a draw tells it only what changed.
     bool target_stale = true;  // the surface, and with it the viewport and scissor

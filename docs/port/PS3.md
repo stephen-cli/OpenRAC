@@ -658,6 +658,19 @@ What was done about the first two, the same day:
   opens and closes. The log's line of a level's memory also says how
   much of the heap is free inside it (the heap gives little back to
   the system): 49 MB of 158 there.
+- **Speed: where a frame's time goes.** The game's per-frame dump
+  (`--debug-dump`) and the layer's own line in the log (every 120
+  frames: a draw's state, the instances' constants, the draw
+  commands, the waits) on the console, in Veldin's opening: a frame
+  took 211 ms, the game's own code 14 of them, and 120 to 170 went to
+  reading each instance's matrix, tint and 64 light colours out of
+  the RSX's memory, which the processor reads slowly, some 3,300
+  times a frame. The layer keeps those bytes in the program's memory
+  as well now (the buffers a draw reads values an instance from, and
+  the light texture): a frame takes 89 ms there. Of what is left, 20
+  to 40 ms are still the instances' constants (the 64 colours go to
+  the RSX as constants for every instance of every material) and 10
+  to 57 ms are waits for the RSX.
 
 How a program gets there without a hand on the console (the test's
 [README](../../port/tools/ps3/rsxgl-test/README.md) has the commands):
