@@ -229,7 +229,7 @@ if(OPENRAC_PS3)
   # as arrays of bytes in rsx_programs.h.
   set(rsx_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/rsx")
   set(rsx_assembled "")
-  foreach(program direct.vp direct.fp sky.vp sky.fp mesh.vp mesh.fp moby.vp effect.vp)
+  foreach(program direct.vp copy.fp sky.vp sky.fp mesh.vp moby.vp effect.vp)
     string(REGEX REPLACE "^.*[.](.)p$" "\\1" flag "${program}")
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/${program}")
     set(assembled "${rsx_generated}/${program}o")
@@ -239,6 +239,41 @@ if(OPENRAC_PS3)
       DEPENDS "${source}" VERBATIM)
     list(APPEND rsx_assembled "${assembled}")
   endforeach()
+  # A fragment program with parts a draw can do without is assembled once for every set of
+  # them (programs/variant.cmake): NAME_NN.fpo, NN the set's number with the first part
+  # named here its lowest bit.
+  function(openrac_rsx_fragment_sets name)
+    set(source "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/${name}.fp")
+    set(script "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/variant.cmake")
+    list(LENGTH ARGN count)
+    math(EXPR last "(1 << ${count}) - 1")
+    foreach(set RANGE 0 ${last})
+      set(drop "")
+      set(bit 1)
+      foreach(part IN LISTS ARGN)
+        math(EXPR has "${set} & ${bit}")
+        if(has EQUAL 0)
+          string(APPEND drop "+${part}")
+        endif()
+        math(EXPR bit "${bit} * 2")
+      endforeach()
+      set(number "${set}")
+      if(set LESS 10)
+        set(number "0${set}")
+      endif()
+      set(variant "${rsx_generated}/${name}_${number}.fp")
+      add_custom_command(OUTPUT "${variant}o"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${rsx_generated}"
+        COMMAND "${CMAKE_COMMAND}" "-DINPUT=${source}" "-DOUTPUT=${variant}" "-DDROP=${drop}"
+                -P "${script}"
+        COMMAND cgcomp -f -a "${variant}" "${variant}o"
+        DEPENDS "${source}" "${script}" VERBATIM)
+      list(APPEND rsx_assembled "${variant}o")
+    endforeach()
+    set(rsx_assembled "${rsx_assembled}" PARENT_SCOPE)
+  endfunction()
+  openrac_rsx_fragment_sets(mesh material cutout leftout fog added)
+  openrac_rsx_fragment_sets(direct fog alphatest weight)
   add_custom_command(OUTPUT "${rsx_generated}/rsx_programs.h"
     COMMAND "${CMAKE_COMMAND}" "-DINPUTS=${rsx_assembled}" "-DOUTPUT=${rsx_generated}/rsx_programs.h"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rsx/programs/embed.cmake"

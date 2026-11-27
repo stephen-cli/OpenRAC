@@ -50,7 +50,8 @@ kind's names), and a draw makes the RSX program's constants of them.
 functions, fog, the alpha test's six comparisons, the blend's source
 weight). `direct.fp` has no branch: each choice is a sum whose weights the
 layer works out from the same uniforms for every draw (`direct_constants`),
-so one program serves them all. The weights reach the fragment program as
+and the parts a draw's weights make nothing of are left out of its program
+("Fragment programs by their parts"). The weights reach the fragment program as
 texture coordinates the vertex program copies from its constants. A vertex
 program's constants travel in the command buffer with the draw; a fragment
 program's are written into the program's own memory, which the RSX may
@@ -189,6 +190,31 @@ in a region; a plain one 0.94 and 0.60. With the layer's long fragment
 programs the program is the limit either way (2.27 and 2.25), which is
 why the regions alone change little in the game. The game's pictures on
 the console are the same byte for byte with and without them.
+
+## Fragment programs by their parts
+
+The RSX fills a pixel the faster the shorter its fragment program. On a
+console (2026-11-27, 20 layers of 1440 by 1080) a pixel of `direct.fp`
+whole, 36 instructions, takes 2.27 ms a million whatever the draw asks
+of it, and one of a program of three or of seven instructions 0.94 (0.60
+in a tiled region).
+
+`mesh.fp` and `direct.fp` do everything their GLSL does and weigh by
+nothing what a draw does not ask for. Each has parts a draw can do
+without: a line ending in `#@` and a name is of that part
+(`mesh.fp`: material, cutout, leftout, fog, added; `direct.fp`: fog,
+alphatest, weight). The build assembles a program for every set of parts
+(`programs/variant.cmake`, 32 of `mesh.fp` and 8 of `direct.fp`), and a
+draw takes the one with the parts its numbers need (`mesh_parts` and
+`direct_parts` in `rsxgl_draw.cpp`). The vertex programs are the same
+for every set, so a draw's fragment program is told to the RSX apart
+from its vertex program. A copy between framebuffers has `copy.fp`,
+three instructions.
+
+Under RPCS3 the layer's checks pass and Veldin's pictures are the same
+byte for byte as with the whole programs, but for the frames that fall
+on another moment of a run. On a console the game has not been measured
+with them yet.
 
 ## Which way up
 

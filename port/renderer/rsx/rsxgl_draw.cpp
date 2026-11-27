@@ -26,19 +26,71 @@ namespace {
 
 // ---- The programs ----
 
+// A vertex program.
 struct Loaded {
     const rsxVertexProgram* vertex = nullptr;
     const void* vertex_code = nullptr;
-    const rsxFragmentProgram* fragment = nullptr;
-    Memory fragment_code;  // in the RSX's memory, where the RSX reads a fragment program from
+};
+
+// A fragment program.
+struct Fragment {
+    const rsxFragmentProgram* program = nullptr;
+    Memory code;  // in the RSX's memory, where the RSX reads a fragment program from
+};
+
+// The parts of mesh.fp and of direct.fp that a draw can do without (the programs say what
+// each is). A set of parts is the sum of their numbers, and each program is assembled once
+// for every set (cmake/Window.cmake names the parts in this order): the RSX fills a pixel
+// the faster the shorter its program (README.md, "Fragment programs by their parts").
+namespace mesh_part {
+constexpr u32 kMaterial = 1;
+constexpr u32 kCutout = 2;
+constexpr u32 kLeftOut = 4;
+constexpr u32 kFog = 8;
+constexpr u32 kAdded = 16;
+constexpr u32 kSets = 32;
+}  // namespace mesh_part
+
+namespace direct_part {
+constexpr u32 kFog = 1;
+constexpr u32 kAlphaTest = 2;
+constexpr u32 kWeight = 4;
+constexpr u32 kSets = 8;
+}  // namespace direct_part
+
+const unsigned char* const kMeshFragments[mesh_part::kSets] = {
+    programs::mesh_00_fpo, programs::mesh_01_fpo, programs::mesh_02_fpo, programs::mesh_03_fpo,
+    programs::mesh_04_fpo, programs::mesh_05_fpo, programs::mesh_06_fpo, programs::mesh_07_fpo,
+    programs::mesh_08_fpo, programs::mesh_09_fpo, programs::mesh_10_fpo, programs::mesh_11_fpo,
+    programs::mesh_12_fpo, programs::mesh_13_fpo, programs::mesh_14_fpo, programs::mesh_15_fpo,
+    programs::mesh_16_fpo, programs::mesh_17_fpo, programs::mesh_18_fpo, programs::mesh_19_fpo,
+    programs::mesh_20_fpo, programs::mesh_21_fpo, programs::mesh_22_fpo, programs::mesh_23_fpo,
+    programs::mesh_24_fpo, programs::mesh_25_fpo, programs::mesh_26_fpo, programs::mesh_27_fpo,
+    programs::mesh_28_fpo, programs::mesh_29_fpo, programs::mesh_30_fpo, programs::mesh_31_fpo,
+};
+
+const unsigned char* const kDirectFragments[direct_part::kSets] = {
+    programs::direct_00_fpo,
+    programs::direct_01_fpo,
+    programs::direct_02_fpo,
+    programs::direct_03_fpo,
+    programs::direct_04_fpo,
+    programs::direct_05_fpo,
+    programs::direct_06_fpo,
+    programs::direct_07_fpo,
 };
 
 Loaded g_direct;
 Loaded g_sky;
 Loaded g_mesh;
-Loaded g_moby;    // moby.vp with a copy of mesh.fp
-Loaded g_effect;  // effect.vp with a copy of direct.fp
-Image g_white;    // one white texel: what a unit samples when the draw binds nothing
+Loaded g_moby;
+Loaded g_effect;
+Fragment g_sky_fragment;
+Fragment g_copy_fragment;
+Fragment g_mesh_fragments[mesh_part::kSets];      // mesh.vp's draws and moby.vp's
+Fragment g_direct_fragments[direct_part::kSets];  // direct.vp's draws and effect.vp's
+const Fragment* g_fragment_set = nullptr;         // the RSX's fragment program now
+Image g_white;  // one white texel: what a unit samples when the draw binds nothing
 
 // The layer's own vertices for a copy, in the direct program's layout.
 struct CopyVertex {
@@ -50,19 +102,24 @@ struct CopyVertex {
 
 constexpr u32 kCopyVertices = 6;
 
-bool load(Loaded& into, const unsigned char* vertex, const unsigned char* fragment) {
+void load(Loaded& into, const unsigned char* vertex) {
     into.vertex = reinterpret_cast<const rsxVertexProgram*>(vertex);
-    into.fragment = reinterpret_cast<const rsxFragmentProgram*>(fragment);
     void* code = nullptr;
     u32 size = 0;
     rsxVertexProgramGetUCode(into.vertex, &code, &size);
     into.vertex_code = code;
-    rsxFragmentProgramGetUCode(into.fragment, &code, &size);
-    into.fragment_code = allocate(size);
-    if (into.fragment_code.address == nullptr) {
+}
+
+bool load(Fragment& into, const unsigned char* fragment) {
+    into.program = reinterpret_cast<const rsxFragmentProgram*>(fragment);
+    void* code = nullptr;
+    u32 size = 0;
+    rsxFragmentProgramGetUCode(into.program, &code, &size);
+    into.code = allocate(size);
+    if (into.code.address == nullptr) {
         return false;
     }
-    write_memory(into.fragment_code.address, code, size);
+    write_memory(into.code.address, code, size);
     return true;
 }
 
@@ -571,22 +628,68 @@ void copy_constants(float c[7][4]) {
     c[6][2] = 1.0f;
 }
 
-// Makes `program` the RSX's, with `count` constants of four numbers from its first. (librsx's
-// rsxSetVertexProgramConstants counts single numbers and converts each to an integer on its way
-// into the command buffer.)
-void load_program(ProgramKind kind, const Loaded& program, const float* constants, u32 count) {
+// The RSX's programs are told to it when they change: a draw's fragment program is the one
+// with the parts the draw needs, whatever its vertex program.
+void use_vertex(ProgramKind kind, const Loaded& program) {
     if (g.loaded != kind) {
         rsxLoadVertexProgram(g.context, program.vertex, program.vertex_code);
-        rsxLoadFragmentProgramLocation(
-            g.context, program.fragment, program.fragment_code.offset, GCM_LOCATION_RSX
-        );
         g.loaded = kind;
     }
+}
+
+void use_fragment(const Fragment& fragment) {
+    if (g_fragment_set != &fragment) {
+        rsxLoadFragmentProgramLocation(
+            g.context, fragment.program, fragment.code.offset, GCM_LOCATION_RSX
+        );
+        g_fragment_set = &fragment;
+    }
+}
+
+// Makes `program` and `fragment` the RSX's, with `count` constants of four numbers from its
+// first. (librsx's
+// rsxSetVertexProgramConstants counts single numbers and converts each to an integer on its way
+// into the command buffer.)
+void load_program(
+    ProgramKind kind,
+    const Loaded& program,
+    const Fragment& fragment,
+    const float* constants,
+    u32 count
+) {
+    use_vertex(kind, program);
+    use_fragment(fragment);
     rsxLoadVertexProgramParameterBlock(g.context, program.vertex->const_start, count, constants);
 }
 
+// The parts of direct.fp that a draw needs, from the numbers of its texcoord[1] to [6]
+// (direct_constants' second row on).
+u32 direct_parts(const float of[6][4]) {
+    const float* fog_weight = of[1];
+    const float* fog = of[2];
+    const float* test = of[3];
+    const float* weight = of[4];
+    u32 parts = 0;
+    if (fog_weight[3] != 0.0f || fog[3] != 1.0f) {
+        parts |= direct_part::kFog;
+    }
+    if (test[0] != 0.0f || test[1] != 0.0f || test[2] < 0.0f) {
+        parts |= direct_part::kAlphaTest;
+    }
+    if (weight[0] != 1.0f || weight[1] != 0.0f || weight[2] != 0.0f || weight[3] != 0.0f) {
+        parts |= direct_part::kWeight;
+    }
+    return parts;
+}
+
 void load_direct(const float constants[7][4]) {
-    load_program(ProgramKind::Direct, g_direct, &constants[0][0], 7);
+    load_program(
+        ProgramKind::Direct,
+        g_direct,
+        g_direct_fragments[direct_parts(constants + 1)],
+        &constants[0][0],
+        7
+    );
 }
 
 // ---- The effect program's numbers ----
@@ -740,6 +843,33 @@ void mesh_constants(const Program& program, float c[kMeshDrawConstants][4]) {
     }
     c[6][1] = translucent ? 1.0f : 0.0f;
     c[6][2] = translucent ? 0.0f : 1.0f;
+}
+
+// The parts of mesh.fp that a draw needs, from mesh_constants' numbers and the pass's
+// (texcoord[3] to [6] are `draw`'s fourth row on, texcoord[7] the pass's first).
+u32 mesh_parts(
+    ProgramKind kind,
+    const float draw[kMeshDrawConstants][4],
+    const float pass[kMeshPassConstants][4]
+) {
+    const float* material = draw[3];
+    const float* fog = draw[4];
+    const float* cutout = draw[5];
+    const float* rest = draw[6];
+    u32 parts = kind == ProgramKind::Moby ? mesh_part::kLeftOut : 0;
+    if (material[0] != 1.0f || material[1] != 1.0f || material[2] != 1.0f || material[3] != 1.0f) {
+        parts |= mesh_part::kMaterial;
+    }
+    if (cutout[0] != 0.0f || cutout[1] != 1.0f || cutout[2] != 0.0f || cutout[3] != 1.0f) {
+        parts |= mesh_part::kCutout;
+    }
+    if (fog[3] != 0.0f || rest[0] != 1.0f) {
+        parts |= mesh_part::kFog;
+    }
+    if (pass[0][0] != 0.0f || pass[0][1] != 1.0f) {
+        parts |= mesh_part::kAdded;
+    }
+    return parts;
 }
 
 // The constants of a draw's pass, c[25] to c[29] (programs/moby.vp says what each is; mesh.vp
@@ -1417,13 +1547,19 @@ const Program* begin_draw(Target& target) {
         case ProgramKind::Effect: {
             float constants[kEffectConstants][4];
             effect_constants(program->second, constants);
-            load_program(ProgramKind::Effect, g_effect, &constants[0][0], kEffectConstants);
+            load_program(
+                ProgramKind::Effect,
+                g_effect,
+                g_direct_fragments[direct_parts(constants + 7)],
+                &constants[0][0],
+                kEffectConstants
+            );
             break;
         }
         case ProgramKind::Sky: {
             float constants[5][4];
             sky_constants(program->second, constants);
-            load_program(ProgramKind::Sky, g_sky, &constants[0][0], 5);
+            load_program(ProgramKind::Sky, g_sky, g_sky_fragment, &constants[0][0], 5);
             break;
         }
         case ProgramKind::Mesh:
@@ -1431,13 +1567,7 @@ const Program* begin_draw(Target& target) {
             const Loaded& loaded = kind == ProgramKind::Moby ? g_moby : g_mesh;
             float constants[kMeshDrawConstants][4];
             mesh_constants(program->second, constants);
-            if (g.loaded != kind) {
-                rsxLoadVertexProgram(g.context, loaded.vertex, loaded.vertex_code);
-                rsxLoadFragmentProgramLocation(
-                    g.context, loaded.fragment, loaded.fragment_code.offset, GCM_LOCATION_RSX
-                );
-                g.loaded = kind;
-            }
+            use_vertex(kind, loaded);
             // The joints' constants hold numbers from the first: an instance without joints
             // weighs whatever is there by nothing.
             static bool joints_cleared = false;
@@ -1460,6 +1590,7 @@ const Program* begin_draw(Target& target) {
             );
             float of_pass[kMeshPassConstants][4];
             pass_constants(program->second, of_pass);
+            use_fragment(g_mesh_fragments[mesh_parts(kind, constants, of_pass)]);
             rsxLoadVertexProgramParameterBlock(
                 g.context,
                 loaded.vertex->const_start + kMeshPassFirstConstant,
@@ -1778,7 +1909,7 @@ void draw_copy(Image& source, const GLint from[4], const GLint to[4], bool linea
     unbind_attributes(0xFu);
     float constants[7][4];
     copy_constants(constants);
-    load_direct(constants);
+    load_program(ProgramKind::Direct, g_direct, g_copy_fragment, &constants[0][0], 7);
     Sampler sampler;
     sampler.min_filter = sampler.mag_filter = linear ? GL_LINEAR : GL_NEAREST;
     sampler.wrap_s = sampler.wrap_t = GL_CLAMP_TO_EDGE;
@@ -1930,12 +2061,20 @@ bool prepare_programs(std::string& error) {
     g_white.width = g_white.height = 1;
     g_white.pitch = 4;
     g_white.memory = allocate(4);
-    if (g_white.memory.address == nullptr
-        || !load(g_direct, programs::direct_vpo, programs::direct_fpo)
-        || !load(g_sky, programs::sky_vpo, programs::sky_fpo)
-        || !load(g_mesh, programs::mesh_vpo, programs::mesh_fpo)
-        || !load(g_moby, programs::moby_vpo, programs::mesh_fpo)
-        || !load(g_effect, programs::effect_vpo, programs::direct_fpo)) {
+    load(g_direct, programs::direct_vpo);
+    load(g_sky, programs::sky_vpo);
+    load(g_mesh, programs::mesh_vpo);
+    load(g_moby, programs::moby_vpo);
+    load(g_effect, programs::effect_vpo);
+    bool loaded = g_white.memory.address != nullptr && load(g_sky_fragment, programs::sky_fpo)
+                  && load(g_copy_fragment, programs::copy_fpo);
+    for (u32 set = 0; set < mesh_part::kSets; ++set) {
+        loaded = loaded && load(g_mesh_fragments[set], kMeshFragments[set]);
+    }
+    for (u32 set = 0; set < direct_part::kSets; ++set) {
+        loaded = loaded && load(g_direct_fragments[set], kDirectFragments[set]);
+    }
+    if (!loaded) {
         error = "no RSX memory for the layer's programs";
         return false;
     }
