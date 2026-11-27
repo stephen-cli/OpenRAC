@@ -645,6 +645,20 @@ What it showed:
 - **Sound** was the noise of the one block in eight; the corrected
   driver has not been heard on a console yet.
 
+What was done about the first two, the same day:
+
+- **Memory: a music track is decoded as it plays.** The sound engine
+  read a track of the disc whole and decoded it whole, tens of
+  megabytes for a track of minutes, on every platform. It keeps the
+  track as the disc has it now, a third and a half of that, and
+  decodes the chunk the mixer is in (`assets::AdpcmStream`, the same
+  samples as the whole decode: `tests/sound/adpcm.cpp`). By way of New
+  Game under RPCS3 the level is drawn with 18 MB left where it was 3,
+  the run goes on past the track that stopped it, and the pause menu
+  opens and closes. The log's line of a level's memory also says how
+  much of the heap is free inside it (the heap gives little back to
+  the system): 49 MB of 158 there.
+
 How a program gets there without a hand on the console (the test's
 [README](../../port/tools/ps3/rsxgl-test/README.md) has the commands):
 a package made with PSL1GHT's tools, sent over FTP, installed and

@@ -19,6 +19,8 @@
 #elif defined(__lv2ppu__)
 // The console: lv2 says how much of the process's share of main memory is left; its times it
 // keeps to itself.
+#include <malloc.h>
+
 #include <ppu-lv2.h>
 #else
 #include <cstdio>
@@ -69,6 +71,9 @@ ProcessMemory process_memory() {
         m.resident = memory.total - memory.available;
         m.available = memory.available;
     }
+    const struct mallinfo heap = mallinfo();
+    m.heap = static_cast<std::uint64_t>(heap.arena);
+    m.heap_free = static_cast<std::uint64_t>(heap.fordblks);
 #else
     // /proc/self/statm: sizes in pages; the second is the resident set.
     if (std::FILE* f = std::fopen("/proc/self/statm", "r")) {

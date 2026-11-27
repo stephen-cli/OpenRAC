@@ -68,6 +68,41 @@ std::vector<s16> decode_adpcm(ByteView adpcm, AdpcmRounding rounding) {
     return out;
 }
 
+s16 AdpcmStream::sample(std::size_t index) const {
+    const auto chunk = static_cast<std::ptrdiff_t>(index / kChunkSamples);
+
+    // Before the window: from the beginning again.
+    if (chunk + 1 < m_chunk) {
+        m_chunk = -1;
+        m_history = {};
+    }
+
+    while (m_chunk < chunk) {
+        decode_next_chunk();
+    }
+
+    const std::size_t in_chunk = index % kChunkSamples;
+    return m_window[chunk == m_chunk ? kChunkSamples + in_chunk : in_chunk];
+}
+
+void AdpcmStream::decode_next_chunk() const {
+    std::copy(m_window.begin() + kChunkSamples, m_window.end(), m_window.begin());
+    ++m_chunk;
+    const std::size_t whole = m_adpcm.size() / kAdpcmFrameBytes;
+    const std::size_t first = static_cast<std::size_t>(m_chunk) * kChunkFrames;
+
+    // The run's last chunk is silent after its last frame.
+    for (std::size_t f = 0; f < kChunkFrames; ++f) {
+        std::array<s16, kAdpcmFrameSamples> pcm{};
+
+        if (first + f < whole) {
+            pcm = decode_adpcm_frame(m_adpcm.data() + (first + f) * kAdpcmFrameBytes, m_history);
+        }
+
+        std::copy(pcm.begin(), pcm.end(), m_window.begin() + kChunkSamples + f * kAdpcmFrameSamples);
+    }
+}
+
 namespace {
 
 // One way to encode a frame: its nibbles, the history it leaves and the squared error it makes.

@@ -204,5 +204,41 @@ int main() {
         CHECK(hard[2] < 0 || hard[3] < 0);
     }
 
+    // A stream gives the whole decode's samples: read forward, across its chunks' borders, back
+    // to the beginning (a loop) and here and there.
+    {
+        std::vector<s16> wave(28 * 300 + 5);
+
+        for (std::size_t i = 0; i < wave.size(); ++i) {
+            wave[i] = static_cast<s16>(9000.0 * std::sin(static_cast<double>(i) * 0.05));
+        }
+
+        const std::vector<u8> bytes = encode_adpcm(wave, false);
+        const std::vector<s16> whole = decode_adpcm(bytes);
+        const AdpcmStream stream(bytes);
+        CHECK(stream.samples() == whole.size());
+        CHECK(whole.size() > 4 * 64 * 28);  // more than four of its chunks
+        bool same = true;
+
+        // Forward, a sample and the next one, as the mixer reads; twice, the second after the
+        // jump back to the beginning.
+        for (int pass = 0; pass < 2; ++pass) {
+            for (std::size_t i = 0; i + 1 < whole.size(); ++i) {
+                same = same && stream.sample(i) == whole[i] && stream.sample(i + 1) == whole[i + 1];
+            }
+        }
+
+        CHECK(same);
+        bool anywhere = true;
+
+        // Here and there, in both directions.
+        for (std::size_t n = 0, i = 12345 % whole.size(); n < 500; ++n, i = (i * 7919 + 13) % whole.size()) {
+            anywhere = anywhere && stream.sample(i) == whole[i];
+        }
+
+        CHECK(anywhere);
+        CHECK(AdpcmStream().samples() == 0);
+    }
+
     return openrac::test::result();
 }

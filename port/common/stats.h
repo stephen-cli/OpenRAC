@@ -310,6 +310,9 @@ struct ProcessMemory {
     std::uint64_t peak = 0;       // the most resident so far, where the system says; else 0
     std::uint64_t available = 0;  // what the system has left for it, where it is a fixed share
                                   // (the PS3); else 0
+    std::uint64_t heap = 0;       // the heap's extent, where it is counted with `available`; else 0
+    std::uint64_t heap_free = 0;  // of it, free for the program's next allocations: the heap gives
+                                  // little back to the system, so this is not in `available`
 };
 
 ProcessMemory process_memory();

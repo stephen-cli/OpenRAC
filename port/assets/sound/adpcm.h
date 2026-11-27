@@ -64,6 +64,37 @@ std::array<s16, kAdpcmFrameSamples> decode_adpcm_frame(
 // interpreted: this is the raw signal, not what a voice plays.
 std::vector<s16> decode_adpcm(ByteView adpcm, AdpcmRounding rounding = AdpcmRounding::Rounded);
 
+// A run of ADPCM read as samples without being decoded whole: a music track of minutes is tens
+// of megabytes decoded, a third and a half of that as the disc has it. It decodes up to the
+// sample asked for and keeps a window behind it, so reading forward (a mixer's way, a sample and
+// the next one) costs what the whole decode costs; a sample before the window starts the decode
+// over from the run's beginning. The samples are decode_adpcm's. Not for two threads at once.
+class AdpcmStream {
+public:
+    AdpcmStream() = default;
+    explicit AdpcmStream(std::vector<u8> adpcm) : m_adpcm(std::move(adpcm)) {}
+
+    // The samples of its whole frames.
+    std::size_t samples() const {
+        return m_adpcm.size() / kAdpcmFrameBytes * kAdpcmFrameSamples;
+    }
+
+    // `index` is below samples().
+    s16 sample(std::size_t index) const;
+
+private:
+    static constexpr std::size_t kChunkFrames = 64;
+    static constexpr std::size_t kChunkSamples = kChunkFrames * kAdpcmFrameSamples;
+
+    void decode_next_chunk() const;
+
+    std::vector<u8> m_adpcm;
+    // The chunk last decoded (its second half) and the one before it.
+    mutable std::array<s16, 2 * kChunkSamples> m_window{};
+    mutable std::ptrdiff_t m_chunk = -1;  // the chunk last decoded; -1: none yet
+    mutable AdpcmHistory m_history;       // after that chunk
+};
+
 // Encodes `samples` as frames a voice plays: for each frame the filter and shift that the decoder
 // above brings closest to them, the last frame padded with silence and flagged as the end. `loop`:
 // the voice goes back to the first frame instead of stopping. Never empty: no samples are one silent

@@ -189,7 +189,11 @@ struct SoundSnapshotBank {
 // A track read from the disc and decoded on a thread of its own; `ready` (or `failed`) is set
 // under g_lock.
 struct Track {
-    std::vector<std::int16_t> samples;  // interleaved: a pack's may be stereo, the disc's are mono
+    // A pack's replacement, decoded whole: interleaved, mono or stereo.
+    std::vector<std::int16_t> samples;
+    // The disc's own stream (mono), decoded as it is played: a track of minutes decoded whole is
+    // more than a console that has drawn a level has left. Read under g_lock.
+    assets::AdpcmStream disc;
     int channels = 1;
     std::uint32_t rate = 44100;
     // The frames the header announces (28 per 16-byte frame), known when the stream starts: the
@@ -199,7 +203,15 @@ struct Track {
     bool ready = false;
     bool failed = false;
 
-    std::size_t frames() const { return samples.size() / static_cast<std::size_t>(channels); }
+    std::size_t frames() const {
+        return samples.empty() ? disc.samples()
+                               : samples.size() / static_cast<std::size_t>(channels);
+    }
+
+    std::int16_t sample(std::size_t frame, std::size_t channel) const {
+        return samples.empty() ? disc.sample(frame)
+                               : samples[frame * static_cast<std::size_t>(channels) + channel];
+    }
 };
 
 struct Part {
@@ -301,6 +313,7 @@ void read_track(std::uint32_t sector, std::shared_ptr<Track> track) {
         }
     }
     std::vector<std::int16_t> samples;
+    std::vector<std::uint8_t> adpcm;
     std::uint32_t rate = 0;
     int channels = 1;
     const bool replaced = !track->replacement.empty()
@@ -313,18 +326,25 @@ void read_track(std::uint32_t sector, std::shared_ptr<Track> track) {
         std::uint32_t size = 0;
         std::uint32_t header_rate = 0;
 
-        if (read_vag_header(disc, sector, size, header_rate)) {
-            std::vector<std::uint8_t> file(kVagHeader + size);
+        // The file's bytes become the track's: its body stays where it was read, without the
+        // header before it. A track there is no memory for is a track that failed.
+        if (read_vag_header(disc, sector, size, header_rate) && size > 0
+            && size < 64u * 1024 * 1024) {
+            try {
+                std::vector<std::uint8_t> file(kVagHeader + size);
 
-            if (size > 0 && size < 64u * 1024 * 1024 && seek_disc(disc, at)
-                && std::fread(file.data(), 1, file.size(), disc) == file.size()) {
-                try {
+                if (seek_disc(disc, at)
+                    && std::fread(file.data(), 1, file.size(), disc) == file.size()) {
                     const assets::VagFile vag = assets::parse_vag(file);
+                    const auto before = vag.body.data() - file.data();
+                    const std::size_t body = vag.body.size();
                     rate = vag.header.sample_rate;
-                    samples = assets::decode_adpcm(vag.body);
-                } catch (const std::exception& e) {
-                    log::warn("music: the stream at sector {}: {}", sector, e.what());
+                    file.erase(file.begin(), file.begin() + before);
+                    file.resize(body);
+                    adpcm = std::move(file);
                 }
+            } catch (const std::exception& e) {
+                log::warn("music: the stream at sector {}: {}", sector, e.what());
             }
         }
 
@@ -333,13 +353,14 @@ void read_track(std::uint32_t sector, std::shared_ptr<Track> track) {
 
     std::lock_guard lock(g_lock);
 
-    if (samples.empty() || rate == 0) {
+    if ((samples.empty() && adpcm.size() < assets::kAdpcmFrameBytes) || rate == 0) {
         log::warn("music: no VAG stream at sector {}", sector);
         track->failed = true;
         return;
     }
 
     track->samples = std::move(samples);
+    track->disc = assets::AdpcmStream(std::move(adpcm));
     track->channels = channels;
     track->rate = rate;
     track->ready = true;
@@ -391,15 +412,14 @@ void mix_streams(std::span<std::int16_t> out) {
                 for (std::size_t c = 0; c < 2; ++c) {
                     // The disc's streams are mono, heard on both sides.
                     const std::size_t from = channels == 2 ? c : 0;
-                    const double a = t.samples[i * channels + from];
-                    const double b = i + 1 < n ? t.samples[(i + 1) * channels + from] : a;
+                    const double a = t.sample(i, from);
+                    const double b = i + 1 < n ? t.sample(i + 1, from) : a;
                     double v = (a + (b - a) * frac) * gain;
 
                     // Stereo in two files: the left side from the left track, its first channel.
                     if (c == 0 && left != nullptr && i < left->frames()) {
-                        const auto lc = static_cast<std::size_t>(left->channels);
-                        const double la = left->samples[i * lc];
-                        const double lb = i + 1 < left->frames() ? left->samples[(i + 1) * lc] : la;
+                        const double la = left->sample(i, 0);
+                        const double lb = i + 1 < left->frames() ? left->sample(i + 1, 0) : la;
                         v = (la + (lb - la) * frac) * gain;
                     }
 

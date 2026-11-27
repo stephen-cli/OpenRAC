@@ -461,10 +461,12 @@ void use_level(int number) {
         g->level.release_uploaded();
         const stats::ProcessMemory memory = stats::process_memory();
         log::info(
-            "level {}: {} MB of main memory held, {} MB left",
+            "level {}: {} MB of main memory held, {} MB left; the heap is {} MB, {} MB of it free",
             wanted,
             memory.resident >> 20,
-            memory.available >> 20
+            memory.available >> 20,
+            memory.heap >> 20,
+            memory.heap_free >> 20
         );
     }
     log::info("drawing level {} natively ({} models)", wanted, g->level.models.size());
