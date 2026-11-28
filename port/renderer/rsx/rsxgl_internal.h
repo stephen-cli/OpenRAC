@@ -306,8 +306,20 @@ Memory allocate_surface(u32 pitch, u32 rows);
 // Binds the region of the surface at `offset` (it stays bound while there is room: the RSX
 // has 15 regions, and the one longest out of use gives way).
 void bind_surface(u32 offset, u32 pitch, u32 rows);
-// The region of memory that is about to be freed.
+// The region of memory that is about to be freed, and its z-cull.
 void unbind_surface(u32 offset);
+// Z-cull: the RSX's coarse depth test ahead of the fragment program. A pixel behind what its
+// depth buffer holds costs what a seen one does without it, and a twelfth with it (README.md,
+// "Z-cull"). It is for a nearest depth of the greater value, the game's; its memory holds
+// 0x300000 pixels over eight depth buffers, which take theirs when their depth is cleared and
+// keep it while they are cleared frame after frame.
+// The cull memory follows the depth buffer from a clear of the whole of it until a draw
+// writes depths in another order (spoil_cull); only so long is the cull set.
+bool cull_live(u32 offset);
+void spoil_cull(u32 offset);
+// For a depth buffer about to be cleared whole. False where the cull memory has no room
+// for it.
+bool claim_cull(u32 offset, u32 width, u32 rows);
 void retire(Memory& memory);
 // The RSX's memory from the program's side, the layer's only touches of it. On a console a load
 // of it wider than its address's alignment stops the program (README.md, "On a console"), and a

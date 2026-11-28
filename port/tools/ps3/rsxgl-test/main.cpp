@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -60,6 +61,7 @@ RSXGL(glUniform4f);
 RSXGL(glUniform4fv);
 RSXGL(glUniformMatrix4fv);
 RSXGL(glGenFramebuffers);
+RSXGL(glDeleteFramebuffers);
 RSXGL(glBindFramebuffer);
 RSXGL(glFramebufferTexture2D);
 RSXGL(glBlitFramebuffer);
@@ -229,6 +231,297 @@ void set_mode(Mode mode) {
 void clear(float r, float g, float b) {
     glClearColor(r, g, b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+// A measurement, not a check: what the RSX takes to fill a pixel with each length of fragment
+// program (README.md, "Fragment programs by their parts" and "Tiled surfaces"). Twenty layers of
+// a framebuffer of 1440 by 1080, timed from the first draw to the RSX's end of the last (a pixel
+// read back waits for the RSX): the direct program with none of direct.fp's parts, then with
+// the fog, the alpha test (one that keeps every pixel) and the source's weight added in turn,
+// each plain, then blended with a depth test that passes, then behind what the depth buffer
+// holds (a test that fails); and copies, which have copy.fp.
+double milliseconds_now() {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now().time_since_epoch()
+    )
+        .count();
+}
+
+void fill_benchmark() {
+    constexpr int kWide = 1440;
+    constexpr int kHigh = 1080;
+    constexpr int kLayers = 20;
+    constexpr double kMegapixels = kLayers * static_cast<double>(kWide) * kHigh / 1.0e6;
+    GLuint images[3] = {};  // the picture, its depth, and what the copies are of
+    glGenTextures(3, images);
+    for (int i = 0; i < 3; ++i) {
+        glBindTexture(GL_TEXTURE_2D, images[i]);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            static_cast<GLint>(i == 1 ? GL_DEPTH24_STENCIL8 : GL_RGBA8),
+            kWide,
+            kHigh,
+            0,
+            i == 1 ? GL_DEPTH_STENCIL : GL_RGBA,
+            i == 1 ? GL_UNSIGNED_INT_24_8 : GL_UNSIGNED_BYTE,
+            nullptr
+        );
+        texture_parameters();
+    }
+    GLuint framebuffers[2] = {};
+    glGenFramebuffers(2, framebuffers);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[1]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, images[2], 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, images[0], 0);
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, images[1], 0
+    );
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    std::vector<Colour> texels(256 * 256);
+    for (std::size_t i = 0; i < texels.size(); ++i) {
+        texels[i] = Colour{static_cast<std::uint8_t>(i * 7 & 255), 64, 64, 0x40};
+    }
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        static_cast<GLint>(GL_RGBA8),
+        256,
+        256,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        texels.data()
+    );
+    texture_parameters();
+
+    const auto corner = [](float x, float y, float s, float t) {
+        return Vertex{x, y, 0.0f, s, t, 1.0f, {128, 128, 128, 0x40}, 1.0f};
+    };
+    const Vertex layer[6] = {
+        corner(-1.0f, -1.0f, 0.0f, 0.0f),
+        corner(1.0f, -1.0f, 1.0f, 0.0f),
+        corner(1.0f, 1.0f, 1.0f, 1.0f),
+        corner(-1.0f, -1.0f, 0.0f, 0.0f),
+        corner(1.0f, 1.0f, 1.0f, 1.0f),
+        corner(-1.0f, 1.0f, 0.0f, 1.0f),
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, g_buffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof layer, layer, GL_STATIC_DRAW);
+
+    struct Case {
+        const char* name;
+        bool fog;
+        bool alpha_test;
+        bool weight;
+        bool copy;
+    };
+
+    const Case cases[] = {
+        {"the direct program, no part (19 instructions)", false, false, false, false},
+        {"with the fog (23)", true, false, false, false},
+        {"with the fog and the alpha test (32)", true, true, false, false},
+        {"with every part (36)", true, true, true, false},
+        {"a copy (3)", false, false, false, true},
+    };
+    std::uint8_t pixel[4] = {};
+    for (int pass = 0; pass < 3; ++pass) {
+        const bool blended = pass == 1;
+        const bool hidden = pass == 2;  // behind what the depth buffer holds
+        for (const Case& c : cases) {
+            if (c.copy && (blended || hidden)) {
+                continue;  // a copy neither blends nor tests depth
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+            glViewport(0, 0, kWide, kHigh);
+            glDepthMask(GL_TRUE);
+            glClearDepth(hidden ? 1.0 : 0.0);
+            clear(0.0f, 0.0f, 0.0f);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            set_mode(Mode::Decal);
+            uniform_i("fog_enable", c.fog ? 1 : 0);
+            uniform_i("alpha_test", c.alpha_test ? 5 : 0);
+            uniform_i("source_scale", c.weight ? 1 : 0);
+            if (blended) {
+                glEnable(GL_BLEND);
+                glBlendEquation(GL_FUNC_ADD);
+                glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_GEQUAL);
+                glDepthMask(GL_FALSE);
+            }
+            if (hidden) {
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_GEQUAL);
+                glDepthMask(GL_FALSE);
+            }
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffers[0]);
+            glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+            const double began = milliseconds_now();
+            for (int i = 0; i < kLayers; ++i) {
+                if (c.copy) {
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffers[1]);
+                    glBlitFramebuffer(
+                        0, 0, kWide, kHigh, 0, 0, kWide, kHigh, GL_COLOR_BUFFER_BIT, GL_NEAREST
+                    );
+                } else {
+                    glDrawArrays(GL_TRIANGLES, 0, 6);
+                }
+            }
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffers[0]);
+            glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+            const double ended = milliseconds_now();
+            if (hidden && (pixel[0] | pixel[1] | pixel[2]) != 0) {
+                say("fill: a layer behind what is drawn was drawn\n");
+            }
+            glDisable(GL_BLEND);
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_TRUE);
+            say("fill %s%s: %.2f ms a million pixels\n",
+                c.name,
+                blended  ? ", blended with a depth test"
+                : hidden ? ", behind what is drawn"
+                         : "",
+                (ended - began) / kMegapixels);
+        }
+    }
+    set_mode(Mode::Colour);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteTextures(1, &texture);
+    glDeleteTextures(3, images);
+}
+
+// Z-cull (rsxgl_internal.h, claim_cull): what a pixel behind a layer drawn costs, and that the
+// cull hides nothing GL would draw. The layers are grey, halved by the program: the near one
+// 100, the middle one 30, the far one 50.
+void zcull_checks() {
+    constexpr int kWide = 1440;
+    constexpr int kHigh = 1080;
+    constexpr int kLayers = 20;
+    constexpr double kMegapixels = kLayers * static_cast<double>(kWide) * kHigh / 1.0e6;
+    constexpr Colour kNear{100, 100, 100, 255};
+    constexpr Colour kMiddle{30, 30, 30, 255};
+    constexpr Colour kFar{50, 50, 50, 255};
+    GLuint images[2] = {};
+    glGenTextures(2, images);
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, images[i]);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            static_cast<GLint>(i == 1 ? GL_DEPTH24_STENCIL8 : GL_RGBA8),
+            kWide,
+            kHigh,
+            0,
+            i == 1 ? GL_DEPTH_STENCIL : GL_RGBA,
+            i == 1 ? GL_UNSIGNED_INT_24_8 : GL_UNSIGNED_BYTE,
+            nullptr
+        );
+        texture_parameters();
+    }
+    GLuint framebuffer = 0;
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, images[0], 0);
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, images[1], 0
+    );
+    const auto corner = [](float x, float y, float z, std::uint8_t shade) {
+        return Vertex{x, y, z, 0.0f, 0.0f, 1.0f, {shade, shade, shade, 0x40}, 1.0f};
+    };
+    constexpr int kNearLayer = 0;
+    constexpr int kMiddleLayer = 6;
+    constexpr int kFarLayer = 12;
+    Vertex layers[18];
+    for (int i = 0; i < 3; ++i) {
+        const float z = i == 0 ? 0.5f : i == 1 ? 0.0f : -0.5f;
+        const std::uint8_t shade = i == 0 ? 200 : i == 1 ? 60 : 100;
+        const Vertex six[6] = {
+            corner(-1.0f, -1.0f, z, shade),
+            corner(1.0f, -1.0f, z, shade),
+            corner(1.0f, 1.0f, z, shade),
+            corner(-1.0f, -1.0f, z, shade),
+            corner(1.0f, 1.0f, z, shade),
+            corner(-1.0f, 1.0f, z, shade),
+        };
+        std::copy(std::begin(six), std::end(six), layers + i * 6);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, g_buffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof layers, layers, GL_STATIC_DRAW);
+    // The depth buffer cleared to `depth`, the layers to be compared by `function`.
+    const auto begin = [&](double depth, GLenum function) {
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glViewport(0, 0, kWide, kHigh);
+        glDepthMask(GL_TRUE);
+        glClearDepth(depth);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        set_mode(Mode::Colour);
+        uniform_i("fog_enable", 1);
+        uniform_i("alpha_test", 5);
+        uniform_i("source_scale", 1);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(function);
+    };
+    const auto layer = [](int first) {
+        glDrawArrays(GL_TRIANGLES, first, 6);
+    };
+
+    // Behind a layer drawn. No read between the clear and the timed draws: a read parks the
+    // target.
+    begin(0.0, GL_GEQUAL);
+    layer(kNearLayer);
+    glDepthMask(GL_FALSE);
+    std::uint8_t pixel[4] = {};
+    const double began = milliseconds_now();
+    for (int i = 0; i < kLayers; ++i) {
+        layer(kFarLayer);
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    say("fill with every part (36), behind a layer drawn: %.2f ms a million pixels\n",
+        (milliseconds_now() - began) / kMegapixels);
+    expect("z-cull: behind a layer drawn", framebuffer, kWide / 2, kHigh / 2, kNear);
+
+    begin(0.0, GL_GEQUAL);
+    layer(kFarLayer);
+    layer(kNearLayer);
+    expect("z-cull: before a layer drawn", framebuffer, kWide / 2, kHigh / 2, kNear);
+
+    // A depth written without a comparison is one the cull memory has to follow.
+    begin(0.0, GL_GEQUAL);
+    layer(kNearLayer);
+    glDepthFunc(GL_ALWAYS);
+    layer(kFarLayer);
+    glDepthFunc(GL_GEQUAL);
+    layer(kMiddleLayer);
+    expect(
+        "z-cull: before a depth written over a nearer", framebuffer, kWide / 2, kHigh / 2, kMiddle
+    );
+
+    // The nearest depth the lesser value: the cull is not for that.
+    begin(1.0, GL_LESS);
+    layer(kNearLayer);
+    layer(kFarLayer);
+    expect("z-cull: the nearest the lesser depth", framebuffer, kWide / 2, kHigh / 2, kFar);
+
+    // And the game's again after it, on the same depth buffer.
+    begin(0.0, GL_GEQUAL);
+    layer(kMiddleLayer);
+    layer(kFarLayer);
+    layer(kNearLayer);
+    expect("z-cull: after the lesser depth's turn", framebuffer, kWide / 2, kHigh / 2, kNear);
+
+    glDisable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glClearDepth(1.0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(2, images);
 }
 
 // A mip chain (glGenerateMipmap), with the direct program: a texture of 512 texels a side over
@@ -1047,9 +1340,10 @@ void effect_checks(int wide, int high) {
     // Under the reversed depth test, nearer than a cleared depth of nothing, no depth written.
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_GEQUAL);
-    glDepthMask(GL_FALSE);
     glClearDepth(0.0);
-    draw();
+    clear(0.0f, 0.0f, 0.0f);
+    glDepthMask(GL_FALSE);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
     expect("effect: added, under the depth test", 0, wide / 4, high / 4, kRed);
     glClearDepth(1.0);
     glDepthMask(GL_TRUE);
@@ -1384,6 +1678,9 @@ int run() {
     rectangle(-1.0f, -1.0f, 1.0f, 1.0f, kWhite);
     expect_quarters("copied texture", 0, wide, high, kRed, green, green, green);
 
+    zcull_checks();
+    fill_benchmark();
+    glViewport(0, 0, wide, high);
     mip_checks(wide, high);
     sky_checks(wide, high);
     mesh_checks(wide, high);

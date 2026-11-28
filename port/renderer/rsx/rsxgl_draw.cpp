@@ -176,6 +176,18 @@ void apply_scissor(const Target& target) {
     );
 }
 
+// Z-cull for the surface whose depth buffer is at `offset`, where it has cull memory
+// (rsxgl_internal.h, claim_cull).
+void apply_cull(u32 offset) {
+    if (!cull_live(offset)) {
+        rsxSetZCullEnable(g.context, GCM_FALSE, GCM_FALSE);
+        return;
+    }
+    rsxSetZCullEnable(g.context, GCM_TRUE, GCM_FALSE);
+    rsxSetZCullControl(g.context, GCM_ZCULL_GREATER, GCM_ZCULL_MSB);
+    rsxSetZCullLimit(g.context, 0x100, 0x100);
+}
+
 // Makes `target` the RSX's surface; on the screen, the colour buffer of that number.
 void set_surface(const Target& target, u32 screen_buffer) {
     gcmSurface surface;
@@ -221,6 +233,7 @@ void set_surface(const Target& target, u32 screen_buffer) {
         );
     }
     rsxSetSurface(g.context, &surface);
+    apply_cull(surface.depthOffset);
 }
 
 // The surface the RSX draws into. False when the framebuffer has nothing to draw into.
@@ -265,6 +278,14 @@ void apply_state(const Target& target) {
     rsxSetDepthTestEnable(g.context, g.depth_test && has_depth ? GCM_TRUE : GCM_FALSE);
     rsxSetDepthFunc(g.context, g.depth_function);
     rsxSetDepthWriteEnable(g.context, g.depth_write && has_depth ? GCM_TRUE : GCM_FALSE);
+    // Depths written in an order that is not the cull's are nothing its memory follows.
+    const bool culls_order = g.depth_function == GL_GEQUAL || g.depth_function == GL_GREATER
+                             || g.depth_function == GL_EQUAL || g.depth_function == GL_NEVER;
+    const u32 depth_offset = target.depth != nullptr ? target.depth->memory.offset : g.depth.offset;
+    if (has_depth && g.depth_test && g.depth_write && !culls_order && cull_live(depth_offset)) {
+        spoil_cull(depth_offset);
+        apply_cull(depth_offset);
+    }
     rsxSetZMinMaxControl(
         g.context,
         g.depth_clamp ? GCM_FALSE : GCM_TRUE,
@@ -423,9 +444,27 @@ void clear(GLbitfield mask) {
         what |= GCM_CLEAR_S;
     }
     if ((what & (GCM_CLEAR_Z | GCM_CLEAR_S)) != 0) {
-        const auto depth =
-            static_cast<u32>(std::clamp(g.clear_depth, 0.0f, 1.0f) * 16777215.0f + 0.5f);
+        // In doubles: a float has no 16777215.5, and a depth of one came out as 2^24, nothing
+        // once shifted.
+        const auto depth = static_cast<u32>(
+            std::clamp(static_cast<double>(g.clear_depth), 0.0, 1.0) * 16777215.0 + 0.5
+        );
         rsxSetClearDepthStencil(g.context, depth << 8);
+    }
+    if ((what & GCM_CLEAR_Z) != 0) {
+        // The depth buffer's z-cull begins at a clear: the cull memory holds what is drawn
+        // from one on.
+        const u32 offset = target.depth != nullptr ? target.depth->memory.offset : g.depth.offset;
+        const u32 rows = target.depth != nullptr ? target.depth->height : g.height;
+        const bool was_live = cull_live(offset);
+        if (g.scissor_test) {
+            spoil_cull(offset);
+        } else if (claim_cull(offset, target.width, rows) && !was_live) {
+            rsxSetZCullInvalidate(g.context);
+        }
+        if (was_live != cull_live(offset)) {
+            apply_cull(offset);
+        }
     }
     if (what != 0) {
         rsxClearSurface(g.context, what);

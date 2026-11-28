@@ -216,6 +216,35 @@ byte for byte as with the whole programs, but for the frames that fall
 on another moment of a run. On a console the game has not been measured
 with them yet.
 
+## Z-cull
+
+The RSX runs the fragment program for a pixel the depth test then
+throws away: behind what is drawn a pixel costs what a seen one does.
+Z-cull is its coarse depth test ahead of the program, kept in a cull
+memory of 0x300000 pixels that up to eight depth buffers share
+(`gcmBindZcull`, `claim_cull` in `rsxgl_objects.cpp`).
+
+A depth buffer takes cull memory when the whole of it is cleared and
+keeps it while it is cleared frame after frame. Two buffers of 1440 by
+1080 do not both fit: the screen's gives way to an image's, since scenes
+are drawn into images. The cull is for the game's order of depths, the
+nearest the greatest (`GCM_ZCULL_GREATER`); a draw that writes depths
+under another comparison, or a clear within a scissor, sets it aside for
+that buffer until its next whole clear.
+
+Measured on a console (2026-11-28, 20 layers of 1440 by 1080, the
+direct program whole): a pixel behind a layer drawn takes 2.24 ms a
+million without z-cull and 0.16 with it; behind a cleared depth 0.06.
+Veldin's opening, the layer's time a frame with and without: about 15
+against 27 ms where Ratchet walks, 36 against 44 and 54 against 67 in
+the ship's fire. Eight of nine shots of the two runs are the same byte
+for byte; the ninth falls on another moment of the fire.
+
+A binding made anew culls nothing until the buffer is cleared
+(`rsxSetZCullInvalidate`, then the clear), so a buffer is bound once and
+not from surface to surface. The cull's direction LESS culled nothing
+under the game's comparison; its formats MSB and LONES did the same.
+
 ## Which way up
 
 A texture's and an off-screen framebuffer's rows are in GL's order in

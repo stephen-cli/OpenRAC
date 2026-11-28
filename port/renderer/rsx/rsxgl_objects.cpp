@@ -47,6 +47,17 @@ struct Region {
 
 Region g_regions[kRegions];
 
+// A depth buffer's stretch of the cull memory, `pixels` from `start`; no pixels, no binding.
+struct Culled {
+    u32 offset = 0;
+    u32 start = 0;
+    u32 pixels = 0;
+    u32 used = 0;       // State::frame when its depth was last cleared
+    bool live = false;  // the cull memory follows the depth buffer
+};
+
+Culled g_culled[8];
+
 }  // namespace
 
 u32 surface_pitch(u32 width) {
@@ -116,6 +127,122 @@ void unbind_surface(u32 offset) {
             region = Region{};
         }
     }
+    for (Culled& culled : g_culled) {
+        if (culled.pixels != 0 && culled.offset == offset) {
+            gcmUnbindZcull(static_cast<u8>(&culled - g_culled));
+            culled = Culled{};
+        }
+    }
+}
+
+bool cull_live(u32 offset) {
+    return std::ranges::any_of(g_culled, [offset](const Culled& culled) {
+        return culled.pixels != 0 && culled.offset == offset && culled.live;
+    });
+}
+
+void spoil_cull(u32 offset) {
+    for (Culled& culled : g_culled) {
+        if (culled.pixels != 0 && culled.offset == offset) {
+            culled.live = false;
+        }
+    }
+}
+
+namespace {
+
+constexpr u32 kCullStart = 0x1000;  // a binding's start in the cull memory: 4096 pixels whole
+
+// The first stretch of `pixels` of the cull memory that no binding holds.
+u32 cull_room(u32 pixels) {
+    u32 start = 0;
+    for (bool moved = true; moved;) {
+        moved = false;
+        for (const Culled& culled : g_culled) {
+            if (culled.pixels != 0 && start < culled.start + culled.pixels
+                && culled.start < start + pixels) {
+                start = (culled.start + culled.pixels + kCullStart - 1) & ~(kCullStart - 1);
+                moved = true;
+            }
+        }
+    }
+    return start;
+}
+
+}  // namespace
+
+bool claim_cull(u32 offset, u32 width, u32 rows) {
+    constexpr u32 kBlock = 64;  // the cull memory's blocks of pixels, a side
+    constexpr u32 kPixels = 0x300000;
+    for (Culled& culled : g_culled) {
+        if (culled.pixels != 0 && culled.offset == offset) {
+            culled.used = g.frame;
+            culled.live = true;
+            return true;
+        }
+    }
+    const u32 pixels =
+        (width + kBlock - 1) / kBlock * kBlock * ((rows + kBlock - 1) / kBlock) * kBlock;
+    if (pixels > kPixels || (offset & (kCullStart - 1)) != 0) {
+        return false;
+    }
+    if (cull_room(pixels) + pixels > kPixels) {
+        // The depth buffers no longer cleared give way, and the screen's to an image's: scenes are
+        // drawn into images, and the screen is where they are shown.
+        for (Culled& culled : g_culled) {
+            if (culled.pixels != 0
+                && (culled.used + 1 < g.frame
+                    || (culled.offset == g.depth.offset && offset != g.depth.offset))) {
+                wait_idle();
+                gcmUnbindZcull(static_cast<u8>(&culled - g_culled));
+                culled = Culled{};
+            }
+        }
+    }
+    Culled* into = nullptr;
+    for (Culled& culled : g_culled) {
+        if (culled.pixels == 0 && into == nullptr) {
+            into = &culled;
+        }
+    }
+    const u32 start = cull_room(pixels);
+    bool bound = into != nullptr && start + pixels <= kPixels;
+    if (bound) {
+        // Draws queued are not to meet the binding half made.
+        wait_idle();
+        bound = gcmBindZcull(
+                    static_cast<u8>(into - g_culled),
+                    offset,
+                    (width + kBlock - 1) / kBlock * kBlock,
+                    (rows + kBlock - 1) / kBlock * kBlock,
+                    start,
+                    GCM_ZCULL_Z24S8,
+                    GCM_SURFACE_CENTER_1,
+                    GCM_ZCULL_GREATER,
+                    GCM_ZCULL_MSB,
+                    GCM_SCULL_SFUNC_ALWAYS,
+                    0,
+                    0xff
+                )
+                == 0;
+    }
+    if (!bound) {
+        static bool told = false;
+        if (!told) {
+            told = true;
+            log::info(
+                "rsxgl: no z-cull for the depth buffer at {:#x} ({} by {}): its hidden pixels "
+                "cost what the seen ones do",
+                offset,
+                width,
+                rows
+            );
+        }
+        return false;
+    }
+    log::info("rsxgl: z-cull for the depth buffer at {:#x}, {} by {}", offset, width, rows);
+    *into = Culled{offset, start, pixels, g.frame, true};
+    return true;
 }
 
 namespace {
