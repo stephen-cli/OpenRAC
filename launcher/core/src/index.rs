@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde_json::{Map, Value};
 
 use crate::mod_error::{ModAction, ModError, ModErrorKind};
 use crate::remote::Fetch;
@@ -112,6 +112,11 @@ pub struct Require {
     /// `>=X.Y.Z`, `=X.Y.Z`, or none.
     #[serde(default)]
     pub version: Option<String>,
+    /// A pack's values for this mod's settings, by key (`{"camera": "rac2"}`): applied when the
+    /// pack is installed or updated, never over a value the player chose (index_apply.rs).
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub settings: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, ts_rs::TS)]
@@ -428,7 +433,7 @@ struct State {
 
 /// A file name for an index's URL in the cache.
 fn cache_name(url: &str) -> String {
-    let hash = format!("{:x}", Sha256::digest(url.as_bytes()));
+    let hash = crate::sha256_hex(url.as_bytes());
     hash[..16].to_string()
 }
 

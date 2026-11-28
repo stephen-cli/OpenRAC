@@ -2,9 +2,11 @@
 
 What presses the game's pad: the files that say it, how they layer, the
 names in them, which controller each player is, and the menu's Controls tab
-that changes them. Keyboard and mouse remapping are not done yet: the
-keyboard keeps the button bindings of `bind_*` (keys named in them) and the
-port's own stick keys, and the mouse is a mod's (the `keyboard-mouse` mod).
+that changes them. In Ratchet & Clank the keyboard and mouse are the
+built-in Keyboard and mouse's ([KEYBOARD_MOUSE.md](KEYBOARD_MOUSE.md)), with
+binds of their own on the launcher's Mods tab; elsewhere the keyboard keeps
+the button bindings of `bind_*` (keys named in them) and the port's own
+stick keys.
 
 Code: [platform/bindings.h](../../port/platform/bindings.h) (the names, the
 table the pad is pressed from, the tuning, what is held back when it
@@ -74,7 +76,7 @@ Resetting:
 - one player: that player's own lines (`p1.*` or `p2.*`) leave the file, and
   the player reads every player's controls again.
 
-The bindings that [#123](https://github.com/OpenRAC/OpenRAC/pull/123) kept in
+Bindings that older versions kept in
 `settings/<id>.ini` (`bind_*` keys) move once into `<game>.ini` at the next
 start, those the file does not already name, and leave the settings file.
 
@@ -128,11 +130,22 @@ Two controls may share a pad input: both press. The Controls tab marks them.
 |---|---|---|
 | `pad_left_deadzone`, `pad_right_deadzone` | `0`, up to `50` (percent) | A push shorter than this is none; the rest of the travel is stretched over the whole. The game has its own dead zone (`d >= 0x30`), so the port adds none by default |
 | `pad_left_outer`, `pad_right_outer` | `100`, down to `50` | A push this long is a full one |
-| `pad_left_sensitivity`, `pad_right_sensitivity` | `100`, `25` to `300` | A push is this much as long, held within the stick's square |
+| `pad_left_sensitivity`, `pad_right_sensitivity` | `100`, `25` to `300` | A push is this much as long, held within the stick's square. Above 100%, a full right stick push also turns the camera faster (rac1, rac2) |
 | `pad_left_invert_x`, `_invert_y`, `pad_right_invert_x`, `_invert_y` | `0`, `1` | The axis turned over |
 | `pad_trigger_threshold` | about `13`, `1` to `100` (percent) | How far a trigger goes before it holds its button |
 | `pad_face_buttons` | `position`, `labels` | `labels`: a pad marked Nintendo's way (A on the right) is read by its marks, so the button marked A is `PadSouth` |
 | `pad_background` | `0` (default), `1` | `1`: the controllers count while another window has the keyboard (the game alt-tabbed or minimised) |
+| `pad_rumble` | `100`, `0` (off) to `200` (percent) | Vibration strength |
+| `pad_rumble_style` | `enhanced`, `classic` | `enhanced`: tuned for modern controllers (below); `classic`: the game's raw values |
+| `pad_rumble_triggers` | `0`, `1` | `1`: also vibrate the triggers (Xbox One and later) |
+| `pad_rumble_phone` | `1`, `0` | With touch controls (Android), vibrate the phone |
+
+Vibration comes from the game itself. Going Commando and Deadlocked set the
+DualShock 2 motors through their pad library, and the port passes the
+values on. Ratchet & Clank never uses its motors, so it does not vibrate,
+just like on the PS2. `enhanced` ([rumble.h](../../port/platform/rumble.h))
+adds a short spin-up and fade to each motor and a stronger start for very
+short pulses. If the game stops sending, the pad stops within 0.25 s.
 
 The settings apply to the controller's own stick before anything reads it,
 so a stick bound to another stick or to a button is tuned the same way. The
@@ -211,7 +224,7 @@ N as every player" takes their own controls away):
 
 ## 7. What it cannot do
 
-- The game never sees pressure: the pad library's replacement
+- The game never sees pressure: the port's pad report
   ([lib/pad.c](../../port/game/common/lib/pad.c)) rebuilds it from the
   buttons. A trigger's travel presses a button past the press point; its
   depth goes no further ([CONTROLLERS.md](CONTROLLERS.md), section 8).

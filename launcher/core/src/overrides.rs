@@ -5,10 +5,10 @@
 //! `packs/<id>/` (each one a copy made when it was added, with its
 //! `openrac-mod.json`) and `overrides.json`, their order and which are on. They
 //! are the game's, not a version's: a pack made from one disc's levels applies
-//! to the other's where it matches, when `editor/overrides.py stack` puts the
+//! to the other's where it matches, when `extractor/overrides.py stack` puts the
 //! packs together for the version played, in `<data>/mods/<version>`. The
 //! format and everything that writes packs (adding, importing edits, stacking
-//! them for the port) are the editor's `editor/overrides.py`; this module only
+//! them for the port) are the editor's `extractor/overrides.py`; this module only
 //! lists them and changes the order, the on/off state and removes one, which
 //! need no Python and must be instant in the UI.
 
@@ -58,7 +58,7 @@ pub struct PackView {
     pub textures: usize,
     pub models: usize,
     pub level_files: usize,
-    /// How many of the game's sounds it replaces (`audio/<key>.wav`, editor/audio.py).
+    /// How many of the game's sounds it replaces (`audio/<key>.wav`, extractor/audio.py).
     pub sounds: usize,
     pub is_map: bool,
     pub is_destination: bool,
@@ -75,7 +75,7 @@ fn read_state(dir: &Path) -> Result<State, String> {
     if state.format != 1 {
         return Err(format!("{} is of a newer format ({}): update the launcher", path.display(), state.format));
     }
-    // A pack whose folder went away drops out, as editor/overrides.py drops it.
+    // A pack whose folder went away drops out, as extractor/overrides.py drops it.
     state.packs.retain(|p| valid_id(&p.id) && dir.join("packs").join(&p.id).join(MANIFEST).is_file());
     Ok(state)
 }
@@ -95,7 +95,7 @@ fn write_state(dir: &Path, state: &State) -> Result<(), String> {
     Ok(())
 }
 
-/// An id `editor/overrides.py` makes: lowercase letters, digits and dashes. Anything else
+/// An id `extractor/overrides.py` makes: lowercase letters, digits and dashes. Anything else
 /// (a path) is never used to name a folder.
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -119,6 +119,12 @@ fn view(dir: &Path, entry: &Entry) -> PackView {
     }
     let sounds = std::fs::read_dir(dir.join("packs").join(&entry.id).join("audio"))
         .map_or(0, |files| files.flatten().filter(|f| f.path().extension().is_some_and(|e| e == "wav")).count());
+    let sounds = sounds
+        + if manifest.get("format").and_then(Value::as_u64) == Some(5) {
+            manifest.get("audio_recipe").and_then(|r| r.get("keys")).and_then(Value::as_array).map_or(0, Vec::len)
+        } else {
+            0
+        };
     let name = text("name");
     PackView {
         name: if name.is_empty() { entry.id.clone() } else { name },
@@ -179,6 +185,21 @@ pub fn remove(dir: &Path, id: &str) -> Result<Vec<PackView>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recipe_shows_target_sounds_before_the_private_cache_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("packs/recipe");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join(MANIFEST),
+            r#"{"format":5,"name":"Music","audio_recipe":{"keys":["0123456789abcdef","fedcba9876543210"]}}"#,
+        )
+        .unwrap();
+        let shown = view(root.path(), &Entry { id: "recipe".into(), enabled: true });
+        assert_eq!(shown.sounds, 2);
+        assert!(!shown.is_map && !shown.is_destination);
+    }
 
     fn pack(dir: &Path, id: &str, name: &str) {
         let folder = dir.join("packs").join(id);

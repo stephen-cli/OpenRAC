@@ -25,15 +25,15 @@ nonmatching/functional.tsv for candidate C, include/moby.h for the moby record,
 include/moby_pvars.h for the typed pvars), the port's tables for the PAL and NTSC-U discs
 (port/game/rac1-pal: libraries.tsv for hook and wrap rows, split_places.tsv, hand/hand.tsv,
 no_c.tsv; port/game/rac1-ntsc/libraries.tsv), the SDK's game header
-(sdk/include/openrac/games/rac1.h), editor/moby_classes.tsv and editor/engine_helpers.tsv.
+(sdk/include/openrac/games/rac1.h), extractor/moby_classes.tsv and extractor/engine_helpers.tsv.
 
 It lives with the SDK because it writes the SDK's files, but it reads the decompilation's C and
 the class table through the level editor's modules: cparse (Types, strip) and mobys (CLASS_NAMES,
 DECOMPILATION, LEVEL_NAMES, c_definitions, names_h_symbols, update_roles). So sdk/tools depends on
-editor/, in this one direction and in this module only: the rest of sdk/tools stands alone, and
-nothing in editor/ imports from sdk/. The repository's root is found through openrac_common's
-bootstrap (tools/openrac_common/paths.py), and editor/ goes on the import path ahead of tools/, as
-it is when the editor's own scripts run (tools/port.py would otherwise shadow editor/port.py).
+extractor/, in this one direction and in this module only: the rest of sdk/tools stands alone, and
+nothing in extractor/ imports from sdk/. The repository's root is found through openrac_common's
+bootstrap (tools/openrac_common/paths.py), and extractor/ goes on the import path ahead of tools/, as
+it is when the editor's own scripts run (tools/port.py would otherwise shadow extractor/port.py).
 
 classes.json, format 1, the stable contract. Fields are only added within a format; one that
 changes meaning or goes raises the format. One class per line:
@@ -43,7 +43,7 @@ changes meaning or goes raises the format. One class per line:
               "class_field": {"name": "oclass", "offset": 166, "type": "s16"},   # filter a shared hook on it
               "update_field": {...}, "pvars_field": {...}},                     # +0x74, +0x78
      "classes": [{
-         "id": 500, "name": "bolt_crate" or null,     # editor/moby_classes.tsv
+         "id": 500, "name": "bolt_crate" or null,     # extractor/moby_classes.tsv
          "levels": [level numbers it is updated in],
          "updates": [{                                # usually one; a class updated by another function
              "function": "func_L00_002D06C8",         #   in some levels has one entry per function
@@ -108,7 +108,7 @@ from openrac_common import paths  # noqa: E402
 
 REPO = paths.repo_root(__file__)
 # The level editor's folder: its cparse and mobys modules, and its moby_classes.tsv and engine_helpers.tsv.
-EDITOR = REPO / "editor"
+EDITOR = REPO / "extractor"
 sys.path.insert(1, str(EDITOR))
 
 from cparse import Types, strip  # noqa: E402
@@ -119,7 +119,7 @@ NTSC = REPO / "port" / "game" / "rac1-ntsc"
 SDK_HEADER = REPO / "sdk" / "include" / "openrac" / "games" / "rac1.h"
 OUT = REPO / "sdk" / "catalogue" / "rac1"
 PVARS_HEADER = "moby_pvars.h"
-# The decompilation's headers the struct layouts are read from (games/rac1/include).
+# The decompilation's headers the struct layouts are read from (games/rac1/decomp/include).
 TYPE_HEADERS = ("common.h", "vector.h", "moby.h", "hero.h", "pad.h", "records.h", "structs.h")
 CLASSES_FORMAT = 1  # classes.json: raised only when a field changes meaning or goes
 KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "do", "else", "case"}
@@ -180,7 +180,7 @@ def load() -> Inputs:
     hand = {cols[0]: _rel(PAL / "hand" / cols[1].strip())
             for cols in _table(_read(PAL / "hand" / "hand.tsv")) if len(cols) >= 2}
     extra = [(p, _read(REPO / p)) for p in sorted(set(candidates.values()) | set(hand.values()))]
-    no_c = {cols[0]: cols[3].strip() for cols in _table(_read(PAL / "no_c.tsv")) if len(cols) >= 4 and cols[0] != "name"}
+    no_c = {cols[0]: cols[3].strip() for cols in _table(_read(PAL / "checks" / "no_c.tsv")) if len(cols) >= 4 and cols[0] != "name"}
     api = {}
     for cols in _table(_read(EDITOR / "engine_helpers.tsv")):
         if len(cols) >= 3 and cols[0] == "func":
@@ -192,7 +192,7 @@ def load() -> Inputs:
         names_h=names_h_symbols(inc / "names.h"), sources=sources, candidates=candidates, hand=hand,
         extra_sources=extra, no_c=no_c,
         libraries_pal=_read(PAL / "libraries.tsv"), libraries_ntsc=_read(NTSC / "libraries.tsv"),
-        split_places=_read(PAL / "split_places.tsv"),
+        split_places=_read(PAL / "tables" / "split_places.tsv"),
         headers=[(_rel(inc / h), _read(inc / h)) for h in TYPE_HEADERS if (inc / h).is_file()],
         pvars_header=(_rel(inc / PVARS_HEADER), _read(inc / PVARS_HEADER)),
         class_names=names, api=api, sdk_header=_read(SDK_HEADER))
@@ -707,7 +707,7 @@ def render_md(cat: dict) -> str:
         "one class. A mod that takes a shared function sees every class it serves, so it tells them apart by",
         f"the moby's class number: **`{cls['type']} {cls['name']}` at +{cls['offset']:#x}** of the moby",
         f"(`*(int16_t*)(api->memory + moby + {cls['offset']:#x})`, struct Moby in",
-        "[games/rac1/include/moby.h](../../../games/rac1/include/moby.h)).",
+        "[games/rac1/decomp/include/moby.h](../../../games/rac1/decomp/include/moby.h)).",
         "",
         "| The update functions | |", "|---|---:|",
         *[f"| {_SRC[k]} | {v} |" for k, v in src.items()],
@@ -719,7 +719,7 @@ def render_md(cat: dict) -> str:
         f"| without C in the port (stubs) | {hs.get('needs_c', 0)} |",
         "",
         f"{n['classes_with_pvar_struct']} classes have a typed pvar struct ({n['pvar_structs']} structs): the",
-        "Wrench-derived ones of [moby_pvars.h](../../../games/rac1/include/moby_pvars.h), and those the update",
+        "Wrench-derived ones of [moby_pvars.h](../../../games/rac1/decomp/include/moby_pvars.h), and those the update",
         "function's own C reads its pvars as (a struct of the C gives the part of the pvars that C names,",
         "so its size is a lower bound).",
         "",
@@ -731,7 +731,7 @@ def render_md(cat: dict) -> str:
         "every place the function has, in every level whose program carries its code",
         "(config/overlays/functions.tsv), so one row makes one hook point for all those levels, and the",
         "moby loop's calls through `moby->update` reach it as direct calls do. Places that",
-        "port/game/rac1-pal/split_places.tsv gives to a variant are another function and are not covered",
+        "port/game/rac1-pal/tables/split_places.tsv gives to a variant are another function and are not covered",
         "(the `covers` text says which). A hook point is per disc: rac1-ntsc needs its own row, with the",
         "NTSC decomp's symbol for the function, under the same name.",
         "",
@@ -759,7 +759,7 @@ def render_md(cat: dict) -> str:
     out += ["## Update functions", "",
             "One row per function. **Classes**: the classes it updates (more than one: filter on the class",
             f"field, +{cls['offset']:#x}). **Levels**: where its code is placed. **C**: where the port gets its C",
-            "(decomp: games/rac1/src; candidate: nonmatching/; hand: the port's own; assembly: translated from",
+            "(decomp: games/rac1/decomp/src; candidate: nonmatching/; hand: the port's own; assembly: translated from",
             "its instructions). **Hook**: the hook point, or the name proposed for one and what it needs.",
             "**Calls**: the game functions its C calls that are not engine maths helpers, first ten.", "",
             "| Function | Name | Classes | Levels | C | Signature | Hook | Pvars | Calls |",
@@ -782,7 +782,7 @@ def render_md(cat: dict) -> str:
                      key=lambda x: (-x[1]["called_by"], x[0]))[:60]
     out += ["", "## Hook-after candidates", "",
             "The game functions update functions call most, engine maths helpers left out",
-            "([editor/engine_helpers.tsv](../../../editor/engine_helpers.tsv) lists those): a hook on one runs",
+            "([extractor/engine_helpers.tsv](../../../extractor/engine_helpers.tsv) lists those): a hook on one runs",
             "for every update function that calls it.", "",
             "| Function | Name | Called by | C | Signature | Hook point |", "|---|---|---|---|---|---|"]
     for s, h in helpers:
@@ -806,7 +806,7 @@ def render_md(cat: dict) -> str:
         out.append("")
 
     out += ["## Classes", "",
-            "Every class with an update function, by number: its name (editor/moby_classes.tsv), the levels it is",
+            "Every class with an update function, by number: its name (extractor/moby_classes.tsv), the levels it is",
             "updated in and the function.", "", "| Class | Name | Levels | Update function | Shares it with |",
             "|---|---|---|---|---|"]
     for c in cat["classes"]:

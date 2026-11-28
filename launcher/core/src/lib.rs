@@ -12,7 +12,8 @@
 //!   `launcher/actions.json`, and how an action becomes a command line.
 //! - [`status`]: what is in place for a version (disc, inputs, build output).
 //! - [`config`]: the launcher's own settings file.
-//! - [`detect`]: finding the checkout, Python, Godot and Docker.
+//! - [`detect`]: finding the checkout, Python and Docker.
+//! - [`editor_install`]: OpenRAC Editor, the level editor, downloaded from its releases.
 //! - [`desktop`]: the Linux desktop's menu entries and icons for the launcher and the games.
 //! - [`install`]: setting a game up from the player's disc, OpenGOAL's way.
 //! - [`disc_choice`]: for developers with two discs of a game, which one is played.
@@ -24,6 +25,8 @@
 //! - [`window`]: the window's size on a screen too small for it.
 //! - [`overrides`]: a game's overrides packs (replacement textures and models): list, order, on/off.
 //! - [`plugins`]: a game's native mods (docs/port/MODS.md): install, list, order, on/off, settings.
+//! - [`modset`]: mod codes, a host's mods at exact versions as a short or long code: review, apply.
+//! - [`profile`]: the way back from a mod code: what the mods were, kept to restore.
 //! - [`index`]: the signed mod index (openrac-mods), fetched, checked and cached; [`resolver`]: what
 //!   installing mods from it takes; [`index_apply`]: doing it; [`deeplink`]: `openrac://` links;
 //!   [`mod_error`]: their errors, with the fix the page offers.
@@ -50,23 +53,30 @@ pub mod differences;
 pub mod disc_choice;
 pub mod discord;
 pub mod discs;
+pub mod editor_install;
 pub mod editor_state;
 pub mod enhanced;
 pub mod hook_ids;
 pub mod index;
 pub mod index_apply;
 pub mod install;
+pub mod interface_runs;
 pub mod jobs;
+pub mod keyboard_mouse;
 pub mod launcher_log;
 pub mod library;
 pub mod mod_error;
+pub mod mod_save_data;
 pub mod mod_summary;
+pub mod mod_tools;
 pub mod mod_updates;
+pub mod modset;
 pub mod multiplayer;
 pub mod overrides;
 pub mod pcsx2_card;
 pub mod plugins;
 pub mod port_build;
+pub mod profile;
 pub mod progress_sync;
 pub mod rac2_flags;
 pub mod remote;
@@ -76,8 +86,10 @@ pub mod resolver;
 pub mod save_edit;
 pub mod save_edit_rac2;
 pub mod save_edit_rac2_extra;
+pub mod save_edit_rac3;
 pub mod save_transfer;
 pub mod saves;
+pub mod shortcut;
 pub mod status;
 pub mod steam;
 pub mod texture_packs;
@@ -99,6 +111,12 @@ pub fn under(root: &Path, rel: &str) -> PathBuf {
     rel.split('/')
         .filter(|part| !part.is_empty() && *part != ".")
         .fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
+/// The SHA-256 of `bytes`, as lowercase hex.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The program a build made at `path` (absolute, without `.exe` off Windows). On macOS a windowed

@@ -104,11 +104,19 @@ def write_json(path, value, *, replace=False):
             temporary.unlink(missing_ok=True)
 
 
+def profile_name(game: str, version: str) -> str:
+    """The reviewed profiles' folder for GAME and VERSION: the editor's (extractor/enhanced/profiles.py),
+    which names one folder for releases that share their levels (Going Commando's three discs)."""
+    sys.path.insert(0, str(seeds.ROOT/'extractor'))
+    from enhanced import profiles  # noqa: E402
+    return profiles.profile_name(game, version)
+
+
 def prepare_emission(level_dir, baker):
     """Resolve the same explicit material definitions used by normal level export."""
     manifest = diagnostics.read_json(level_dir/'manifest.json')
     if all(key in manifest for key in ('game', 'version', 'level')):
-        profiles = seeds.ROOT/'port/enhanced/lighting/profiles'/f"{manifest['game']}-{manifest['version']}"
+        profiles = seeds.ROOT/'port/enhanced/lighting/profiles'/profile_name(manifest['game'], manifest['version'])
         diagnostics.capture([str(baker), '--prepare-level-emission', str(level_dir),
                              str(profiles/'emission-materials.json'),
                              str(profiles/f"level_{manifest['level']:02}"/'probe-emission.json')])
@@ -272,7 +280,7 @@ class NativeBatch:
             self.tail.append(line)
             self.log.write(line)
             self.log.flush()
-            if line.startswith(('Baking ', 'Verified ', 'Kept ')):
+            if line.startswith(('Baking ', 'Verified ', 'Kept ', 'Bake preview: ')):
                 print(line.rstrip(), flush=True)
             elif line.startswith('Probes ') and self.progress is not None:
                 done, _, total = line[7:].strip().partition('/')
@@ -304,7 +312,7 @@ class NativeBatch:
 
 
 def bake_level(level_dir: Path, output_dir: Path, baker: Path, *, disc=None, options=(), resume=False,
-               progress=None, process_factory=None):
+               progress=None, process_factory=None, debug_preview=False):
     """RESUME: OUTPUT_DIR may hold what a stopped bake of this level wrote; the grids it verified
     for the same plan are kept (the baker reads each back and checks it), the rest is baked.
     PROGRESS(fraction) hears how far the level's probes are."""
@@ -316,10 +324,13 @@ def bake_level(level_dir: Path, output_dir: Path, baker: Path, *, disc=None, opt
     manifest = diagnostics.stage('Read level manifest', diagnostics.read_json, level_dir/'manifest.json')
     diagnostics.stage('Prepare water', prepare_water.prepare, level_dir, manifest, disc, baker=baker)
     settings = diagnostics.stage('Read lighting settings', RegionSettings.load, level_dir)
-    gameplay = diagnostics.stage('Read gameplay seeds', seeds.read_gameplay, level_dir, manifest, disc) \
-        if settings.enabled or settings.interior_lighting else None
     common = [str(baker), '--level-dir', str(level_dir), *options]
     profile = diagnostics.stage('Read baker profile', lambda: diagnostics.parse_profile(diagnostics.capture(common+['--print-profile'])))
+    gameplay = None
+    if settings.enabled or settings.interior_lighting:
+        gameplay = diagnostics.stage('Read gameplay seeds', seeds.read_gameplay, level_dir, manifest, disc)
+    elif profile.get('reflections') and (level_dir/'bake-inputs/gameplay.bin').is_file():
+        gameplay = (level_dir/'bake-inputs/gameplay.bin').read_bytes()
     output_dir.mkdir(parents=True, exist_ok=resume)
 
     # Resolve reviewed shared materials before the native scene snapshot, including older exports.
@@ -331,6 +342,8 @@ def bake_level(level_dir: Path, output_dir: Path, baker: Path, *, disc=None, opt
         automatic_interiors.remove_generated(level_dir)
 
     command = common + ['--batch-output', str(output_dir), *interior_options] + (['--resume'] if resume else [])
+    if debug_preview:
+        command.append('--debug-preview')
     batch_options = dict(append=resume, progress=progress)
     if process_factory is not None:
         batch_options['process_factory'] = process_factory
@@ -369,6 +382,7 @@ def main():
     parser.add_argument('--rays', type=int, help='quality override for every grid and verification')
     parser.add_argument('--bounces', type=int, help='bounce override for every grid and verification')
     parser.add_argument('--threads', type=int, help='CPU bake threads; 0 uses all, 1 is serial')
+    parser.add_argument('--debug-preview', action='store_true', help='write an offline 3D bake-preview.html')
     args = parser.parse_args()
     options = []
     for key in ('rays', 'bounces', 'threads'):
@@ -382,7 +396,8 @@ def main():
             raise ValueError('choose a new output directory; previous bakes are preserved')
         with diagnostics.transcript(args.output_dir, baker=args.baker) as log:
             try:
-                bake_level(args.level_dir, args.output_dir, args.baker, disc=args.disc, options=options, resume=True)
+                bake_level(args.level_dir, args.output_dir, args.baker, disc=args.disc,
+                           options=options, resume=True, debug_preview=args.debug_preview)
             except Exception as error:
                 diagnostics.failed(error, level=args.level_dir.name, log=log)
                 return 1

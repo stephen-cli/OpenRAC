@@ -6,6 +6,7 @@
 #include "mod_manifest.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <set>
@@ -137,8 +138,18 @@ bool parse_setting(const json::Value& v, Setting& s, std::string& error) {
         error = "each setting must be an object";
         return false;
     }
-    if (!text(v, "key", true, s.key, error) || !text(v, "name", true, s.name, error)) {
+    if (!text(v, "key", true, s.key, error) || !text(v, "name", true, s.name, error)
+        || !text(v, "description", false, s.description, error)
+        || !text(v, "section", false, s.section, error)) {
         return false;
+    }
+    // Only looks: read where they are as the launcher has them, else left out.
+    if (const json::Value& step = v["step"];
+        step.is_number() && std::isfinite(step.number()) && step.number() > 0.0) {
+        s.step = step.number();
+    }
+    if (const json::Value& group = v["group"]; group.is_string()) {
+        s.group = group.string();
     }
     for (char c : s.key) {
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
@@ -146,9 +157,33 @@ bool parse_setting(const json::Value& v, Setting& s, std::string& error) {
             return false;
         }
     }
+    // Interface 1.11: own (each player's) or host (the host's rules bring it); else the party's.
+    if (const json::Value& party = v["multiplayer"]; !party.is_null()) {
+        const std::string word = party.is_string() ? party.string() : "";
+        if (word != "own" && word != "host") {
+            error = std::format("setting \"{}\": \"multiplayer\" must be own or host", s.key);
+            return false;
+        }
+        s.party = word == "own" ? 1 : 2;
+    }
+    if (const json::Value& games = v["games"]; !games.is_null()) {
+        if (!id_list(games, "games", s.games, error) || s.games.empty()) {
+            error = std::format(
+                "setting \"{}\": \"games\" must list one or more of the mod's games", s.key
+            );
+            return false;
+        }
+    }
     std::string type;
     if (!text(v, "type", true, type, error)) {
         return false;
+    }
+    // A key is its player's, and so is its name: never the party's to agree on. The launcher's mod
+    // codes leave the same ones out (launcher/core/src/plugins.rs, shared_setting), so a code can
+    // always make two games match.
+    if (v["multiplayer"].is_null()
+        && (type == "keybind" || (type == "string" && v["default"].string() == "${player_name}"))) {
+        s.party = 1;
     }
     if (type == "bool") {
         s.type = SettingType::Bool;
@@ -193,6 +228,9 @@ bool parse_setting(const json::Value& v, Setting& s, std::string& error) {
                 return false;
             }
             s.choices.push_back(c["value"].string());
+            s.choice_names.push_back(
+                c["name"].is_string() ? c["name"].string() : c["value"].string()
+            );
         }
     }
     if (const json::Value& m = v["max_length"]; !m.is_null()) {
@@ -217,9 +255,14 @@ bool parse_setting(const json::Value& v, Setting& s, std::string& error) {
 }
 
 // "presets" (interface 1.2): [{"id", "name", "values": {key: value}}], buttons in the launcher that
-// set several settings at once, of any type. The game does not use them (the launcher writes the
-// values to the list), but a manifest with a broken one is refused here as there.
-bool check_presets(const json::Value& v, const std::vector<Setting>& settings, std::string& error) {
+// set several settings at once, of any type: the port's menu offers a built-in's too. A manifest
+// with a broken one is refused here as in the launcher.
+bool parse_presets(
+    const json::Value& v,
+    const std::vector<Setting>& settings,
+    std::vector<Preset>& out,
+    std::string& error
+) {
     if (v.is_null()) {
         return true;
     }
@@ -244,18 +287,21 @@ bool check_presets(const json::Value& v, const std::vector<Setting>& settings, s
             error = std::format("preset \"{}\": its id is not a-z, 0-9 and _, is there twice, or it has no name", id);
             return false;
         }
+        Preset preset{id, name, {}};
         for (const auto& [key, value] : p["values"].members()) {
             const auto s = std::find_if(settings.begin(), settings.end(), [&](const Setting& x) { return x.key == key; });
-            SettingValue out;
+            SettingValue got;
             if (s == settings.end()) {
                 error = std::format("preset \"{}\": \"{}\" is not a setting of the mod", id, key);
                 return false;
             }
-            if (!value_of(*s, value, out)) {
+            if (!value_of(*s, value, got)) {
                 error = std::format("preset \"{}\": its {} is not a value of setting \"{}\"", id, key, key);
                 return false;
             }
+            preset.values.emplace_back(key, got);
         }
+        out.push_back(std::move(preset));
     }
     return true;
 }
@@ -383,6 +429,20 @@ int compare(const Version& a, const Version& b) {
     return a.suffix < b.suffix ? -1 : 1;
 }
 
+bool valid_game_id(std::string_view game) {
+    if (game.empty() || game.size() > 32) {
+        return false;
+    }
+    for (const char c : game) {
+        const bool ok =
+            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool valid_id(std::string_view id) {
     if (id.empty() || id.size() > 64 || id.front() == '-' || id.back() == '-') {
         return false;
@@ -414,7 +474,7 @@ bool parse_manifest(std::string_view source, Manifest& m, std::string& error) {
     }
     m.format = static_cast<int>(v["format"].number());
     if (m.format == 1) {
-        error = "a format-1 manifest is a data pack (editor/MODDING.md), not a native mod";
+        error = "a format-1 manifest is a data pack (extractor/MODDING.md), not a native mod";
         return false;
     }
     if (m.format != 2) {
@@ -542,6 +602,20 @@ bool parse_manifest(std::string_view source, Manifest& m, std::string& error) {
     if (!id_list(v["hooks"], "hooks", m.hooks, error)) {
         return false;
     }
+    // Interface 1.33: the games whose data folders the mod reads; a name is a game's id.
+    if (const json::Value& reads = v["reads_games"]; !reads.is_null()) {
+        if (!reads.is_array()) {
+            error = "\"reads_games\" must be a list of game ids (\"rac2\")";
+            return false;
+        }
+        for (const json::Value& item : reads.items()) {
+            if (!item.is_string() || !valid_game_id(item.string())) {
+                error = "\"reads_games\" must hold game ids (\"rac1\", \"rac2\", ...)";
+                return false;
+            }
+            m.reads_games.push_back(item.string());
+        }
+    }
     const json::Value& assets = v["assets"];
     if (!assets.is_null()) {
         if (!assets.is_string() || !folder_path(assets.string())) {
@@ -550,10 +624,43 @@ bool parse_manifest(std::string_view source, Manifest& m, std::string& error) {
         }
         m.assets = assets.string();
     }
-    // Interface 1.4: only moves the loading before the window, so it is read and never refused (the
-    // packager's and the launcher's checks know nothing of it): true on a native mod of 1.4 or later.
+    const json::Value& touch = v["touch"];
+    if (!touch.is_null()) {
+        if (!touch.is_string() || !touch.string().ends_with(".json")
+            || !folder_path(touch.string())) {
+            error = "\"touch\" must be a .json file inside the mod, with / (\"touch.json\")";
+            return false;
+        }
+        m.touch = touch.string();
+    }
+    // Interface 1.4: a native mod can request loading before the window to make the Vulkan device.
     m.vulkan_device = v["vulkan_device"].boolean(false) && !m.script && m.has_api
                       && (m.api_major > 1 || m.api_minor >= 4);
+    const bool can_declare_vulkan = m.api_major > 1 || (m.api_major == 1 && m.api_minor >= 20);
+    if (const auto queue = v.members().find("vulkan_queue"); queue != v.members().end()) {
+        if (!is_bool(queue->second) || m.script || m.plugin.empty() || !can_declare_vulkan) {
+            error = "\"vulkan_queue\" must be a boolean on a native mod targeting interface 1.20 "
+                    "or later";
+            return false;
+        }
+        m.vulkan_queue = queue->second.boolean();
+    }
+    if (m.vulkan_device && can_declare_vulkan && !m.vulkan_queue) {
+        error = "\"vulkan_device\" requires \"vulkan_queue\": true from interface 1.20";
+        return false;
+    }
+    // Interface 1.11: what the mod is to a party; a word the port does not know refuses the manifest,
+    // as the packager's and the launcher's checks do.
+    if (const json::Value& party = v["multiplayer"]; !party.is_null()) {
+        const std::string word = party.is_string() ? party.string() : "";
+        constexpr std::array<std::string_view, 4> kinds = {"gameplay", "input", "cosmetic", "solo"};
+        const auto at = std::find(kinds.begin(), kinds.end(), word);
+        if (at == kinds.end()) {
+            error = "\"multiplayer\" must be gameplay, input, cosmetic or solo";
+            return false;
+        }
+        m.party = static_cast<int>(at - kinds.begin());
+    }
     const json::Value& settings = v["settings"];
     if (!settings.is_null()) {
         if (!settings.is_array()) {
@@ -570,10 +677,20 @@ bool parse_manifest(std::string_view source, Manifest& m, std::string& error) {
                 error = std::format("setting \"{}\" is declared twice", s.key);
                 return false;
             }
+            for (const std::string& game : s.games) {
+                if (!m.games.contains(game)) {
+                    error = std::format(
+                        "setting \"{}\": \"games\" names {}, which \"games\" of the mod does not",
+                        s.key,
+                        game
+                    );
+                    return false;
+                }
+            }
             m.settings.push_back(std::move(s));
         }
     }
-    if (!check_presets(v["presets"], m.settings, error)) {
+    if (!parse_presets(v["presets"], m.settings, m.presets, error)) {
         return false;
     }
     if (const json::Value& r = v["requires"]; !r.is_null()) {
@@ -655,12 +772,93 @@ bool parse_list(std::string_view source, std::vector<ListEntry>& out, std::strin
     return true;
 }
 
-std::map<std::string, SettingValue> resolve_settings(const Manifest& manifest,
-                                                     const std::map<std::string, json::Value>& written,
-                                                     std::vector<std::string>& notes) {
+bool setting_value(const Setting& s, const json::Value& v, SettingValue& out) {
+    return value_of(s, v, out);
+}
+
+bool setting_for_game(const Setting& s, std::string_view game) {
+    return s.games.empty() || game.empty()
+           || std::find(s.games.begin(), s.games.end(), game) != s.games.end();
+}
+
+bool preset_covers(const Setting& s, const std::vector<Preset>& presets) {
+    if (s.type == SettingType::Keybind) {
+        return true;
+    }
+    return std::any_of(presets.begin(), presets.end(), [&](const Preset& p) {
+        return std::any_of(p.values.begin(), p.values.end(), [&](const auto& v) {
+            return v.first == s.key;
+        });
+    });
+}
+
+const SettingValue& preset_value(const Setting& s, const Preset* preset) {
+    if (preset != nullptr) {
+        for (const auto& [key, value] : preset->values) {
+            if (key == s.key) {
+                return value;
+            }
+        }
+    }
+    return s.fallback;
+}
+
+bool same_value(const Setting& s, const SettingValue& a, const SettingValue& b) {
+    switch (s.type) {
+        case SettingType::Bool:
+            return a.b == b.b;
+        case SettingType::Int:
+            return a.i == b.i;
+        case SettingType::Float:
+            return a.f == b.f;
+        case SettingType::Keybind: {
+            std::string x, y;
+            return parse_binds(a.s, s.binds, x) && parse_binds(b.s, s.binds, y) ? x == y
+                                                                                : a.s == b.s;
+        }
+        default:
+            return a.s == b.s;
+    }
+}
+
+std::string setting_literal(const Setting& s, const SettingValue& v) {
+    switch (s.type) {
+        case SettingType::Bool:
+            return v.b ? "true" : "false";
+        case SettingType::Int:
+            return std::to_string(v.i);
+        case SettingType::Float:
+            return std::isfinite(v.f) ? std::format("{}", v.f) : "0";
+        default: {
+            std::string out = "\"";
+            for (const unsigned char c : v.s) {
+                if (c == '"' || c == '\\') {
+                    out += '\\';
+                    out += static_cast<char>(c);
+                } else if (c < 0x20) {
+                    out += std::format("\\u{:04x}", c);
+                } else {
+                    out += static_cast<char>(c);
+                }
+            }
+            return out + "\"";
+        }
+    }
+}
+
+std::map<std::string, SettingValue> resolve_settings(
+    const Manifest& manifest,
+    const std::map<std::string, json::Value>& written,
+    std::vector<std::string>& notes,
+    std::string_view game
+) {
     std::map<std::string, SettingValue> out;
     for (const Setting& s : manifest.settings) {
         SettingValue value = s.fallback;
+        if (!setting_for_game(s, game)) {
+            out[s.key] = value;  // not for this game: its default, whatever the list says
+            continue;
+        }
         if (auto it = written.find(s.key); it != written.end()) {
             if (!value_of(s, it->second, value)) {
                 value = s.fallback;
@@ -729,7 +927,7 @@ std::vector<Decision> plan(const std::vector<Candidate>& enabled, const Target& 
                    std::find(discs.begin(), discs.end(), target.version) == discs.end()) {
             refuse(d, std::format("it is not for this disc ({}/{})", target.game, target.version));
         } else if (!m.script && m.plugin.empty()) {
-            refuse(d, "it has no library: data mods are packs (editor/MODDING.md)");
+            refuse(d, "it has no library: data mods are packs (extractor/MODDING.md)");
         } else if (m.script && !target.scripts) {
             refuse(d, std::format("this OpenRAC runs no scripts for {}", target.game));
         } else if (m.api_major != target.api_major) {

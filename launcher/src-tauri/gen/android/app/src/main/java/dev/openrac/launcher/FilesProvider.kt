@@ -27,6 +27,7 @@ import java.io.FileNotFoundException
  * deletes them through here. These folders, and not the tools the APK unpacks (OpenracSetup.kt):
  *
  *   Saves and settings  files/share/openrac  the memory cards and each game's settings
+ *   Mod files           files/share/openrac/mod-data  each mod's own files (the SDK's data_dir)
  *   Games               files/games          each game's set-up from its disc, its mods
  *   Disc images         files/discs          the images picked in the launcher
  *   GPU drivers         files/gpu_drivers    the driver packages (OpenracPlugin.kt)
@@ -42,6 +43,7 @@ class FilesProvider : DocumentsProvider() {
     private const val ROOT = "root"
     private val PLACES = listOf(
       Place("saves", "Saves and settings", "share/openrac"),
+      Place("mod-data", "Mod files", "share/openrac/mod-data"),
       Place("games", "Games", "games"),
       Place("discs", "Disc images", "discs"),
       Place("drivers", "GPU drivers", "gpu_drivers"),
@@ -62,10 +64,11 @@ class FilesProvider : DocumentsProvider() {
     /** The folder of the app's files a place is. */
     private fun folder(context: Context, place: Place): File = File(context.filesDir, place.path)
 
-    /** The document a file of the app's is, or null when it is in none of its folders. */
+    /** The document a file of the app's is, or null when it is in none of its folders. A file in
+     *  Mod files is also in Saves and settings: the deepest folder names it. */
     fun documentId(context: Context, file: File): String? {
       val path = file.absoluteFile.normalize()
-      for (place in PLACES) {
+      for (place in PLACES.sortedByDescending { it.path.length }) {
         val base = folder(context, place).absoluteFile.normalize()
         if (path == base) return place.key
         if (path.startsWith(base)) return "${place.key}/${path.toRelativeString(base)}"
@@ -192,6 +195,20 @@ class FilesProvider : DocumentsProvider() {
 
   override fun isChildDocument(parentId: String, documentId: String): Boolean =
     parentId == ROOT || documentId.startsWith("$parentId/")
+
+  /** The folders from the root (or `parentId`) down to a document. The Files app asks for it to
+   *  open at a folder inside (an "Open folder" button); without it, it opens at its own start. */
+  override fun findDocumentPath(parentId: String?, childId: String): DocumentsContract.Path {
+    val ids = mutableListOf(ROOT)
+    if (childId != ROOT) {
+      file(childId) // a document that is not there is refused here
+      val parts = childId.split('/')
+      for (i in parts.indices) ids += parts.subList(0, i + 1).joinToString("/")
+    }
+    val from = parentId?.let(ids::indexOf) ?: 0
+    if (from < 0) throw FileNotFoundException("$childId is not inside $parentId")
+    return DocumentsContract.Path(if (parentId == null) ROOT else null, ids.drop(from))
+  }
 
   /** The place a document is in: null for the root itself. */
   private fun place(documentId: String): Place? {

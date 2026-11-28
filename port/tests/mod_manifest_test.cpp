@@ -10,6 +10,7 @@
 // the file records each one's verdict and why. They are characterisation tests, so a refactor of any of
 // the three cannot move a rule unseen.
 
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <format>
@@ -20,6 +21,7 @@
 #include "check.h"
 #include "common/json.h"
 #include "mod_manifest.h"
+#include "openrac/openrac_mod.h"
 
 using namespace openrac;
 using namespace openrac::mods;
@@ -201,6 +203,27 @@ void presets() {
     CHECK(with(R"([{"id": "hard", "name": "Hard",
                     "values": {"damage": 2.5, "count": 30, "mode": "b", "chaos": true, "jump": "KeyJ"}},
                    {"id": "default", "name": "Retail", "values": {}}])"));
+    {
+        // The values are kept, by key, for the port's menu.
+        Manifest m;
+        std::string error;
+        CHECK(parse_manifest(
+            manifest(
+                "a",
+                "1.0.0",
+                settings + R"(, "presets": [{"id": "hard", "name": "Hard",
+                     "values": {"mode": "b", "jump": "KeyJ"}}])",
+                "1.2"
+            ),
+            m,
+            error
+        ));
+        CHECK(m.presets.size() == 1 && m.presets[0].id == "hard" && m.presets[0].name == "Hard");
+        CHECK(
+            m.presets[0].values.size() == 2 && m.presets[0].values[0].first == "jump"
+            && m.presets[0].values[0].second.s == "KeyJ" && m.presets[0].values[1].second.s == "b"
+        );
+    }
     CHECK(with("[]"));
     CHECK(!with(R"([{"id": "x", "name": "X", "values": {"damage": 5.0}}])"));     // out of range
     CHECK(!with(R"([{"id": "x", "name": "X", "values": {"count": 1.5}}])"));      // not an integer
@@ -211,6 +234,105 @@ void presets() {
     CHECK(!with(R"([{"id": "X!", "name": "X", "values": {}}])"));
     CHECK(!with(R"([{"id": "x", "name": "X", "values": {}}, {"id": "x", "name": "Y", "values": {}}])"));
     CHECK(!with(R"({"x": 1})"));
+}
+
+void sections() {
+    // A setting's heading and line under its name are kept; a heading that is not text is refused.
+    Manifest m;
+    std::string error;
+    CHECK(parse_manifest(
+        manifest(
+            "a",
+            "1.0.0",
+            R"(, "settings": [
+          {"key": "jump", "name": "Jump", "type": "keybind", "default": "Space", "section": "Movement",
+           "description": "Cross."},
+          {"key": "trace", "name": "Trace", "type": "bool", "default": false}])",
+            "1.2"
+        ),
+        m,
+        error
+    ));
+    CHECK(
+        m.settings.size() == 2 && m.settings[0].section == "Movement"
+        && m.settings[0].description == "Cross." && m.settings[1].section.empty()
+    );
+    CHECK(!parse_manifest(
+        manifest(
+            "a",
+            "1.0.0",
+            R"(, "settings": [
+          {"key": "trace", "name": "Trace", "type": "bool", "default": false, "section": 3}])",
+            "1.2"
+        ),
+        m,
+        error
+    ));
+}
+
+void preset_helpers() {
+    // The port's menu applies and lights the presets as the launcher does (lib/presets.ts).
+    Manifest m;
+    std::string error;
+    CHECK(parse_manifest(
+        manifest(
+            "a",
+            "1.0.0",
+            R"(, "settings": [
+          {"key": "speed", "name": "Speed", "type": "float", "default": 0.5, "min": 0, "max": 1,
+           "step": 0.05},
+          {"key": "trace", "name": "Trace", "type": "bool", "default": false},
+          {"key": "jump", "name": "Jump", "type": "keybind", "default": "Space", "group": "play"},
+          {"key": "back", "name": "Back", "type": "keybind", "default": "Backspace", "step": "x",
+           "group": 3}],
+          "presets": [{"id": "fast", "name": "Fast", "values": {"speed": 1.0}}])",
+            "1.2"
+        ),
+        m,
+        error
+    ));
+    CHECK(m.settings.size() == 4);
+    const Setting& speed = m.settings[0];
+    const Setting& trace = m.settings[1];
+    const Setting& jump = m.settings[2];
+    const Setting& back = m.settings[3];
+    // A step and a group are read where they are what the launcher reads, else left out.
+    CHECK(speed.step && *speed.step == 0.05 && !trace.step && jump.group == "play");
+    CHECK(!back.step && back.group.empty());
+    // Covered: every keybind and each setting a preset names; a Trace switch no preset names is not.
+    CHECK(preset_covers(speed, m.presets) && preset_covers(jump, m.presets));
+    CHECK(!preset_covers(trace, m.presets));
+    // A preset's own value, else the default; null is the defaults.
+    CHECK(preset_value(speed, &m.presets[0]).f == 1.0);
+    CHECK(preset_value(jump, &m.presets[0]).s == "Space");
+    CHECK(preset_value(speed, nullptr).f == 0.5);
+    // The same value: keybinds by their binds in order, numbers exactly.
+    SettingValue a = jump.fallback;
+    SettingValue b = jump.fallback;
+    b.s = "Space";
+    CHECK(same_value(jump, a, b));
+    b.s = "Space,KeyJ";
+    CHECK(!same_value(jump, a, b));
+    a.s = "KeyJ,Space";
+    CHECK(!same_value(jump, a, b));  // the order is the player's
+    SettingValue x = speed.fallback;
+    SettingValue y = speed.fallback;
+    y.f = 0.5000001;
+    CHECK(!same_value(speed, x, y));
+    // As JSON: a switch, numbers, text escaped.
+    CHECK(setting_literal(trace, trace.fallback) == "false");
+    CHECK(setting_literal(speed, speed.fallback) == "0.5");
+    SettingValue weird = jump.fallback;
+    weird.s = "a\"b\\c\n";
+    CHECK(setting_literal(jump, weird) == R"("a\"b\\c\u000a")");
+    SettingValue nan = speed.fallback;
+    nan.f = std::nan("");
+    CHECK(setting_literal(speed, nan) == "0");
+    // Read back, a literal is the value it came from.
+    json::Value v;
+    SettingValue back_again;
+    CHECK(json::parse(setting_literal(speed, preset_value(speed, &m.presets[0])), v, error));
+    CHECK(setting_value(speed, v, back_again) && back_again.f == 1.0);
 }
 
 void lists() {
@@ -239,6 +361,13 @@ void checks() {
         Target rac2 = rac1_pal();
         rac2.game = "rac2";
         CHECK(!plan_all({candidate(manifest("a"))}, rac2)[0].load);
+        rac2.version = "ntsc";
+        const std::string rac2_native =
+            R"({"format": 2, "id": "callback", "name": "Callback", "version": "1.0.0", "api": "1.0", "games": {"rac2": ["ntsc"]}, "hooks": [], "plugin": {")"
+            + std::string(platform_key()) + R"(": "lib/callback"}})";
+        CHECK(
+            plan_all({candidate(rac2_native)}, rac2)[0].load
+        );  // native callbacks need no game hook catalogue or script binding
         d = plan_all({candidate(manifest("a", "1.0.0", "", "2.0"))});
         CHECK(!d[0].load && d[0].reason.find("needs interface 2.0") != std::string::npos);
         d = plan_all({candidate(manifest("a", "1.0.0", "", "1.3"))});
@@ -498,13 +627,127 @@ void assets() {
     }
 }
 
+// What a mod and a setting are to a party (interface 1.14): gameplay and shared unless they say.
+void party() {
+    const auto of = [](const std::string& fields) {
+        return R"({"format": 2, "id": "a", "name": "A", "version": "1.0.0", "games": {"rac1": ["pal"]},)"
+               + fields + "}";
+    };
+    Manifest m;
+    std::string error;
+    CHECK(
+        parse_manifest(of(R"("settings": [])"), m, error) && m.party == OPENRAC_PARTY_MOD_GAMEPLAY
+    );
+    Manifest input;
+    CHECK(
+        parse_manifest(of(R"("multiplayer": "input")"), input, error)
+        && input.party == OPENRAC_PARTY_MOD_INPUT
+    );
+    Manifest cosmetic;
+    CHECK(
+        parse_manifest(of(R"("multiplayer": "cosmetic")"), cosmetic, error)
+        && cosmetic.party == OPENRAC_PARTY_MOD_COSMETIC
+    );
+    Manifest solo;
+    CHECK(
+        parse_manifest(of(R"("multiplayer": "solo")"), solo, error)
+        && solo.party == OPENRAC_PARTY_MOD_SOLO
+    );
+    Manifest bad;
+    CHECK(!parse_manifest(of(R"("multiplayer": "party")"), bad, error));
+    CHECK(error.find("multiplayer") != std::string::npos);
+    Manifest settings;
+    CHECK(parse_manifest(
+        of(R"("settings": [
+        {"key": "a", "name": "A", "type": "bool", "default": false},
+        {"key": "b", "name": "B", "type": "string", "default": "", "multiplayer": "own"},
+        {"key": "c", "name": "C", "type": "string", "default": "", "multiplayer": "host"}])"),
+        settings,
+        error
+    ));
+    CHECK(settings.settings[0].party == OPENRAC_PARTY_SETTING_SHARED);
+    CHECK(settings.settings[1].party == OPENRAC_PARTY_SETTING_OWN);
+    CHECK(settings.settings[2].party == OPENRAC_PARTY_SETTING_HOST);
+    Manifest bad_setting;
+    CHECK(!parse_manifest(
+        of(R"("settings": [
+        {"key": "a", "name": "A", "type": "bool", "default": false, "multiplayer": "mine"}])"),
+        bad_setting,
+        error
+    ));
+
+    // A key and the player's name are each player's own unless the manifest says otherwise: a mod
+    // code leaves them out, so a party must not compare them.
+    Manifest own;
+    CHECK(parse_manifest(
+        of(R"("settings": [
+        {"key": "jump", "name": "Jump", "type": "keybind", "default": "KeyA"},
+        {"key": "who", "name": "Who", "type": "string", "default": "${player_name}"},
+        {"key": "pinned", "name": "Pinned", "type": "keybind", "default": "KeyA", "multiplayer": "host"},
+        {"key": "word", "name": "Word", "type": "string", "default": "x"}])"),
+        own,
+        error
+    ));
+    CHECK(own.settings[0].party == OPENRAC_PARTY_SETTING_OWN);
+    CHECK(own.settings[1].party == OPENRAC_PARTY_SETTING_OWN);
+    CHECK(own.settings[2].party == OPENRAC_PARTY_SETTING_HOST);
+    CHECK(own.settings[3].party == OPENRAC_PARTY_SETTING_SHARED);
+}
+
+// A mod for several games (openrac-mods docs/MULTI_GAME.md): it loads in each game it names, and a
+// setting for some of them is its default in the others, whatever the list says.
+void several_games() {
+    const std::string text =
+        R"({"format": 2, "id": "both", "name": "Both", "version": "1.0.0", "api": "1.0",
+        "games": {"rac1": ["pal", "ntsc"], "rac2": ["ntsc", "pal", "ntsc2"]},
+        "plugin": {"macos-arm64": "lib/a.dylib", "macos-x86_64": "lib/a.dylib", "linux-x86_64": "lib/a.so",
+                   "linux-aarch64": "lib/a.so", "windows-x86_64": "lib/a.dll", "windows-arm64": "lib/a.dll"},
+        "hooks": ["rac1.player.take_damage", "rac2.player.take_damage"],
+        "settings": [{"key": "count", "name": "Count", "type": "float", "default": 1.0, "games": ["rac1"]},
+                     {"key": "damage", "name": "Damage", "type": "float", "default": 1.0}]})";
+    Manifest m;
+    std::string error;
+    CHECK(parse_manifest(text, m, error));
+    CHECK(m.games.size() == 2 && m.settings[0].games == std::vector<std::string>{"rac1"});
+    CHECK(setting_for_game(m.settings[0], "rac1") && !setting_for_game(m.settings[0], "rac2"));
+    CHECK(setting_for_game(m.settings[1], "rac2"));
+    Target rac2 = rac1_pal();
+    rac2.game = "rac2";
+    rac2.version = "ntsc2";
+    CHECK(plan_all({candidate(text)}, rac2).at(0).load);
+    CHECK(plan_all({candidate(text)}).at(0).load);
+    rac2.version = "jp";
+    CHECK(!plan_all({candidate(text)}, rac2).at(0).load);
+    std::vector<ListEntry> list;
+    CHECK(parse_list(
+        R"({"format": 1, "mods": [{"id": "both", "settings": {"count": 2.0, "damage": 2.0}}]})",
+        list,
+        error
+    ));
+    std::vector<std::string> notes;
+    auto values = resolve_settings(m, list[0].settings, notes, "rac2");
+    CHECK(values.at("count").f == 1.0 && values.at("damage").f == 2.0 && notes.empty());
+    values = resolve_settings(m, list[0].settings, notes, "rac1");
+    CHECK(values.at("count").f == 2.0 && values.at("damage").f == 2.0);
+    // "games" of a setting names the mod's games only, and at least one.
+    for (const char* only : {R"([])", R"(["rac3"])", R"("rac1")"}) {
+        std::string bad = text;
+        bad.replace(bad.find(R"(["rac1"]})"), 8, only);
+        CHECK(!parse_manifest(bad, m, error));
+    }
+}
+
 int main() {
     versions();
+    party();
     assets();
     manifests();
     settings();
+    several_games();
     keybinds();
     presets();
+    sections();
+    preset_helpers();
     lists();
     checks();
     scripts();

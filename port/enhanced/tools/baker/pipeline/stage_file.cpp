@@ -5,6 +5,7 @@
 #include "enhanced/tools/baker/pipeline/stage_file.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <stdexcept>
@@ -25,7 +26,10 @@ public:
     // Rejects a colliding staging name rather than removing another writer's data.
     explicit StagedFile(const std::filesystem::path& target) {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        m_directory = target.parent_path() / (".bake-stage-" + std::to_string(stamp));
+        static std::atomic_uint64_t sequence{0};
+        m_directory = target.parent_path()
+                      / (".bake-stage-" + std::to_string(stamp) + "-"
+                         + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
         m_path = m_directory / "output";
 
         // Directory creation supplies exclusive ownership for cleanup.
@@ -123,13 +127,25 @@ Result<void> replace_stage_file(
 }
 
 Result<void> write_stage_file(const std::filesystem::path& output, std::string_view text) {
+    return write_stage_stream(output, [&](std::ostream& stream) {
+        stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+    });
+}
+
+Result<void> write_stage_stream(
+    const std::filesystem::path& output, const std::function<void(std::ostream&)>& write
+) {
     // Staging errors must preserve the previous published file.
     try {
         StagedFile staged(output);
         std::ofstream stream(staged.path(), std::ios::binary);
+        if (!stream) {
+            return unexpected(Error{"cannot write staged bake output"});
+        }
 
         // A partial write cannot replace the previous verified file.
-        if (!stream || !stream.write(text.data(), static_cast<std::streamsize>(text.size()))) {
+        write(stream);
+        if (!stream) {
             return unexpected(Error{"cannot write staged bake output"});
         }
 

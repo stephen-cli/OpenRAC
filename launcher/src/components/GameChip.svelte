@@ -3,6 +3,7 @@
   // marked with the launcher's accent (the game's own, themes.ts). Android has no game list beside
   // those pages: a tap goes to Games to choose another.
   import { app } from "$lib/app.svelte";
+
   import Icon from "./Icon.svelte";
 
   let { title, what }: { title: string; what: string } = $props();
@@ -26,8 +27,7 @@
     gap: 10px;
     max-width: 100%;
     padding: 8px 14px 8px 12px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--amber) 55%, transparent);
+    border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--amber) 12%, var(--panel));
     color: var(--text);
     transition:

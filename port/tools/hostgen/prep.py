@@ -42,7 +42,10 @@ from __future__ import annotations
 import json
 import re
 import textwrap
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+import vu0asm
 
 # A C token that can contain the word long without being the keyword.
 _SKIP = re.compile(
@@ -136,6 +139,87 @@ def blank_file_scope_asm(text: str) -> str:
     return "".join(chars)
 
 
+_ASM_START = re.compile(r"\b(?:__asm__|__asm|asm)\b(?:\s*(?:__volatile__|volatile))*\s*\(")
+_J_CONSTRAINT = re.compile(r'"([=+]?)(&?)j"')
+_VF_CLOBBER = re.compile(r'"\$?vf\d+"')
+
+
+def _vu0_statements(text: str):
+    """Yield the start match, statement end and template end for literal VU0 statements."""
+    last = 0
+    for m in _ASM_START.finditer(text):
+        if m.start() < last:
+            continue
+        end = _statement_end(text, m.start())
+        if end is None:
+            continue
+        stmt = text[m.start():end]
+        j, parts = m.end() - m.start(), []
+        while True:  # past the instructions
+            s = re.compile(r'\s*"((?:[^"\\]|\\.)*)"').match(stmt, j)
+            if s is None:
+                break
+            parts.append(s.group(1))
+            j = s.end()
+        if not vu0asm.is_vu0("".join(parts).replace("\\n", "\n").replace("\\t", "\t")):
+            continue  # another unit's registers (abs.s on "j"): left for Clang to refuse, as before
+        last = end
+        yield m, end, j
+
+
+def vu0_register_operands(text: str) -> str:
+    """Operands of inline assembly in GCC's "j" class (a VU0 vector register, which Clang does
+    not know) are written with "m" instead, the same length (`"=&j"` as `"=m" `): Clang then
+    reads the statement, with the operand as the C variable it is, and lower.py writes its VU0
+    instructions as C on that variable (vu0asm.py). Only the operand lists of statements with
+    VU0 instructions change."""
+    if "j\"" not in text:
+        return text
+    out, last = [], 0
+    for m, end, j in _vu0_statements(text):
+        stmt = text[m.start():end]
+        fixed = stmt[:j] + _J_CONSTRAINT.sub(lambda c: f'"{c.group(1)}m"' + (" " if c.group(2) else ""), stmt[j:])
+        out.append(text[last:m.start()])
+        out.append(fixed)
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
+def vu0_register_clobbers(text: str) -> str:
+    """Let Clang read vector clobbers as memory barriers; the VU0 instructions still lower to C."""
+    if _VF_CLOBBER.search(text) is None:
+        return text
+    out, last = [], 0
+    for match, end, template_end in _vu0_statements(text):
+        statement = text[match.start():end]
+        at, depth, colons = template_end, 0, 0
+        while at < len(statement):
+            character = statement[at]
+            token = _SKIP.match(statement, at)
+            if token is not None:
+                at = token.end()
+                continue
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif character == ":" and depth == 0:
+                colons += 1
+                if colons == 3:
+                    # Operand expressions can contain colons of their own; only this list is clobbers.
+                    tail = _SKIP.sub(lambda token: '"memory"' if _VF_CLOBBER.fullmatch(token[0])
+                                     else token[0], statement[at + 1:])
+                    out += [text[last:match.start()], statement[:at + 1], tail]
+                    last = end
+                    break
+            at += 1
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _skip_literal(text: str, i: int) -> int:
     quote = text[i]
     i += 1
@@ -220,6 +304,29 @@ _CAST_RECORD = re.compile(r"\(\s*(struct|union)\s*\{([^{}]*)\}")
 _FUNCTION_START = re.compile(r"^(?:static\s+|extern\s+)?[A-Za-z_][\w\s\*]*\b\w+\s*\(")
 
 
+_CODE_NOISE = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|/\*.*?\*/|//[^\n]*', re.S)
+
+
+def _function_of_lines(lines: list[str]) -> list[int | None]:
+    """For each line, the first line of the function definition it is inside (by brace depth, so a
+    `}` in column 0 that closes a block of a case is not taken for the function's end), else None."""
+    text = _CODE_NOISE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), "\n".join(lines))
+    depth, start, out = 0, None, []
+    for i, line in enumerate(text.split("\n")):
+        if depth == 0 and _FUNCTION_START.match(lines[i]) and not lines[i].rstrip().endswith(";") \
+                and not lines[i].lstrip().startswith("#"):
+            start = i
+        out.append(start if depth > 0 else None)
+        for c in line:
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth = max(0, depth - 1)
+        if depth > 0 and start is not None:
+            out[i] = start
+    return out
+
+
 def name_cast_records(text: str) -> str:
     """A record defined inside a cast gets a name (openrac_cast_LINE_N) and its definition goes
     to the start of the first line of the function around it; every line stays where it was."""
@@ -229,15 +336,10 @@ def name_cast_records(text: str) -> str:
     out = []
     last = 0
     definitions: dict[int, list[str]] = {}
+    owner = _function_of_lines(lines)
     for m in _CAST_RECORD.finditer(text):
         line = text.count("\n", 0, m.start())
-        start = None
-        for i in range(line, -1, -1):
-            if i != line and lines[i].startswith("}"):
-                break  # the end of the function before: this cast is in none
-            if _FUNCTION_START.match(lines[i]) and not lines[i].rstrip().endswith(";"):
-                start = i
-                break
+        start = owner[line]
         if start is None:
             continue  # not in a function (a macro in a header): left as it is
         name = f"openrac_cast_{line + 1}_{len(definitions.get(start, []))}"
@@ -320,8 +422,8 @@ def expand_cast_macros(text: str) -> str:
     """A one-line macro of the unit whose body defines a record inside a cast is written out where
     it is used, so name_cast_records finds the record in each function (Clang's JSON leaves a
     record out that a macro defined: rac1/pal's `#define S_I(p, o) (((struct { char _p[o]; int v;
-    } *)(p))->v)`). Uses on preprocessor lines, and after an #undef, stay as they are; every line
-    stays where it was."""
+    } *)(p))->v)`). Uses in other macros' bodies are written out too; on other preprocessor lines,
+    and after an #undef, they stay as they are; every line stays where it was."""
     if not _CAST_RECORD.search(text) or "define" not in text:
         return text
     lines = _join_cast_macros(text.split("\n"))
@@ -337,8 +439,15 @@ def expand_cast_macros(text: str) -> str:
             u = _UNDEF.match(lines[j])
             if u and u.group(1) == name:
                 break
-            if lines[j].lstrip().startswith("#") or name not in lines[j]:
+            if name not in lines[j]:
                 continue
+            if lines[j].lstrip().startswith("#"):
+                # Another macro written with this one (`#define HERO(T, o) F(D_00189E20, T, o)`) gets it
+                # written out in its body, so that it is a cast macro too and its own uses are written
+                # out in turn; other preprocessor lines stay as they are.
+                d = _DEFINE.match(lines[j])
+                if d is None or lines[j].endswith("\\") or d.group(1) == name:
+                    continue
             # Again for a use in another's arguments: FLD(FLD(p, char *, 8), int, 4).
             for _ in range(_MACRO_NESTING):
                 written = _expand_line(lines[j], name, params, body)
@@ -346,6 +455,17 @@ def expand_cast_macros(text: str) -> str:
                     break
                 lines[j] = written
     return "\n".join(lines)
+
+
+def expand_file_cast_macros(own: str, text: str) -> str:
+    """OWN (C hostgen puts at the end of a file) with the file's cast macros written out, as
+    expand_cast_macros does for the file's own C: the macros sit in the file, not in OWN, so
+    prepare(OWN) alone would keep them and Clang's JSON would leave their records out."""
+    defines = [line for line in _join_cast_macros(text.split("\n"))
+               if (m := _DEFINE.match(line)) and not line.endswith("\\") and _CAST_RECORD.search(m.group(3))]
+    if not any(re.search(r"\b" + _DEFINE.match(d).group(1) + r"\b", own) for d in defines):
+        return own
+    return expand_cast_macros("\n".join(defines) + "\n" + own).split("\n", len(defines))[-1]
 
 
 # A 128-bit integer written as a type name: "int __attribute__((mode(TI)))" before a "*" or a ")";
@@ -475,19 +595,31 @@ def unalias(text: str, aliases: dict[str, str]) -> str:
     """TEXT with each readable name of ALIASES written as its address name (see the top)."""
     if not aliases:
         return text
+    undone = {name for name in re.findall(r"^[ \t]*#[ \t]*undef[ \t]+(\w+)", text, re.M) if name in aliases}
 
     def one(m: re.Match) -> str:
         word = m.group(0)
         if word.lstrip().startswith("#"):
             # A carried name keeps its meaning inside a macro's body too (a `#define SIFCMD`
             # over `r1_D_00158300`); readable names stay as they are there.
-            return _CARRIED.sub(lambda c: aliases.get(c.group(0), c.group(0)), word)
+            word = _CARRIED.sub(lambda c: aliases.get(c.group(0), c.group(0)), word)
+            # A readable name the file defines again as an expression (rac1's loaders.c,
+            # `#undef compressed_class_resources` then `#define compressed_class_resources
+            # ((int *)((char *)class_resource_ids + 0x60))`) is defined under its address name,
+            # as its #undef and its uses are written. Only after an #undef: a readable name the
+            # file defines over its own address (`#define is_point_inside_clip_volume ((int
+            # (*)(void *, int))func_00215570)`, a cast for the calls) stays a macro of that name.
+            own = re.match(r"([ \t]*#[ \t]*define[ \t]+)([A-Za-z_]\w*)(?=[ \t(])(.*)", word, re.S)
+            if own and own.group(2) in undone:
+                word = own.group(1) + aliases[own.group(2)] + own.group(3)
+            return word
         return aliases.get(word, word)
     return _ALIAS_TOKEN.sub(one, text)
 
 
 def prepare(text: str) -> str:
-    return rename_va_builtins(own_va_list(name_lvalue_casts(name_wide_casts(name_cast_records(expand_cast_macros(widen_long(split_multiline_strings(blank_file_scope_asm(text)))))))))
+    text = vu0_register_operands(rename_va_builtins(own_va_list(name_lvalue_casts(name_wide_casts(name_cast_records(expand_cast_macros(widen_long(split_multiline_strings(blank_file_scope_asm(text))))))))))
+    return vu0_register_clobbers(text)
 
 
 # The path may be several adjacent strings over as many lines (the NTSC decomp's long paths).
@@ -594,7 +726,8 @@ def own_records(text: str, tag: str) -> str:
         while at < len(text) and depth:
             depth += (text[at] == "{") - (text[at] == "}")
             at += 1
-        name = re.match(r"\s*(\w+)\s*;", text[at:])
+        # `} V4;`, or with attributes first (`} __attribute__((aligned(16))) V4;`, rac3's)
+        name = re.match(r"\s*(?:__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)\s*)*(\w+)\s*;", text[at:])
         if name:
             names.append(name.group(1))
     names += [m.group(1) for m in _RECORD_TAG.finditer(text)]
@@ -639,8 +772,10 @@ def without_definitions(text: str, names: set[str]) -> str:
     return text
 
 
-# The records name_cast_records defined ahead of a function, on its first line.
-_CAST_RECORDS_AHEAD = r'(?:(?:struct|union) openrac_cast_\d+_\d+ \{.*?\}; )*'
+# The records name_cast_records defined ahead of a function, on its first line. A record's body
+# has no braces (_CAST_RECORD), so each record matches one way only: with `.*?` a line of a few
+# hundred records (a functional candidate's) had exponentially many ways to fail.
+_CAST_RECORDS_AHEAD = r'(?:(?:struct|union) openrac_cast_\d+_\d+ \{[^{}\n]*\}; )*'
 
 
 def _definition(text: str, name: str) -> tuple[int, int] | None:
@@ -719,15 +854,15 @@ def use_overrides(text: str, overrides: dict[str, str], used: set[str]) -> str:
         # A file that names the function after its definition (a draw callback it registers) needs a
         # declaration there: the override's prototype (its signature may differ from the matched C's:
         # a result the matching C declares void), on the line the matched definition started.
-        own = overrides[name]
+        own = expand_file_cast_macros(overrides[name], text)
         keep = ""
         if _named_in(text[span[1]:], name):
             mine = _definition(prepare(own), name)
             keep = _prototype(prepare(own)[mine[0]:mine[1]], name) if mine else _prototype(text[span[0]:span[1]], name)
         text = text[:span[0]] + keep + "\n" * text.count("\n", span[0], span[1]) + text[span[1]:]
         used.add(name)
-        if id(own) not in added:   # one file of C for several functions goes in once
-            added.add(id(own))
+        if id(overrides[name]) not in added:   # one file of C for several functions goes in once
+            added.add(id(overrides[name]))
             others = set(_DEFINED.findall(text)) - set(names)
             tail.append(f"\n/* hostgen: {name} from the port's own C, not the matched C (overrides) */\n"
                         f"{own_declarations(without_definitions(prepare(own), others), f'_ho{len(added)}')}")
@@ -778,6 +913,42 @@ def apply_decomp_workarounds(rel: str, text: str) -> str:
     This is a temporary workaround so that the native port builds cleanly without
     modifying the decompilation repository. Once fixed upstream, this function should be removed.
     """
+    if rel.endswith(("src/pal/game/00280218.c", "src/us2/game/00280380.c")):
+        # Going Commando PAL's func_00280A30 (v2.00's func_00280B20) is func_002804A8 (00280550) at
+        # scale 1: on the disc it leaves the caller's six arguments in a0..a5 and only sets the
+        # scale. Written with no parameters, it drew the text at address 0 with length 0.
+        text = re.sub(
+            r"extern void (func_(?:PAL_|US2_)?002(?:804A8|80550))\(float\);",
+            r"extern void \1(int, unsigned long long, int, int, unsigned long long, int, float);",
+            text,
+        )
+        text = re.sub(
+            r"void (func_(?:PAL_|US2_)?00280(?:A30|B20))\(void\) \{\s*(func_(?:PAL_|US2_)?002(?:804A8|80550))\(1\.0f\);",
+            r"void \1(int a0, unsigned long long a1, int a2, int a3, unsigned long long a4, int a5) {\n"
+            r"    \2(a0, a1, a2, a3, a4, a5, 1.0f);",
+            text,
+        )
+    if rel.endswith("src/us2/levels/shared/L18_00304470-cc.c"):
+        # Going Commando v2.00's func_L18_00304470 hands func_0027F1D8 (the release's name by now)
+        # its caller's scale, left in $f12 (the disc's code sets only a2); written with two
+        # parameters, the scale would be lost. The declaration's result is void or int (the
+        # decompilation may give it the definition's int).
+        text = re.sub(
+            r"extern (void|int) (func_\w+)\(void \*a0, void \*a1, const char \*a2\);",
+            r"extern \1 \2(void *a0, void *a1, const char *a2, float a3);",
+            text,
+        )
+        text = re.sub(
+            r"void (func_(?:US2_)?L18_00304470)\(void \*a0, void \*a1\) \{\s*(func_\w+)\(a0, a1, (D_\w+)\);",
+            r"void \1(void *a0, void *a1, float scale) {\n    \2(a0, a1, \3, scale);",
+            text,
+        )
+    if re.search(r"src/pal/levels/[^/]+/L\d\d_[0-9A-F]+-hero\.c$", rel):
+        # Going Commando PAL's hero update (each level's copy): for each moby near the hero, the cases
+        # 0x1366 and 0x1367 call their functions with no argument, the moby `m` left in $a0 by the loop
+        # (the disc's code: lw $a0, 0($s1) before both). Without it they work on address 0 and corrupt
+        # the game's memory (the collision crash of PAL Endako and Joba at frame 1281).
+        text = re.sub(r"(case 0x136[67]:\s*\n\s*\w+)\(\);", r"\1(m);", text)
     if rel.endswith("include/asm_functions/executable.h"):
         # A candidate defines func_0020E3D0 with a Moby *: its prototype replaces this header's line
         # (clangast._supersede), so the type must be known here. Same line, so no line moves.
@@ -864,11 +1035,29 @@ def apply_decomp_workarounds(rel: str, text: str) -> str:
     return text
 
 
+def readable_names(aliases: dict[str, str], release) -> dict[str, list[str]]:
+    """The primary release's address name -> the readable names that stand for it (ALIASES' values
+    are the release's names; RELEASE names the primary's)."""
+    if not aliases:
+        return {}
+    if getattr(release, "_readable", None) is None or release._readable[0] is not aliases:
+        by_new: dict[str, list[str]] = {}
+        for readable, address in aliases.items():
+            by_new.setdefault(address, []).append(readable)
+        primary: dict[str, list[str]] = {}
+        names = {v: k for k, v in release.names.items()}
+        for new, readable in by_new.items():
+            primary[names.get(new, new)] = readable
+        release._readable = (aliases, primary)
+    return release._readable[1]
+
+
 def copy_tree(src: Path, dst: Path, patterns=("*.c", "*.h", "*.inc"),
               candidates: dict[str, str] | None = None, used: set[str] | None = None,
               drafts: tuple[str, set[str]] | None = None, prefix: str = "",
               aliases: dict[str, str] | None = None, long_long_128: set[str] | None = None,
-              overrides: dict[str, str] | None = None, overridden: set[str] | None = None) -> int:
+              overrides: dict[str, str] | None = None, overridden: set[str] | None = None,
+              release=None, jobs: int = 1) -> int:
     """Prepares every C file under src into dst; only rewrites what changed.
     aliases (readable name -> address name) are written as their address names first (unalias).
     candidates (function name -> C) replace their assembly stubs (use_candidates);
@@ -877,28 +1066,23 @@ def copy_tree(src: Path, dst: Path, patterns=("*.c", "*.h", "*.inc"),
     macro, the files it applies to, named from the decompilation's top with prefix as src's own
     name) has those files' own drafts read (use_draft). long_long_128 (files named as drafts'
     are) has their own `long long` read as the 128-bit integer it is there (widen_long_long),
-    before the candidates and overrides, which are C written for the port, go in."""
-    count = 0
-    for pattern in patterns:
-        for path in src.rglob(pattern):
-            out = dst / path.relative_to(src)
-            rel = (Path(prefix) / path.relative_to(src)).as_posix()
-            text = path.read_text(encoding="utf-8", errors="surrogateescape")
-            if long_long_128 and rel in long_long_128:
-                text = widen_long_long(text)
-            text = prepare(unalias(text, aliases or {}))
-            if candidates and path.suffix == ".c":
-                text = use_candidates(text, candidates, used if used is not None else set())
-            if overrides and path.suffix == ".c":
-                text = use_overrides(text, overrides, overridden if overridden is not None else set())
-            if drafts and rel in drafts[1]:
-                text = use_draft(text, drafts[0])
-            text = apply_decomp_workarounds(rel, text)
-            if not out.exists() or out.read_text(encoding="utf-8", errors="surrogateescape") != text:
-                out.parent.mkdir(parents=True, exist_ok=True)
-                # LF on every system: Clang's byte offsets must match the text hostgen reads back.
-                out.write_text(text, encoding="utf-8", errors="surrogateescape", newline="\n")
-            count += 1
+    before the candidates and overrides, which are C written for the port, go in. release
+    (release.Release) writes another release's names for the address names (release.py).
+    jobs > 1 prepares the files in that many processes: each file is prepared on its own."""
+    options = {"src": src, "dst": dst, "prefix": prefix, "candidates": candidates, "drafts": drafts,
+               "aliases": aliases, "long_long_128": long_long_128, "overrides": overrides, "release": release}
+    paths = [path for pattern in patterns for path in src.rglob(pattern)]
+    if jobs > 1 and len(paths) > 1:
+        with ProcessPoolExecutor(jobs, initializer=_set_copy_options, initargs=(options,)) as ex:
+            results = list(ex.map(_prepare_file, paths, chunksize=16))
+    else:
+        _set_copy_options(options)
+        results = [_prepare_file(path) for path in paths]
+    for file_used, file_overridden in results:
+        if used is not None:
+            used |= file_used
+        if overridden is not None:
+            overridden |= file_overridden
     # A file the decompilation moved or removed leaves its old copy behind, which would define
     # its functions a second time.
     if dst.is_dir():
@@ -906,4 +1090,47 @@ def copy_tree(src: Path, dst: Path, patterns=("*.c", "*.h", "*.inc"),
             for out in dst.rglob(pattern):
                 if not (src / out.relative_to(dst)).exists():
                     out.unlink()
-    return count
+    return len(paths)
+
+
+_COPY: dict = {}
+
+
+def _set_copy_options(options: dict) -> None:
+    _COPY.clear()
+    _COPY.update(options)
+
+
+def _prepare_file(path: Path) -> tuple[set[str], set[str]]:
+    """copy_tree's work on one file; the candidates and overrides it used."""
+    o = _COPY
+    src, dst, release, aliases = o["src"], o["dst"], o["release"], o["aliases"]
+    candidates, overrides, drafts, long_long_128 = o["candidates"], o["overrides"], o["drafts"], o["long_long_128"]
+    used: set[str] = set()
+    overridden: set[str] = set()
+    out = dst / path.relative_to(src)
+    rel = (Path(o["prefix"]) / path.relative_to(src)).as_posix()
+    text = path.read_text(encoding="utf-8", errors="surrogateescape")
+    if release is not None and (release.splices.get(rel) or release.gone) and path.suffix == ".c":
+        # The release's own definitions where its code differs (release.py), first: they are
+        # the release's C, which every later step reads as it reads the shared C.
+        text = release.splice(text, rel, readable_names(aliases or {}, release))
+    if long_long_128 and rel in long_long_128:
+        text = widen_long_long(text)
+    if release is not None:
+        # Another release's names for every address name (release.py), before anything reads
+        # them; the aliases' names are the release's already.
+        text = release.text(text, rel)
+    text = prepare(unalias(text, aliases or {}))
+    if candidates and path.suffix == ".c":
+        text = use_candidates(text, candidates, used)
+    if overrides and path.suffix == ".c":
+        text = use_overrides(text, overrides, overridden)
+    if drafts and rel in drafts[1]:
+        text = use_draft(text, drafts[0])
+    text = apply_decomp_workarounds(rel, text)
+    if not out.exists() or out.read_text(encoding="utf-8", errors="surrogateescape") != text:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # LF on every system: Clang's byte offsets must match the text hostgen reads back.
+        out.write_text(text, encoding="utf-8", errors="surrogateescape", newline="\n")
+    return used, overridden

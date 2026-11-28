@@ -5,7 +5,7 @@
 
     python3 sdk/tools/gen_binding.py [GAME ...] [--check]
 
-reads sdk/bindings/<game>.json (rac1 when no game is named), with the behaviour catalogue its
+reads sdk/bindings/<game>.json (every game's when none is named), with the behaviour catalogue its
 "catalogue" names, and writes:
 
   port/game/<game>/script_binding.c       the port's side: for each hook point the C functions that
@@ -13,6 +13,9 @@ reads sdk/bindings/<game>.json (rac1 when no game is named), with the behaviour 
                                            classes' pvars, and every name a hook point answers to
                                            (port/game/common/include/openrac/script_binding.h)
   sdk/include/openrac/games/<game>.hpp     the hook points as C++ types, for the SDK's C++ layer
+  sdk/include/openrac/games/<game>.h       a block, between its markers, of the table's hook points
+                                           the header does not name by hand: their name, signature
+                                           and type for C mods (the hand-written ones stay as they are)
   sdk/types/<game>.d.luau                  the `openrac` global's types, for an editor's autocomplete
   sdk/bindings/<game>.ids.lock             every hook point's id, its anchor and its aliases: it only
                                            grows (below)
@@ -53,6 +56,7 @@ import argparse
 import json
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -503,6 +507,13 @@ def c_binding(b: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+def example_id(b: dict) -> str:
+    """A hook point's id the comments show: the player's turn to his heading where the game has it."""
+    ids = [h["id"] for h in b["hooks"] if h["origin"] == "table"]
+    want = f"{b['game']}.player.turn_to_heading"
+    return want if want in ids else (ids[0] if ids else want)
+
+
 def cpp_header(b: dict) -> str:
     g = b["game"]
     out = [f"// Generated from sdk/bindings/{g}.json by sdk/tools/gen_binding.py. Do not edit.",
@@ -511,7 +522,7 @@ def cpp_header(b: dict) -> str:
            f"// {g}'s hook points as C++ types, for the SDK's C++ layer (openrac/mod.hpp, docs/port/MODS.md):",
            "// each one's permanent id, its name and signature as openrac_api.hook takes them, and the type of a",
            "// function of it. mod.hook<...>() asks for a hook point by its id. The same types by id are in",
-           f"// openrac::{g}::hooks (rac1.player.turn_to_heading: hooks::player::turn_to_heading).",
+           f"// openrac::{g}::hooks ({example_id(b)}: hooks::{'::'.join(example_id(b).split('.')[1:])}).",
            "#pragma once",
            "",
            "#include <cstdint>",
@@ -572,10 +583,11 @@ def luau_types(b: dict) -> str:
            "--",
            f"-- The `openrac` global as a script mod for {g} sees it (docs/port/MODS.md, section 11): put this",
            "-- file where your editor's Luau language server reads definitions (luau-lsp: --definitions).",
-           "-- A hook point is named by its permanent id (rac1.player.turn_to_heading) or one of its aliases.",
-           "-- EXPERIMENTAL: the rac1.moby.* hook points and openrac.pvars come from the behaviour catalogue,",
-           "-- whose names may still change; their ids do not.",
-           ""]
+           f"-- A hook point is named by its permanent id ({example_id(b)}) or one of its aliases."]
+    if any(h["origin"] == "catalogue" for h in b["hooks"]):
+        out += [f"-- EXPERIMENTAL: the {g}.moby.* hook points and openrac.pvars come from the behaviour catalogue,",
+                "-- whose names may still change; their ids do not."]
+    out.append("")
     hooks = b["hooks"]
     if hooks:
         names = [h["id"] for h in hooks] + sorted({h["name"] for h in hooks})
@@ -651,6 +663,22 @@ def luau_types(b: dict) -> str:
     out.append("    pointer: () -> (number, number, boolean),")
     out.append("    take_input: (...(\"keyboard\" | \"mouse\")) -> (),")
     out.append("    capture_mouse: (capture: boolean) -> (),")
+    out.append("    -- interface 1.13: the on-screen pad's action buttons (MODS.md, \"Touch controls\")")
+    out.append("    touch_define: (json: string) -> boolean,")
+    out.append("    touch_icon: (name: string, svg: string) -> boolean,")
+    out.append("    touch_push: (context: string?) -> (),")
+    out.append("    touch_hint: (hint: string, on: boolean) -> (),")
+    out.append("    -- interface 1.15: the mod's own settings set (for the run and in the launcher's list), and its changes heard")
+    out.append("    set_setting: (key: string, value: any) -> boolean,")
+    out.append("    on_settings: (fn: () -> ()) -> (),")
+    out.append("    -- interface 1.31: a pad button's label (an OPENRAC_PAD_* bit: 0x8000 Square) for the device in use, and its kind")
+    out.append("    button_label: (button: number) -> (string?, (\"playstation\" | \"letters\" | \"keys\")?),")
+    out.append("    -- interface 1.37: the pads' motors as the game's vibration drives them (small on or off, large 0 to 255)")
+    out.append("    set_motors: (port: number, small_motor: boolean, large_motor: number) -> boolean,")
+    out.append("    -- interface 1.37: an option of the port's menu greyed out or made usable, by its name (menu-options.md)")
+    out.append("    menu_option_set: (option: string, state: \"on\" | \"off\" | \"default\") -> boolean,")
+    out.append("    -- interface 1.42: the version of another mod when it is loaded, else nil")
+    out.append("    mod_loaded: (id: string) -> string?,")
     if b["moby"] is not None:
         out.append("    -- experimental: a moby's pvars by name, from the behaviour catalogue")
         out.append("    pvars: (moby: number) -> { [string]: number }?,")
@@ -688,6 +716,54 @@ def with_block(text: str, block: str) -> str:
     return text + ("" if text.endswith("\n") else "\n") + block
 
 
+C_BLOCK_BEGIN = "/* ---- generated by sdk/tools/gen_binding.py from sdk/bindings/{game}.json: do not edit ---- */"
+C_BLOCK_END = "/* ---- end of the generated hook points ---- */"
+
+
+def c_header_block(b: dict, text: str) -> str:
+    """The table's hook points that the hand-written part of <game>.h does not define, as it
+    defines the others: OPENRAC_<GAME>_HOOK_<name>, OPENRAC_<GAME>_SIG_<name> and the type
+    openrac_<game>_<name>."""
+    g = b["game"]
+    up = g.upper()
+    begin = C_BLOCK_BEGIN.format(game=g)
+    hand = text
+    if begin in text:
+        s = text.index(begin)
+        e = text.index(C_BLOCK_END, s) + len(C_BLOCK_END)
+        hand = text[:s] + text[e:]
+    out = [begin, "/* Hook points added since this header was last written by hand, from the binding table.",
+           " * As the others: on a port that lacks one, openrac_api.hook returns OPENRAC_HOOK_UNKNOWN. */", ""]
+    for h in b["hooks"]:
+        if h["origin"] != "table" or re.search(rf"#define OPENRAC_{up}_HOOK_{h['name']}\s", hand):
+            continue
+        ret = "void" if h["ret"] == "void" else KINDS[h["ret"]][0]
+        params = h.get("params") or [f"a{i}" for i in range(len(h["kinds"]))]
+        args = ", ".join(f"{KINDS[k][0]} {n}" for k, n in zip(h["kinds"], params)) or "void"
+        if h.get("about"):
+            out.extend(textwrap.wrap(f"{h['name']}: {h['about']}", 96, initial_indent="/* ", subsequent_indent=" * "))
+            out[-1] += " */"
+        out.append(f'#define OPENRAC_{up}_HOOK_{h["name"]} "{h["name"]}"')
+        out.append(f'#define OPENRAC_{up}_SIG_{h["name"]} "{h["signature"]}"')
+        out.append(f"typedef {ret} (*openrac_{g}_{h['name']})({args});")
+        out.append("")
+    out.append(C_BLOCK_END)
+    return "\n".join(out) + "\n"
+
+
+def with_c_block(b: dict, text: str) -> str:
+    """<game>.h with its generated block, put before the closing extern "C" the first time."""
+    begin = C_BLOCK_BEGIN.format(game=b["game"])
+    block = c_header_block(b, text)
+    if begin in text:
+        s = text.index(begin)
+        e = text.index(C_BLOCK_END, s) + len(C_BLOCK_END)
+        e = e + 1 if text[e:e + 1] == "\n" else e
+        return text[:s] + block + text[e:]
+    tail = text.rindex("#ifdef __cplusplus")
+    return text[:tail] + block + "\n" + text[tail:]
+
+
 def outputs(b: dict) -> dict[Path, str]:
     g = b["game"]
     out = {
@@ -696,6 +772,9 @@ def outputs(b: dict) -> dict[Path, str]:
         ROOT / "sdk" / "types" / f"{g}.d.luau": luau_types(b),
         b["table"].with_suffix(".ids.lock"): lock_text(g, b["hooks"]),
     }
+    c_header = ROOT / "sdk" / "include" / "openrac" / "games" / f"{g}.h"
+    if c_header.is_file():
+        out[c_header] = with_c_block(b, c_header.read_text())
     if any(h["origin"] == "catalogue" for h in b["hooks"]):
         for d in b["discs"]:
             path = ROOT / "port" / "game" / f"{g}-{d}" / "libraries.tsv"
@@ -737,7 +816,7 @@ def check_rows(b: dict, texts: dict[Path, str] | None = None) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("games", nargs="*", default=["rac1"])
+    ap.add_argument("games", nargs="*", help="the tables to generate from (default: every sdk/bindings/<game>.json)")
     ap.add_argument("--check", action="store_true", help="write nothing; fail when anything differs")
     ap.add_argument("--table", type=Path, help="another table (a test's): only its C binding, to --c")
     ap.add_argument("--c", type=Path, help="with --table: where its C binding goes")
@@ -760,7 +839,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     failed = False
     loaded = []
-    for game in args.games:
+    every = sorted(p.stem for p in (ROOT / "sdk" / "bindings").glob("*.json"))
+    for game in args.games or every:
         try:
             b = load(game)
         except (BindingError, KeyError, ValueError) as e:
@@ -788,15 +868,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"gen_binding: {p}", file=sys.stderr)
             failed = True
     ids = ROOT / "launcher" / "core" / "src" / "hook_ids.json"
-    if args.games == ["rac1"] or set(args.games) >= {"rac1"}:
-        text = launcher_ids(loaded)
-        if args.check:
-            if not ids.is_file() or ids.read_text() != text:
-                print("gen_binding: launcher/core/src/hook_ids.json is not what the tables give", file=sys.stderr)
-                failed = True
-        elif not ids.is_file() or ids.read_text() != text:
-            ids.write_text(text)
-            print(ids.relative_to(ROOT))
+    # The launcher's table names every game's hook points, whichever tables this run wrote.
+    have = {b["game"] for b in loaded}
+    for game in every:
+        if game not in have:
+            try:
+                loaded.append(load(game))
+            except (BindingError, KeyError, ValueError) as e:
+                print(f"gen_binding: {game}: {e}", file=sys.stderr)
+                return 1
+    loaded.sort(key=lambda b: b["game"])
+    text = launcher_ids(loaded)
+    if args.check:
+        if not ids.is_file() or ids.read_text() != text:
+            print("gen_binding: launcher/core/src/hook_ids.json is not what the tables give", file=sys.stderr)
+            failed = True
+    elif not ids.is_file() or ids.read_text() != text:
+        ids.write_text(text)
+        print(ids.relative_to(ROOT))
     return 1 if failed else 0
 
 

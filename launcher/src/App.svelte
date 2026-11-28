@@ -1,20 +1,39 @@
 <script lang="ts">
+  import { cubicIn, cubicOut } from "svelte/easing";
+  import { fade } from "svelte/transition";
+
+  import DeepLinkInstall from "$components/DeepLinkInstall.svelte";
   import GameRunning from "$components/GameRunning.svelte";
   import Header from "$components/Header.svelte";
   import LaunchScreen from "$components/LaunchScreen.svelte";
-  import Toasts from "$components/Toasts.svelte";
+  import ModSetReview from "$components/ModSetReview.svelte";
   import ModUpdateModal from "$components/ModUpdateModal.svelte";
-  import DeepLinkInstall from "$components/DeepLinkInstall.svelte";
-  import { startDeepLinks } from "$lib/deepLink.svelte";
-  import { startAutoUpdates } from "$lib/modAutoUpdate.svelte";
+  import Toasts from "$components/Toasts.svelte";
   import UpdateModal from "$components/UpdateModal.svelte";
+  import WaveBackdrop from "$components/WaveBackdrop.svelte";
   import { errorText, onAndroid } from "$lib/api";
-  import { app, openDevelop, refresh, showLaunch, start, updateDiscordPresence, type Page } from "$lib/app.svelte";
-  import { lookForModUpdates } from "$lib/modUpdates.svelte";
+  import {
+    app,
+    openDevelop,
+    openVersion,
+    type Page,
+    refresh,
+    showLaunch,
+    start,
+    updateDiscordPresence,
+  } from "$lib/app.svelte";
+  import { startDeepLinks } from "$lib/deepLink.svelte";
+  import { startGameRequests } from "$lib/gameRequest";
   import { preloadArt } from "$lib/media";
-  import { slide, slides } from "$lib/motion";
+  import { startAutoUpdates } from "$lib/modAutoUpdate.svelte";
+  import { followCodeLinks } from "$lib/modCodes.svelte";
+  import { modNav } from "$lib/modNav.svelte";
+  import { lookForModUpdates } from "$lib/modUpdates.svelte";
+  import { reduced, slide, slides } from "$lib/motion";
   import { applyPalette } from "$lib/palettes";
+  import { shelfWave } from "$lib/shelfWave.svelte";
   import { applyAccent } from "$lib/themes";
+
   import Game from "./pages/Game.svelte";
   import Library from "./pages/Library.svelte";
   import Settings from "./pages/Settings.svelte";
@@ -24,6 +43,7 @@
   // opening them later is instant. Opened before that, the page's slide waits for them.
   const once = <T,>(load: () => Promise<T>) => {
     let loaded: Promise<T> | null = null;
+
     return () => (loaded ??= load());
   };
   const modsPage = once(() => import("./pages/Mods.svelte"));
@@ -40,22 +60,36 @@
       void tasksPage();
       if (app.config?.developer) void developPage();
     }, 2000);
+
     return () => {
       clearTimeout(later);
     };
   });
 
+  // A mod code's link: listened for once the library knows the games it can apply to.
+  let linksFollowed = false;
+  $effect(() => {
+    if (linksFollowed || !app.library || !app.config?.setupComplete) return;
+    linksFollowed = true;
+    void followCodeLinks();
+  });
+
   // Android: the Games tab's pictures ready before it is first shown (media.ts).
-  if (onAndroid) preloadArt();
+  preloadArt();
 
   $effect(() => {
     // The launcher's accent is the picked game's own (themes.ts), the colour easing from one to the
     // next (app.css). main.ts put the last one on; it stays until the settings say which game shows,
     // and that first one goes on at once too (a first start, or another game than the kept one).
-    const game = app.version?.split("/")[0] ?? null;
+    // On Android's Games tab the disc picked brings its game's colours only when they are on
+    // (Settings, General); else the shelf stays in the launcher's own gold.
+    const shelf = onAndroid && app.page === "library" && !(app.config?.gameColors ?? true);
+    const game = shelf ? null : (app.version?.split("/")[0] ?? null);
+
     if (!app.config && !game) return;
-    applyAccent(game);
+    applyAccent(game, app.config?.gameColors ?? true);
     const root = document.documentElement;
+
     if ("starting" in root.dataset)
       requestAnimationFrame(() => requestAnimationFrame(() => delete root.dataset.starting));
   });
@@ -65,21 +99,25 @@
     if (app.config) applyPalette(app.config.theme);
   });
 
-  $effect(() => {
-    // The layout (Settings → Appearance): src/layouts/compact.css applies only to "compact".
-    document.documentElement.dataset.layout = app.config?.layout ?? "compact";
-  });
-
   // The page shown. One page gives way to the next in a slide (motion.ts, app.css): the one leaving
   // fades away as the next comes in, in the order of the tabs (from the right for a tab further
   // along the bar; on Android from below for one further down the rail).
-  const ORDER: Record<Page, number> = { library: 0, game: 1, mods: 2, tasks: 3, develop: 4, settings: 5 };
+  const ORDER: Record<Page, number> = {
+    library: 0,
+    game: 1,
+    mods: 2,
+    tasks: 3,
+    develop: 4,
+    settings: 5,
+  };
   let page = $state<Page>(app.page);
   $effect(() => {
     const next = app.page;
+
     if (next === page) return;
     // On a desktop the Games tab and a game's page are one tab: the game list opens the game in place.
     const sameTab = !onAndroid && Math.max(ORDER[next], ORDER[page]) <= ORDER.game;
+
     if (sameTab) page = next;
     else
       slide(
@@ -95,13 +133,29 @@
     if (slides) document.documentElement.dataset.motion = "slides";
   });
 
-  // Another page starts at its top, as it arrives (app.css: its sections rise in turn).
+  // Another page starts at its top, as it arrives (app.css: its sections rise in turn), and so does
+  // a page inside it: a mod's own page (Enhanced graphics' Settings), Develop's tabs. Back from a
+  // mod's page, the list is where it was left.
   let view = $state<HTMLElement | null>(null);
-  let shown: Page | null = null;
+  const place = $derived(
+    page === "mods"
+      ? `mods:${modNav.mod ?? ""}`
+      : page === "develop"
+        ? `develop:${app.develop}`
+        : page,
+  );
+  let shown: string | null = null;
+  let listAt = 0;
+  $effect.pre(() => {
+    // Before the new page replaces the list: where the list stood.
+    if (place !== shown && shown === "mods:") listAt = view?.scrollTop ?? 0;
+  });
   $effect(() => {
-    if (page === shown) return;
-    shown = page;
-    view?.scrollTo({ top: 0 });
+    if (place === shown) return;
+    const back = place === "mods:" && !!shown?.startsWith("mods:");
+
+    shown = place;
+    view?.scrollTo({ top: back ? listAt : 0 });
   });
 
   $effect(() => {
@@ -119,14 +173,18 @@
     // ?page=tasks (and ?version=rac1/pal) open a page directly: handy for screenshots.
     // ?page=develop opens Develop on ?version, or on ?develop=checkout|console.
     const params = new URLSearchParams(location.search);
+
     void start()
       .then(() => {
         const version = params.get("version");
+
         if (version) {
           app.version = version;
           app.page = "game";
         }
+
         const page = params.get("page") as Page | null;
+
         if (page === "develop") openDevelop(params.get("develop") ?? version ?? undefined);
         else if (page) app.page = page;
         // ?update&modal=update: the update window open on the preview's update (mock.ts).
@@ -136,11 +194,15 @@
         if (app.config?.checkModUpdates) void lookForModUpdates().catch(() => undefined);
         // openrac:// links (the website's Install buttons): the start's own, then each one sent.
         void startDeepLinks().catch(() => undefined);
+        // A shortcut's game that could not start: the page for it (gameRequest.ts).
+        void startGameRequests(openVersion).catch(() => undefined);
         // Mods from the index kept current: now, then every 6 hours (lib/modAutoUpdate).
         stopAutoUpdates = startAutoUpdates();
+
         // ?launch: the version's start (Android's spinning disc), as Play shows it.
         if (params.has("launch") && version) {
           const game = app.library?.games.find((g) => g.id === version.split("/")[0]);
+
           if (game) showLaunch(game.id, game.title);
         }
       })
@@ -150,8 +212,10 @@
       });
     // Pick up what changed outside the launcher (a build in a terminal, a new disc).
     const onFocus = () => void refresh();
+
     window.addEventListener("focus", onFocus);
     let stopAutoUpdates: () => void = () => undefined;
+
     return () => {
       stopAutoUpdates();
       window.removeEventListener("focus", onFocus);
@@ -166,11 +230,26 @@
       <button class="primary" onclick={() => void start()}>Try again</button>
     {:else}
       <span class="spinner"></span>
-      {#if app.preparing}<p>Preparing OpenRAC's tools. This happens once after installing or updating.</p>{/if}
+      {#if app.preparing}<p>
+          Preparing OpenRAC's tools. This happens once after installing or updating.
+        </p>{/if}
     {/if}
   </div>
 {:else}
   <div class="shell">
+    <!-- Behind the rail and the page: Android Games' wave (shelfWave.svelte.ts). It fades in place as
+         the tab changes, inside the window's own picture of the slide. -->
+    {#if onAndroid && shelfWave.on}
+      <div
+        class="wave-ground"
+        aria-hidden="true"
+        style={shelfWave.glow ? `--glow: ${shelfWave.glow}` : undefined}
+        in:fade={{ duration: reduced ? 0 : 450, easing: cubicOut }}
+        out:fade={{ duration: reduced ? 0 : 200, easing: cubicIn }}
+      >
+        <WaveBackdrop shift={shelfWave.shift} still={reduced} />
+      </div>
+    {/if}
     <!-- The first run has the bar with only the name (Android's rail is only its tabs). -->
     {#if app.config.setupComplete}<Header shown={page} />{:else if !onAndroid}<Header setup />{/if}
     <main bind:this={view}>
@@ -190,6 +269,7 @@
 <Toasts />
 <UpdateModal />
 <ModUpdateModal />
+<ModSetReview />
 <DeepLinkInstall />
 
 <style>
@@ -210,15 +290,36 @@
   }
 
   .shell {
+    position: relative;
     height: 100%;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Under everything in the shell, over the window's ground. On under the rail, frosted there
+     (WaveBackdrop.svelte). */
+  .wave-ground {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    --frost: var(--nav-left);
+    overflow: hidden;
+    pointer-events: none;
+    transition: --glow 900ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* A desktop's header lies over the window's top (Header.svelte); the page starts below it and
+     scrolls there, so nothing of the page ever passes under the header. */
+  :global(html:not([data-platform="android"])) main {
+    margin-top: var(--nav-top);
   }
 
   /* Android: the navigation rail beside the page, or its bar under it on a narrow window
      (Header.svelte). */
   :global(html[data-platform="android"]) .shell {
     flex-direction: row;
+    /* The wave's z-index: -1 (above) stays above the window's ground. */
+    isolation: isolate;
     /* Nothing beside the page scrolls the window: no strip of the background under the rail. */
     overflow: hidden;
   }
@@ -226,6 +327,14 @@
   @media (max-width: 599px) {
     :global(html[data-platform="android"]) .shell {
       flex-direction: column-reverse;
+    }
+  }
+
+  /* The rail lies over the page's left edge (Header.svelte): the page's ground and Games' wave run
+     under it, its first column kept beside it. */
+  @media (min-width: 600px) {
+    :global(html[data-platform="android"]) main {
+      padding-left: var(--nav-left);
     }
   }
 

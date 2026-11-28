@@ -1,7 +1,7 @@
 # layering
 
 `layering.py` checks the port's includes against the module layering of
-[CODING_CONVENTIONS.md](../../docs/CODING_CONVENTIONS.md#18-layering) (section 18):
+[CODING_CONVENTIONS.md](../../../docs/CODING_CONVENTIONS.md#18-layering) (section 18):
 a module includes its own files and the modules below it, never the ones above.
 The modules, the layers, the edges allowed within a layer and today's known
 violations are data, in [rules.tsv](rules.tsv). It is standard-library Python
@@ -35,10 +35,11 @@ checker:
 - `sdk` is the mod SDK's C ABI (`sdk/include/openrac/`, found through the
   build's include directories). It depends on nothing, so it sits at the
   bottom; the host program's mod code includes it.
-- `renderer` has two submodules on its layer, `renderer/world` (the world
-  renderers) and `renderer/vulkan` (the Vulkan backend). Both build on
-  renderer's GL-shaped interface, and the backend also carries out
-  `renderer/world/gl_world.h`; rules.tsv allows those edges and no others.
+- `renderer` has three submodules on its layer, `renderer/world` (the world
+  renderers) and `renderer/vulkan` (the Vulkan backend). All build
+  on renderer's GL-shaped interface, the backends also carry out
+  `renderer/world/gl_world.h`, and Metal compiles its shaders with Vulkan's
+  compiler; rules.tsv allows those edges and no others.
 - Every `game/<id>` directory (`game/rac1`, `game/rac1-pal`, ...) is a module
   of its own on one layer. A game version includes `game/common` and below,
   not another version.

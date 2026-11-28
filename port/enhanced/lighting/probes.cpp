@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "common/profiler.h"
+#include "enhanced/lighting/bake_lz4.h"
 #include "enhanced/lighting/probe_atlas.h"
 
 namespace openrac::lighting {
@@ -137,7 +138,7 @@ struct Reader {
 };
 
 // Reads grid geometry and identity once, before packed or expanded payload validation.
-ProbeGrid read_probe_grid(Reader& reader) {
+ProbeGrid read_probe_grid(Reader& reader, unsigned format) {
     ProbeGrid grid;
     grid.bake_version = reader.u32();
     const auto size = reader.u32();
@@ -164,6 +165,16 @@ ProbeGrid read_probe_grid(Reader& reader) {
     // The upright frame is stored as its two horizontal axis components.
     for (float& value : grid.frame.axis) {
         value = reader.f32();
+    }
+    if (format >= 9) {
+        for (float& value : grid.frame.pitch) {
+            value = reader.f32();
+        }
+    }
+    if (format >= 10) {
+        for (float& value : grid.frame.roll) {
+            value = reader.f32();
+        }
     }
 
     // Spacing and dimensions determine the payload size validated by the caller.
@@ -196,11 +207,11 @@ ProbeVolume read_probe_header(std::vector<std::uint8_t> bytes) {
     const auto format = reader.u32();
 
     // Version six retains its raw depth layout; older assets require a rebake.
-    if (format != kProbeFormatVersion && format != 6 && format != 7) {
+    if (format != kProbeFormatVersion && format != 6 && format != 7 && format != 8 && format != 9) {
         invalid("unsupported probe file version; rebake with this version of the baker");
     }
 
-    const ProbeGrid grid = read_probe_grid(reader);
+    const ProbeGrid grid = read_probe_grid(reader, format);
     ProbeVolume volume;
     volume.grid = grid;
 
@@ -233,16 +244,37 @@ ProbeVolume read_probe_header(std::vector<std::uint8_t> bytes) {
 }  // namespace
 
 Float3 ProbeFrame::to_local(Float3 p) const {
-    return {axis[0] * p[0] + axis[1] * p[1], -axis[1] * p[0] + axis[0] * p[1], p[2]};
+    const float x = axis[0] * p[0] + axis[1] * p[1];
+    const float y = -axis[1] * p[0] + axis[0] * p[1];
+    const float z = -pitch[1] * x + pitch[0] * p[2];
+    return {pitch[0] * x + pitch[1] * p[2], roll[0] * y + roll[1] * z, -roll[1] * y + roll[0] * z};
 }
 
 Float3 ProbeFrame::to_world(Float3 p) const {
-    return {axis[0] * p[0] - axis[1] * p[1], axis[1] * p[0] + axis[0] * p[1], p[2]};
+    const float y = roll[0] * p[1] - roll[1] * p[2], z = roll[1] * p[1] + roll[0] * p[2];
+    const float x = pitch[0] * p[0] - pitch[1] * z;
+    return {axis[0] * x - axis[1] * y, axis[1] * x + axis[0] * y, pitch[1] * p[0] + pitch[0] * z};
 }
 
 bool ProbeFrame::valid() const {
-    return std::isfinite(axis[0]) && std::isfinite(axis[1])
-           && std::abs(axis[0] * axis[0] + axis[1] * axis[1] - 1) < .0001f;
+    const auto unit = [](Float2 v) {
+        return std::isfinite(v[0]) && std::isfinite(v[1])
+               && std::abs(v[0] * v[0] + v[1] * v[1] - 1) < .0001f;
+    };
+    return unit(axis) && unit(pitch) && unit(roll);
+}
+
+std::array<float, 4> ProbeFrame::quaternion() const {
+    const double y = std::atan2(axis[1], axis[0]) * .5, p = std::atan2(pitch[1], pitch[0]) * .5,
+                 r = std::atan2(roll[1], roll[0]) * .5;
+    const double cy = std::cos(y), sy = std::sin(y), cp = std::cos(p), sp = std::sin(p),
+                 cr = std::cos(r), sr = std::sin(r);
+    return {
+        float(sr * cp * cy + cr * sp * sy),
+        float(-cr * sp * cy + sr * cp * sy),
+        float(cr * cp * sy + sr * sp * cy),
+        float(cr * cp * cy - sr * sp * sy)
+    };
 }
 
 float encode_probe_irradiance(float linear) {
@@ -385,6 +417,7 @@ Float3 oct_decode(Float2 uv) {
 }
 
 void update_probe_gutters(ProbeVolume& v) {
+    v.encoded_irradiance.clear();  // the maps change; a cached encoding would be stale
     const auto n = static_cast<std::size_t>(v.grid.map_resolution), side = n + 2;
 
     for (std::size_t p = 0; p < v.probes.size(); ++p) {
@@ -483,7 +516,8 @@ static std::optional<ProbeSample> sample_probe_grid(
             continue;
         }
 
-        const auto delta = subtract(receiver, v.position(index));
+        const auto position = v.position(index);
+        const auto delta = subtract(receiver, position);
         const float distance = std::sqrt(dot(delta, delta));
 
         if (distance > 1e-6f) {
@@ -502,7 +536,7 @@ static std::optional<ProbeSample> sample_probe_grid(
         // Filtered distance moments can mix floor hits with sky. Keep probes
         // behind the receiver plane from lighting its front, with a small
         // smooth tolerance for coplanar probes and floating-point error.
-        const float side = dot(subtract(v.position(index), p), n);
+        const float side = dot(subtract(position, p), n);
         float facing = std::clamp((side + 0.1f) / 0.1f, 0.0f, 1.0f);
         facing = facing * facing * (3 - 2 * facing);
         weight *= facing;
@@ -522,7 +556,9 @@ static std::optional<ProbeSample> sample_probe_grid(
             }
         }
 
-        const auto e = map_sample<3, true>(v.irradiance, v.grid, index, n);
+        const auto e = v.encoded_irradiance.size() == v.irradiance.size()
+                           ? map_sample(v.encoded_irradiance, v.grid, index, n)
+                           : map_sample<3, true>(v.irradiance, v.grid, index, n);
 
         for (std::size_t c = 0; c < 3; ++c) {
             out.irradiance[c] += std::pow(e[c], kProbeIrradianceGamma * 0.5f) * weight;
@@ -620,9 +656,9 @@ float probe_boundary_weight(const ProbeGrid& grid, Float3 p) {
 
     for (unsigned axis = 0; axis < 3; ++axis) {
         const float coordinate = p[axis] / grid.spacing[axis];
-        edge = std::min(
-            edge, std::min(coordinate, static_cast<float>(grid.dimensions[axis] - 1) - coordinate)
-        );
+        const float upper = static_cast<float>(grid.dimensions[axis] - 1) - coordinate;
+        // A taller top apron lets surfaces leave a local grid without a visible horizontal seam.
+        edge = std::min(edge, std::min(coordinate, upper * (axis == 2 ? .5f : 1.f)));
     }
 
     edge = std::clamp(edge, 0.0f, 1.0f);
@@ -697,6 +733,12 @@ std::vector<std::uint8_t> encode_probe_header(
     for (float x : v.grid.frame.axis) {
         write_float(out, x);
     }
+    for (float x : v.grid.frame.pitch) {
+        write_float(out, x);
+    }
+    for (float x : v.grid.frame.roll) {
+        write_float(out, x);
+    }
 
     for (float x : v.grid.spacing) {
         write_float(out, x);
@@ -735,6 +777,9 @@ std::vector<std::uint8_t> encode_probes(const ProbeVolume& v) {
 
 ProbeVolume decode_gpu_probes(std::vector<std::uint8_t> bytes) {
     const profiling::Zone timing("Decode GPU probe asset");
+    if (is_lz4_bake_asset(bytes)) {
+        bytes = decompress_bake_asset(bytes, kMaxProbeAssetBytes);
+    }
     auto volume = read_probe_header(std::move(bytes));
     read_probe_planes(volume, false);
     volume.validate();
@@ -744,7 +789,10 @@ ProbeVolume decode_gpu_probes(std::vector<std::uint8_t> bytes) {
 
 ProbeVolume decode_probes(std::span<const std::uint8_t> bytes) {
     const profiling::Zone timing("Expand CPU probe asset");
-    auto volume = read_probe_header({bytes.begin(), bytes.end()});
+    auto volume = read_probe_header(
+        is_lz4_bake_asset(bytes) ? decompress_bake_asset(bytes, kMaxProbeAssetBytes)
+                                 : std::vector<std::uint8_t>(bytes.begin(), bytes.end())
+    );
 
     // Expansion validates the same packed channels without an earlier duplicate plane scan.
     read_probe_planes(volume, true);
@@ -753,6 +801,13 @@ ProbeVolume decode_probes(std::span<const std::uint8_t> bytes) {
     volume.colour_format = ProbeTextureFormat::R11G11B10;
     volume.depth_format = ProbeDepthFormat::Moments;
     volume.validate();
+    volume.encoded_irradiance.resize(volume.irradiance.size());
+
+    for (std::size_t i = 0; i < volume.irradiance.size(); ++i) {
+        for (unsigned c = 0; c < 3; ++c) {
+            volume.encoded_irradiance[i][c] = encode_probe_irradiance(volume.irradiance[i][c]);
+        }
+    }
 
     return volume;
 }

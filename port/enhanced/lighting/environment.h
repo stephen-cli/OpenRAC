@@ -4,6 +4,8 @@
 // GPU-ready reflection faces, GGX levels and their spatial influence boxes.
 #pragma once
 #include <filesystem>
+#include <map>
+#include <optional>
 
 #include "enhanced/lighting/probes.h"
 
@@ -14,10 +16,11 @@ inline constexpr unsigned kEnvironmentBrdfSize = 64;
 // Omit the sharpest capture level while retaining its source resolution for GGX filtering.
 inline constexpr unsigned kEnvironmentFirstMip = 1;
 
-// Per-level capture safety limit, not a placement target; disabled until a level opts in.
+// Per-level capture safety limit, not a placement target.
 struct EnvironmentBakeSettings {
     bool enabled = false;
-    unsigned resolution = 128, maximum_probes = kEnvironmentProbeLimit, filter_samples = 128;
+    bool require_full_coverage = true;
+    unsigned resolution = 64, maximum_probes = kEnvironmentProbeLimit, filter_samples = 64;
     float spacing = 24, box_distance = 64, normal_bias = .5f, view_bias = .5f;
     float minimum_capture_spacing = 6;
     float minimum_space_area = 4;  // World units squared required for an independent open patch.
@@ -31,6 +34,7 @@ struct EnvironmentBakeSettings {
 struct EnvironmentProbe {
     Float3 position{};
     ProbeFrame frame;
+    // Legacy fallback influence only; explicit regions are stored on EnvironmentAsset.
     Float3 minimum{};
     Float3 maximum{};
     Float3 projection_minimum{}, projection_maximum{};
@@ -43,19 +47,41 @@ struct EnvironmentProbe {
           projection_maximum(hi) {}
 };
 
+struct EnvironmentProjection {
+    ProbeFrame frame;
+    Float3 minimum{}, maximum{};
+};
+
+// A cheap coverage patch referencing a photograph. Influence and parallax are
+// local to the patch; neither has to contain the photograph's camera.
+struct EnvironmentInfluence {
+    unsigned capture = 0;
+    ProbeFrame frame;
+    Float3 minimum{}, maximum{};
+    // Older assets and callers can inherit the capture's original proxy.
+    std::optional<EnvironmentProjection> projection = std::nullopt;
+};
+
+inline constexpr unsigned kEnvironmentMetadataStride = 6;
+
 // Optional bake diagnostics: accepted visible contributors at floor, body and head height.
 struct EnvironmentCoverageReceiver {
     Float3 position{};
     unsigned height = 0;
     std::vector<unsigned> probes;
+    bool water_surface = false;
 };
 
-// Five vec4s per capture; unused W components hold the orientation without growing GPU metadata.
-std::vector<std::array<float, 4>> environment_metadata(std::span<const EnvironmentProbe> probes);
+// Six vec4s per influence region: independent influence/projection frames and capture ID.
+std::vector<std::array<float, 4>> environment_metadata(
+    std::span<const EnvironmentProbe> probes, std::span<const EnvironmentInfluence> influences = {}
+);
 
 // Identifies capture ordering and both kinds of bounds without hashing the large radiance atlas.
 std::uint64_t environment_capture_hash(
-    std::span<const EnvironmentProbe> probes, std::uint64_t gi_hash = 0
+    std::span<const EnvironmentProbe> probes,
+    std::uint64_t gi_hash = 0,
+    std::span<const EnvironmentInfluence> influences = {}
 );
 
 // Each HDR face/level has a gutter and compression-block padding; the BRDF lookup stays separate.
@@ -65,6 +91,9 @@ struct EnvironmentAsset {
     unsigned level = 0;
     std::uint64_t scene_hash = 0, settings_hash = 0, gi_hash = 0;
     std::vector<EnvironmentProbe> probes;
+    // Empty only for legacy/in-memory callers: one implicit patch per capture.
+    // Atlas dimensions and filtering depend only on probes (photographs).
+    std::vector<EnvironmentInfluence> influences;
     std::vector<std::uint32_t> pixels;
     ProbeTextureFormat colour_format =
         ProbeTextureFormat::R11G11B10;    // Radiance encoding on disk/GPU.
@@ -97,7 +126,10 @@ float environment_probe_coverage(const EnvironmentProbe& probe, Float3 point);
 std::uint32_t pack_environment_colour(Float3 colour);
 Float3 unpack_environment_colour(std::uint32_t colour);
 // Includes every GI payload so replacing a bake invalidates its reflection captures.
-std::uint64_t environment_gi_hash(const std::filesystem::path& directory);
+using EnvironmentGiPayloads = std::map<std::filesystem::path, std::span<const std::uint8_t>>;
+std::uint64_t environment_gi_hash(
+    const std::filesystem::path& directory, const EnvironmentGiPayloads& loaded = {}
+);
 // Portable versioned files; malformed or stale data is never uploaded.
 std::vector<std::uint8_t> encode_environment(const EnvironmentAsset& asset);
 EnvironmentAsset decode_environment(std::span<const std::uint8_t> bytes);

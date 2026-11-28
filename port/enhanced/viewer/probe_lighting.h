@@ -17,8 +17,8 @@
 #include "enhanced/viewer/medial_axis_overlay.h"
 #include "enhanced/viewer/probe_selection.h"
 #include "enhanced/viewer/probe_sphere_culling.h"
+#include "renderer/gl/shader.h"
 #include "renderer/renderer.h"
-#include "renderer/shader.h"
 #include "scene/level.h"
 
 namespace openrac::lighting {
@@ -43,8 +43,10 @@ void set_probe_background_load(bool background);
 struct ProbeBakeRead {
     std::string path;  // The sparse grid's file; its folder holds the companion files.
     lighting::ProbeActivation expected;
+    std::vector<ProbeLookRegion> look_regions;
     lighting::ProbeVolume volume;
     std::vector<lighting::ProbeVolume> regions;
+    std::optional<std::uint64_t> environment_gi_hash;
     double seconds = 0;  // How long the read took.
     std::string error;   // Why the bake was refused; nothing else is set then.
 };
@@ -110,6 +112,8 @@ public:
 
     bool active() const { return enabled && has_data() && mode != 0; }
 
+    int mode_for_layer(scene::Layer layer, bool all_static_receivers) const;
+
     // Resolves the runtime override, verified level override, then authored travel direction.
     lighting::Float3 sunlight_direction(lighting::Float3 authored) const {
         // The submitted frame clears the runtime override outside enhanced graphics.
@@ -135,6 +139,7 @@ public:
     bool all_volume_bounds = false;  // OPENRAC_PROBE_SPHERES=all: every resident region.
 
 private:
+    int receiver_for_layer(scene::Layer layer, bool all_static_receivers) const;
     EnvironmentLighting m_environment;  // Reflection captures matching the active diffuse bake.
     // Two baked rows share each runtime row before further widening for device height limits.
     static constexpr unsigned kMinimumAtlasTilesX = 128;
@@ -166,10 +171,12 @@ private:
     int m_depth_mode = 0;  // Legacy moments, decoded ASTC, native ASTC, or packed RG8 scalars.
     unsigned m_atlas_tiles_x = kMinimumAtlasTilesX;  // Runtime width in probe tiles.
     lighting::ProbeGrid m_grid;
+    int m_early_ambient_probe = 0;  // Representative base probe index plus one, or zero.
     lighting::Float3 m_sunlight_scale{1, 1, 1};
     // Loaded only after scene and bake settings verification; cleared on release.
     std::optional<lighting::Float3> m_sunlight_direction;
-    float m_terrain_vertex_albedo = 0;  // Authored terrain tint strength of the loaded bake.
+    float m_terrain_vertex_albedo = 0;   // Authored terrain tint strength of the loaded bake.
+    std::vector<float> m_look_uniforms;  // Two packed vec4 values per look region.
     std::vector<lighting::ProbeVolume> m_regions;
     std::vector<lighting::ProbeGrid> m_region_grids;
     lighting::ProbeRegionSelector m_selector;
@@ -194,6 +201,7 @@ private:
     bool m_sphere_indirect = false;       // Current draw uses the generated command.
     // Prepares the GPU candidate list; false selects the CPU reference/fallback path.
     bool prepare_gpu_spheres(const renderer::FrameInput& input, float range);
+    bool draw_gpu_spheres(renderer::RenderState& state) const;
     // Filters and uploads the reference list when GPU compaction is unavailable.
     void prepare_cpu_spheres(const renderer::FrameInput& input, float range);
     // Binds the packed record layout for either CPU or compute output.

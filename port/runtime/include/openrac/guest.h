@@ -59,13 +59,21 @@ __extension__ typedef unsigned __int128 openrac_u128;
 #define GUEST_SCRATCHPAD 0x70000000u
 #define GUEST_SCRATCHPAD_SIZE 0x00004000u /* 16 KB */
 #define GUEST_PORT 0xE0000000u
-#define GUEST_PORT_SIZE 0x01000000u /* 16 MB */
+#define GUEST_PORT_SIZE 0x00800000u /* 8 MB */
+/* The port's data the game reads as its own and adds to its addresses as signed words, so below
+ * 0x80000000 (imported moby classes, rac1/host/foreign_class.c). */
+#define GUEST_PORT_LOW 0x50000000u
+#define GUEST_PORT_LOW_SIZE 0x00800000u /* 8 MB */
+/* The port's data a level builds again each time it loads, which a snapshot leaves out (the
+ * imported moby classes' tables of their own levels, rac1/host/foreign_class.c). */
+#define GUEST_PORT_WORLDS 0x58000000u
+#define GUEST_PORT_WORLDS_SIZE 0x01000000u /* 16 MB */
 #define GUEST_STACK_TOP (GUEST_PORT + 0x00100000u)
 #define GUEST_STACK_BOTTOM GUEST_PORT
 #define GUEST_STRINGS (GUEST_PORT + 0x00100000u)
 #define GUEST_STRINGS_SIZE 0x00100000u
 #define GUEST_STATICS (GUEST_PORT + 0x00200000u)
-#define GUEST_STATICS_SIZE 0x00100000u
+#define GUEST_STATICS_SIZE 0x00400000u /* 4 MB of the port's 16: room for the mods' copies' pvars */
 
 /* ---- Addresses ---- */
 
@@ -73,10 +81,40 @@ __extension__ typedef unsigned __int128 openrac_u128;
  * memory access reads openrac_guest_base). On Android the game is a shared
  * library, whose globals are otherwise reached through its global offset
  * table, one more load each time: there they are the library's own. */
+/* A game's part on Windows, a DLL (tools/asm_part.py), reads the program's data
+ * through what it exports (asm_part_exports.def). */
+#if defined(_WIN32) && defined(OPENRAC_ASM_PART)
+#define OPENRAC_PART_IMPORT __declspec(dllimport)
+#else
+#define OPENRAC_PART_IMPORT
+#endif
 #if defined(__ANDROID__)
 #define OPENRAC_GUEST_GLOBAL __attribute__((visibility("hidden")))
 #else
-#define OPENRAC_GUEST_GLOBAL
+#define OPENRAC_GUEST_GLOBAL OPENRAC_PART_IMPORT
+#endif
+
+/* Those globals, which a game's part built on the device from the disc
+ * (tools/asm_part.py), another library, cannot see on Android: there it reaches
+ * them through pointers the game gives it (openrac_asm_global) on loading. */
+/* clang-format off */
+#define OPENRAC_PART_GLOBALS(X) \
+    X(uint8_t*, guest_base) \
+    X(uint32_t, guest_ram_size) \
+    X(gaddr, guest_sp) \
+    X(gaddr, relocate_low) \
+    X(gaddr, relocate_high) \
+    X(gaddr, guest_last_entry) \
+    X(openrac_host_fn, guest_last_fn)
+/* clang-format on */
+#if defined(__ANDROID__) && defined(OPENRAC_ASM_PART)
+#define openrac_guest_base (*openrac_part_guest_base)
+#define openrac_guest_ram_size (*openrac_part_guest_ram_size)
+#define openrac_guest_sp (*openrac_part_guest_sp)
+#define openrac_relocate_low (*openrac_part_relocate_low)
+#define openrac_relocate_high (*openrac_part_relocate_high)
+#define openrac_guest_last_entry (*openrac_part_guest_last_entry)
+#define openrac_guest_last_fn (*openrac_part_guest_last_fn)
 #endif
 
 /* Where game memory starts in the host's address space. Set once by the
@@ -100,6 +138,18 @@ static inline gaddr openrac_guest_target_table(gaddr original) {
 }
 
 #define OPENRAC_TARGET_TABLE(a) openrac_guest_target_table((gaddr)(a))
+
+/* An address the game forms down from the top of the console's 32 MiB (RAC1 loads its level
+ * archives below 0x01FF8000). In expanded RAM it keeps its distance from the top, but under the
+ * RAC1 reservations, so a large level archive does not reach low memory. */
+static inline gaddr openrac_guest_ram_top(gaddr original) {
+    if (openrac_guest_ram_size <= GUEST_RAM_SIZE) {
+        return original;
+    }
+    return original + (openrac_guest_ram_size - OPENRAC_EXPANDED_RAC1_RESERVE - GUEST_RAM_SIZE);
+}
+
+#define OPENRAC_RAM_TOP(a) openrac_guest_ram_top((gaddr)(a))
 
 /* Normalize a direct or aliased RAM pointer to the direct RAM view. Other bus addresses retain
  * the console's 25-bit physical-address behavior. */
@@ -233,6 +283,10 @@ typedef struct openrac_fn_entry {
 /* Overlay -1 is the executable; 0..n are the level programs. */
 #define OPENRAC_OVERLAY_EXE (-1)
 void openrac_guest_register(int overlay, const openrac_fn_entry* entries, size_t count);
+/* Forgets every function and thunk registered: another executable of the disc is loaded over the
+ * whole of memory (LoadExecPS2: Up Your Arsenal's multiplayer, I5BOOTN.ELF), whose functions sit
+ * at the same addresses as the first's; its own tables are registered next. */
+void openrac_guest_unregister_all(void);
 void openrac_guest_set_overlay(int overlay);
 int openrac_guest_overlay(void);
 openrac_host_fn openrac_guest_function(gaddr address);
@@ -252,9 +306,11 @@ openrac_host_fn openrac_guest_function_named(const char* name);
  * (hostgen's functions.c) that gives the registers to its definition's parameters as the EE
  * passes them: integers from `ints` in order, floats from `floats`. The call returns the integer
  * result and puts a float result in *result; a function with no thunk (the port's own) is called
- * by the cast. OPENRAC_REGS_THUNKS turns this on elsewhere too (hostgen's tests). */
+ * by the cast. Apple's arm64 packs stack arguments by their size, so a callee of more than eight
+ * integers (the message box takes eleven) would read a doubleword cast's arguments wrong: it takes
+ * the thunks too. OPENRAC_REGS_THUNKS turns this on elsewhere too (hostgen's tests). */
 #ifndef OPENRAC_REGS_THUNKS
-#ifdef _WIN32
+#if defined(_WIN32) || (defined(__APPLE__) && defined(__aarch64__))
 #define OPENRAC_REGS_THUNKS 1
 #else
 #define OPENRAC_REGS_THUNKS 0
@@ -268,6 +324,16 @@ typedef struct openrac_thunk_entry {
 void openrac_guest_register_thunks(const openrac_thunk_entry* entries, size_t count);
 uint64_t openrac_guest_call_regs(gaddr address, const uint64_t* ints, const float* floats, float* result,
                                  int float_result);
+
+/* A call through a code address with a0 set, which matched C writes as inline assembly
+ * (`move $4, %A; jal $31, %F`: rac2-decomp's call_hook, each object's update hook; hostgen's
+ * lower.py). The other argument registers are 0, the result is dropped. */
+static inline void openrac_guest_call_a0(gaddr address, gaddr a0) {
+    const uint64_t ints[8] = {a0, 0, 0, 0, 0, 0, 0, 0};
+    const float floats[8] = {0};
+    float result;
+    (void)openrac_guest_call_regs(address, ints, floats, &result, 0);
+}
 
 /* Which overlay is loaded, asked at each call through a code address when
  * set: the game knows (rac1 keeps its current level in a global). */
@@ -338,6 +404,19 @@ int openrac_guest_prepare_level_program(int level);
 int openrac_guest_restore_level_program(int level);
 /* Drops program bytes cached only for the process; the configured source can reload them. */
 void openrac_guest_clear_level_programs(void);
+
+/* Copies of a level's functions in other levels that the port translated apart (each level at its
+ * own addresses, so no one host function stands for both): `address` in `level` is a copy of
+ * `from_address` in `from`, for the level-to-level pairs (OPENRAC_LDATA(from, ...)) with that level
+ * loaded. hostgen writes them from the catalogue (hostgen.json "level_copies"). */
+typedef struct openrac_level_copy {
+    int32_t level;
+    gaddr address;
+    int32_t from;
+    gaddr from_address;
+} openrac_level_copy;
+
+void openrac_guest_add_level_copies(const openrac_level_copy* copies, size_t count);
 gaddr openrac_relocate_level_data(int from, gaddr address);
 gaddr openrac_relocate_level_code(int from, gaddr address);
 #define OPENRAC_LDATA(from, a) openrac_relocate_level_data((from), (a))
@@ -353,11 +432,23 @@ gaddr openrac_relocate_level_code(int from, gaddr address);
  * folded into it), and reads the same instructions at `self`. Without a place, or one that does
  * not form it, it is OPENRAC_LCODE's. */
 extern OPENRAC_GUEST_GLOBAL gaddr openrac_guest_last_entry;
+/* The upper halves of $a0-$a3 for a call through a code address made by C written from assembly
+ * (hostgen's asmc.py): the EE's registers are 128 bits, and a function such as Up Your Arsenal's
+ * func_L01_003AB448 takes two vectors by value in $a1 and $a2. The caller sets them and the
+ * pending flag just before openrac_guest_call_regs; a callee written from assembly reads them at
+ * its entry when the flag is set, then clears it. */
+extern OPENRAC_GUEST_GLOBAL uint64_t openrac_guest_hi_args[4];
+extern OPENRAC_GUEST_GLOBAL int openrac_guest_hi_pending;
 extern OPENRAC_GUEST_GLOBAL openrac_host_fn openrac_guest_last_fn;
 static inline gaddr openrac_guest_entry(openrac_host_fn self) {
     return openrac_guest_last_fn == self ? openrac_guest_last_entry : 0;
 }
 gaddr openrac_code_in_copy(int from, gaddr canon, uint32_t size, gaddr self, gaddr target);
+/* Where the loaded level's copy of the executable's function `caller` calls, at the call the
+ * executable's makes to `callee`: the level's own routine when the copy calls one of its own there
+ * (a copy can differ in its calls, not only in its addresses). `callee` in the executable, where the
+ * copy has no call there, or where `caller` has no copy. Looks at the first `size` bytes of `caller`. */
+gaddr openrac_level_call(gaddr caller, uint32_t size, gaddr callee);
 /* The address of a function taken by name in code written for a level, where the name may stand for
  * several places of that level (a function the catalogue folded: one name for the same small code at
  * several places, each a routine of its own, rac1's `return 0` leaf func_001E97C8): the place of it the
@@ -391,6 +482,27 @@ gaddr openrac_hook_in_copy(gaddr exe_fn, uint32_t size, int home, gaddr home_fn,
  * denormal, which the EE reads as zero) gives +-FLT_MAX with the operands' signs XORed, and a
  * quotient too large saturates the same way, where the host would give infinity (and NaN from
  * there on: an animation loop that never ends). */
+/* The EE's integer divide (div, divu), which never traps: a divisor of zero leaves the quotient -1 (1 for a
+ * negative dividend; all ones unsigned) and the remainder the dividend, and the most negative number over
+ * -1 is itself, remainder 0. Matching C relies on it (Going Commando's func_0034C9D0 takes a column count
+ * a type out of range leaves 0); the host's would raise SIGFPE. hostgen writes these for an int's / and %
+ * by a divisor that is not a constant. */
+static inline int32_t openrac_sdiv(int32_t a, int32_t b) {
+    return b == 0 ? (a < 0 ? 1 : -1) : (a == INT32_MIN && b == -1) ? a : a / b;
+}
+
+static inline int32_t openrac_smod(int32_t a, int32_t b) {
+    return b == 0 ? a : b == -1 ? 0 : a % b;
+}
+
+static inline uint32_t openrac_udiv(uint32_t a, uint32_t b) {
+    return b == 0 ? 0xFFFFFFFFu : a / b;
+}
+
+static inline uint32_t openrac_umod(uint32_t a, uint32_t b) {
+    return b == 0 ? a : a % b;
+}
+
 static inline float openrac_fdiv(float a, float b) {
     uint32_t ua, ub;
     memcpy(&ua, &a, 4);
@@ -488,7 +600,7 @@ void openrac_host_caller(int depth, char* text, size_t size);
 /* ---- What the game's own inline assembly did ----
  *
  * The decompilation keeps three quadword helpers as inline assembly
- * (games/rac1/include/common.h): qcopy, qcopy_nc and qzero. Their lq and sq
+ * (games/rac1/decomp/include/common.h): qcopy, qcopy_nc and qzero. Their lq and sq
  * ignore the low four bits of the address, as every quadword load and store
  * of the EE does: matched C that copies from `&moby->pos.z` (an lq at +0x18,
  * Moby1259Update) gets the quadword at +0x10, the whole position. That holds
@@ -507,6 +619,11 @@ static inline void openrac_qcopy(gaddr dst, gaddr src) {
 static inline void openrac_qzero(gaddr p) {
     memset(G(openrac_quadword_address(p)), 0, 16);
 }
+
+/* Native gameplay query points (mod interface 1.40); no registered mod means original. */
+int32_t openrac_mod_play_query(
+    uint32_t kind, uint32_t subject, int32_t index, int32_t original, int32_t alternate
+);
 
 #ifdef __cplusplus
 }

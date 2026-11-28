@@ -48,7 +48,9 @@
 #include <system_error>
 #include <vector>
 
+#include "assets/disc/sector_map.h"
 #include "common/build_info.h"
+#include "common/cache_folder.h"
 #include "common/crash.h"
 #include "common/env.h"
 #include "common/log.h"
@@ -62,25 +64,36 @@
 #include "openrac/guest.h"
 #include "openrac/memory.h"
 #include "openrac/sound_engine.h"
+#include "program/interface_runs.h"
 #include "program/program.h"
 
 #ifdef OPENRAC_FRONTEND
+#include <SDL3/SDL_misc.h>
+
+#include "built_in_mods.h"
 #include "debug_overlay.h"
 #include "enhanced/renderer/fur.h"
 #include "enhanced/viewer/probe_lighting.h"
 #include "frontend.h"
 #include "frontend/mod_media.h"
+#include "game/common/profile.h"
 #include "mod_menu.h"
+#include "options_menu.h"
 #include "platform/bindings.h"
 #include "platform/input.h"
 #include "platform/pump.h"
 #include "platform/window.h"
-#include "renderer/gl.h"
-#include "renderer/texture_pack.h"
+#include "renderer/gl/gl.h"
+#include "renderer/textures/pack_pictures.h"
+#include "renderer/textures/pcsx2_pack.h"
+#include "renderer/textures/texture_pack.h"
 #include "scene/moby_pose.h"
 #include "settings.h"
 #endif
-#if defined(OPENRAC_ANDROID_ACTIVITY)
+#if defined(OPENRAC_IOS)
+#include "platform/ios.h"
+#endif
+#if defined(OPENRAC_ANDROID_ACTIVITY) || defined(OPENRAC_IOS)
 // The game as Android's activity loads it (libopenrac-<id>.so): main is SDL_main, which SDL's
 // activity calls with the arguments the launcher gave it. The executable beside it
 // (libopenrac-<id>-cli.so) keeps its main.
@@ -92,18 +105,36 @@
 #include <stb_image_write.h>
 
 namespace {
-// A texture pack's PNGs (renderer/texture_pack.h), read and written with stb.
+// A texture pack's PNGs (renderer/textures/texture_pack.h), read and written with stb.
+template <bool GsAlpha>
 std::optional<openrac::renderer::Rgba8Image> texture_pack_load(const std::filesystem::path& file) {
     int w = 0;
     int h = 0;
     int channels = 0;
-    unsigned char* pixels = stbi_load(file.string().c_str(), &w, &h, &channels, 4);
+#if defined(_WIN32)
+    std::FILE* input = nullptr;
+    _wfopen_s(&input, file.c_str(), L"rb");
+#else
+    std::FILE* input = std::fopen(file.c_str(), "rb");
+#endif
+    if (input == nullptr) {
+        return std::nullopt;
+    }
+    unsigned char* pixels = stbi_load_from_file(input, &w, &h, &channels, 4);
+    std::fclose(input);
     if (pixels == nullptr) {
         return std::nullopt;
     }
     openrac::renderer::Rgba8Image image(w, h);
     std::copy(pixels, pixels + static_cast<std::ptrdiff_t>(w) * h * 4, image.pixels.begin());
     stbi_image_free(pixels);
+    if constexpr (GsAlpha) {
+        if (channels == 1 || channels == 3) {
+            for (std::size_t a = 3; a < image.pixels.size(); a += 4) {
+                image.pixels[a] = 0x80;
+            }
+        }
+    }
     return image;
 }
 
@@ -113,7 +144,7 @@ bool texture_pack_save(const std::filesystem::path& file, const openrac::rendere
            != 0;
 }
 
-// A level's planet name for the dump's folders (renderer/texture_pack.h): the game's own table, and
+// A level's planet name for the dump's folders (renderer/textures/texture_pack.h): the game's own table, and
 // the port's own worlds (frontend/world.cpp): the title screen's (99) and the flights between
 // planets (98, and Going Commando's 95 to 97).
 std::string texture_pack_level_name(int level) {
@@ -129,7 +160,7 @@ std::string texture_pack_level_name(int level) {
     return name != nullptr ? name : "";
 }
 
-// A texture pack's animated GIF (renderer/texture_pack.h): its frames and their delays, looped.
+// A texture pack's animated GIF (renderer/textures/texture_pack.h): its frames and their delays, looped.
 std::optional<openrac::renderer::texture_pack::Animation> texture_pack_load_gif(
     const std::filesystem::path& file
 ) {
@@ -177,6 +208,32 @@ std::optional<openrac::renderer::texture_pack::Animation> texture_pack_load_gif(
     return animation;
 }
 }  // namespace
+
+extern "C" unsigned char* openrac_game_load_png(const char* path, int* width, int* height) {
+#if defined(_WIN32)
+    std::FILE* input = nullptr;
+    _wfopen_s(&input, std::filesystem::path(reinterpret_cast<const char8_t*>(path)).c_str(), L"rb");
+#else
+    std::FILE* input = std::fopen(path, "rb");
+#endif
+    if (input == nullptr) {
+        return nullptr;
+    }
+    int channels = 0;
+    unsigned char* pixels = stbi_load_from_file(input, width, height, &channels, 4);
+    std::fclose(input);
+    return pixels;
+}
+
+extern "C" void openrac_game_free_png(unsigned char* pixels) {
+    stbi_image_free(pixels);
+}
+#else
+extern "C" unsigned char* openrac_game_load_png(const char*, int*, int*) {
+    return nullptr;
+}
+
+extern "C" void openrac_game_free_png(unsigned char*) {}
 #endif
 
 namespace {
@@ -186,7 +243,7 @@ std::string campaign_mount;
 }  // namespace
 
 extern "C" {
-const char* openrac_game_disc_image = nullptr;
+const char* openrac_game_disc_files = nullptr;
 const char* openrac_game_card_dir = nullptr;
 const char* openrac_game_mods_dir = nullptr;
 const struct openrac_map_config* openrac_game_map = nullptr;
@@ -209,17 +266,23 @@ void openrac_game_select_destination(int index) {
 int openrac_game_language = 1;
 int openrac_game_no_card = 0;
 int openrac_game_start_level = -1;
+int openrac_game_direct_start = 0;
 void (*openrac_game_on_frame)(unsigned frame) = nullptr;
 int (*openrac_game_bolts)(void) = nullptr;
 int (*openrac_game_skip_buttons)(void) = nullptr;
 void (*openrac_game_skip)(void) = nullptr;
 int (*openrac_game_flight)(void) = nullptr;
+int (*openrac_game_loading_draws_world)(void) = nullptr;
 int (*openrac_game_mode)(uint32_t* mode) = nullptr;
+int (*openrac_game_touch)(const char** context, const char* hints[OPENRAC_TOUCH_HINTS_MAX]) =
+    nullptr;
 int (*openrac_game_hero_position)(float xyz[3]) = nullptr;
 int (*openrac_game_camera_position)(float xyz[3]) = nullptr;
 int (*openrac_game_updating_moby)(openrac_game_moby* out) = nullptr;
 int (*openrac_game_hero)(float position[3], float rotation[3], int32_t* state) = nullptr;
 int (*openrac_game_camera_turn)(uint8_t, float, float*, float[3], unsigned*) = nullptr;
+float openrac_game_camera_speed = 1.0f;
+float openrac_game_tick_stretch = 1.0f;
 const openrac_front_end* openrac_game_front_end = nullptr;
 const openrac_game_play* openrac_game_play_host = nullptr;
 const openrac_game_tools* openrac_game_tools_host = nullptr;
@@ -244,6 +307,8 @@ Options g_options;
 long g_frame = 0;
 gaddr g_chain = 0;
 bool g_vsync_since_kick = true;
+PictureLists g_picture_lists;
+bool g_send_within_picture = false;
 bool g_window = false;
 std::chrono::steady_clock::time_point g_next_frame;
 unsigned g_draws = 0;
@@ -279,6 +344,9 @@ void open_session(int argc, char** argv) {
         log::warn("the log cannot be written in {}", g_options.data.string());
     }
     crash::configure(g_options.data / "crashes", program_name(), started);
+#ifdef OPENRAC_FRONTEND
+    frontend::debug_overlay::set_picker_report_folder(g_options.data.string());
+#endif
     crash::set_moby_source(updating_moby);
     const char* level = log::level() <= log::Level::Debug     ? "debug"
                         : log::level() <= log::Level::Verbose ? "verbose"
@@ -354,6 +422,7 @@ void load_mods() {
     host.hooks = openrac_game_hook_points;
     host.hook_count = openrac_game_hook_point_count;
     host.list = g_options.plugins;
+    host.stack = g_options.mods.empty() ? std::filesystem::path() : g_options.mods / "stack.json";
     host.purist = g_options.no_mods;
     host.loaded_level = openrac_game_loaded_overlay;
     host.pad_hook = &openrac_game_pad_report_hook;
@@ -362,19 +431,42 @@ void load_mods() {
     host.play = openrac_game_play_host;
     host.cards = openrac_game_card_dir != nullptr ? openrac_game_card_dir : "memcard";
     host.mod_data = g_options.mod_data;
+    host.data = g_options.data;
+    host.games_root = g_options.games_root;
+    host.pack_folder = [] {
+        return openrac_game_mods_dir;
+    };
 #ifdef OPENRAC_FRONTEND
     // The mods' own sounds (interface 1.12), on the window's sound output.
     host.sound_load = frontend::mod_sound_load;
     host.sound_play = frontend::mod_sound_play;
     host.sound_set = frontend::mod_sound_set;
     host.sound_stop = frontend::mod_sound_stop;
+    // The mods' motor values (interface 1.37), played with the game's by the window's input.
+    host.motors = [](const void* mod, int port, bool small_motor, std::uint8_t large_motor) {
+        if (g_window) {
+            frontend::set_mod_motors(mod, port, small_motor, large_motor);
+        }
+    };
+    host.drop_motors = [](const void* mod) {
+        if (g_window) {
+            frontend::drop_mod_motors(mod);
+        }
+    };
+    host.language = frontend::options_menu::language;
     host.joint_offsets = [](std::uint32_t moby, const openrac_joint_offset* joints, int count) {
         std::vector<assets::rac1::JointModifier> mods;
         mods.reserve(static_cast<std::size_t>(count));
         for (int i = 0; i < count; ++i) {
             assets::rac1::JointModifier m;
-            m.joint = static_cast<std::uint8_t>(std::min<std::uint32_t>(joints[i].joint, 0xFF));
-            m.mode = 0;  // composed with the pose: q * rotation, translation added
+            const bool set = (joints[i].joint & mods::kJointPoseSet) != 0;
+            m.joint = static_cast<std::uint8_t>(
+                std::min<std::uint32_t>(joints[i].joint & ~mods::kJointPoseSet, 0xFF)
+            );
+            // Composed with the pose (q * rotation, translation added), or the pose set: the game's
+            // blend toward the modifier, at weight 1.
+            m.mode = set ? 1 : 0;
+            m.weight = set ? 1.0f : 0.0f;
             for (int k = 0; k < 4; ++k) {
                 m.quat[k] = joints[i].rotation[k];
             }
@@ -386,7 +478,51 @@ void load_mods() {
         }
         scene::set_extra_joint_modifiers(moby, std::move(mods));
     };
+    // Ratchet & Clank's moby: its place at +0x10, its scale at +0x2C and its turn's rows at +0xC0;
+    // the pose's translations are in 1/1024 of the model's units.
+    if (std::string_view(openrac_game.game) == "rac1") {
+        host.joint_frame = [](std::uint32_t moby, int joint, float* out) -> int {
+            const auto& memory = runtime::Memory::get();
+            const std::span<const std::uint8_t> ram(memory.base(), memory.ram_size());
+            if (moby == 0 || joint < 0 || moby > ram.size() || ram.size() - moby < 0x100) {
+                return 0;
+            }
+            const auto pose = scene::moby_pose_matrices(ram, moby);
+            if (static_cast<std::size_t>(joint) >= pose.size()) {
+                return 0;
+            }
+            const auto f32 = [&](std::uint32_t at) {
+                float v = 0.0f;
+                std::memcpy(&v, ram.data() + moby + at, 4);
+                return v;
+            };
+            const float scale = f32(0x2C);
+            const auto& f = pose[static_cast<std::size_t>(joint)];
+            // The axes (no place, no 1/1024), then the place; each a sum of the moby's turn's rows.
+            for (int a = 0; a < 4; ++a) {
+                const float unit = a < 3 ? scale : scale / 1024.0f;
+                for (int k = 0; k < 3; ++k) {
+                    float v = a < 3 ? 0.0f : f32(0x10 + 4u * static_cast<std::uint32_t>(k));
+                    for (int r = 0; r < 3; ++r) {
+                        v += f[static_cast<std::size_t>(a)][r] * unit
+                             * f32(
+                                 0xC0 + 0x10u * static_cast<std::uint32_t>(r)
+                                 + 4u * static_cast<std::uint32_t>(k)
+                             );
+                    }
+                    if (!std::isfinite(v)) {
+                        return 0;
+                    }
+                    out[3 * a + k] = v;
+                }
+            }
+            return 1;
+        };
+    }
 #endif
+    host.music_gain = [](int group, float gain) {
+        openrac_sound_set_stream_gain(group, gain);
+    };
     host.capture_savestate_runtime = [](mods::SavestateRuntime* state) {
         if (state == nullptr) {
             return false;
@@ -428,6 +564,24 @@ void load_mods() {
         }
     };
 #ifdef OPENRAC_FRONTEND
+    // The mods built into the program (built_in_mods.h): Ratchet & Clank's keyboard and mouse,
+    // with its settings from the settings file.
+    host.built_ins = mods::built_in_mods();
+    host.built_in_settings["keyboard-mouse"] = settings::get().keyboard_mouse;
+    host.built_in_write =
+        [](const std::string& id, const std::string& key, const std::string& text) {
+            if (id == "keyboard-mouse") {
+                settings::get().keyboard_mouse[key] = text;
+                settings::save();
+            }
+        };
+    host.built_in_reread = [](std::map<std::string, std::map<std::string, std::string>>& out) {
+        if (!settings::reread_keyboard_mouse()) {
+            return false;
+        }
+        out["keyboard-mouse"] = settings::get().keyboard_mouse;
+        return true;
+    };
     // Mods loaded before the window opens (a mod that makes the Vulkan device): what they ask of
     // the keyboard and the cursor is kept for the window (apply_early_mod_input).
     host.take_input = [](std::uint32_t devices) {
@@ -449,6 +603,12 @@ void load_mods() {
     host.graphics = frontend::mod_graphics;
     host.menu_rect = frontend::mod_menu::rect;
     host.menu_text = frontend::mod_menu::text_at;
+    host.open_url = [](const char* url) {
+        return SDL_OpenURL(url);
+    };
+    host.set_clipboard = [](const char* text) {
+        return SDL_SetClipboardText(text);
+    };
     host.set_views = frontend::set_view_source;
     host.set_vulkan_setup = [](const openrac_vulkan_setup* setup) {
         platform::VulkanSetup s;
@@ -511,6 +671,16 @@ bool has_virtual_sector_mappings(const fs::path& mount) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(OPENRAC_IOS)
+    auto ios_arguments = openrac::platform::ios_arguments();
+    std::vector<char*> ios_argv;
+    for (auto& argument : ios_arguments) {
+        ios_argv.push_back(argument.data());
+    }
+    argc = static_cast<int>(ios_argv.size());
+    ios_argv.push_back(nullptr);
+    argv = ios_argv.data();
+#endif
     profiling::thread_name("Game");
 #if defined(_WIN32)
     // Windows sleeps in steps of 15.6 ms unless a program asks for 1 ms: the wait for the next
@@ -554,10 +724,14 @@ int main(int argc, char** argv) {
     if (!destination_configs.empty()) {
         openrac_game_destinations = destination_configs.data();
         openrac_game_destination_count = static_cast<unsigned>(destination_configs.size());
-        if (openrac_game_start_level < 0) {
-            openrac_game_start_level = destination_configs.front().level;
+        // A ship map test starts on its planet without a save; mods' planets leave the game as it
+        // is: the title, the campaign and its saves, the planets in the ship's menu.
+        if (g_options.ship_map) {
+            if (openrac_game_start_level < 0) {
+                openrac_game_start_level = destination_configs.front().level;
+            }
+            openrac_game_no_card = 1;
         }
-        openrac_game_no_card = 1;
     }
 
     if (g_options.check_levels) {
@@ -571,16 +745,35 @@ int main(int argc, char** argv) {
         log::fatalf("--check-levels needs a build with the window (it reads the levels as the window does)");
 #endif
     }
+    if (!g_options.interface_export.empty()) {
+        // An export reads the run files and the disc's files and ends: no game is played.
+        return export_interface(
+            g_options.data / "iso_data" / openrac_game.game,
+            openrac_game.id,
+            g_options.interface_export,
+            g_options.interface_runs,
+            g_options.interface_only,
+            [](const std::string& line) {
+                std::fputs((line + "\n").c_str(), stdout);
+                std::fflush(stdout);
+            }
+        );
+    }
     // The session's log first, so that a game that cannot start says why in it (on Android the
     // only place the player can read it, through the launcher).
     open_session(argc, argv);
+    // The part of the game built from the disc, before any of its code runs, and after the log is
+    // open so that one that does not load says why there.
+    load_asm_part(g_options);
+    // The disc's files and their sector map (tools/openrac_common/disc_files.py): the game reads
+    // its sectors from them, never from the image. A set-up made before the map was written
+    // (or with --boot-only) has to be made again.
     const fs::path iso = g_options.data / "iso_data" / openrac_game.game;
     const fs::path exe = iso / openrac_game.serial;
-    const fs::path disc = iso / "disc.iso";
-    if (!fs::exists(exe) || !fs::exists(disc)) {
+    if (!fs::exists(exe) || !assets::disc::SectorMap::present(iso)) {
         log::fatalf(
-            "{} has no {} and disc.iso: set the game up from your disc first "
-            "(python3 tools/extractor.py <image> --game {} --proj-path {})",
+            "{} has no {} and sectors.tsv (the disc's files): set the game up from your disc "
+            "again (python3 tools/extractor.py <image> --game {} --extract --proj-path {})",
             iso.string(),
             openrac_game.serial,
             openrac_game.game,
@@ -588,6 +781,12 @@ int main(int argc, char** argv) {
         );
     }
     log::info("{}: {}", program_name(), openrac_game.title);
+    if (!g_options.interface_run.empty()) {
+        static fs::path run_disc;
+        run_disc = iso;
+        start_interface_run(g_options.interface_run);
+        std::atexit([] { finish_interface_run(run_disc); });
+    }
 
     if (g_options.custom_map) {
         const CustomMap& map = *g_options.custom_map;
@@ -630,11 +829,11 @@ int main(int argc, char** argv) {
         image.entry
     );
 
-    static std::string disc_path = disc.string();
+    static std::string disc_path = iso.string();
     std::error_code made;
     fs::create_directories(g_options.cards, made);
     static std::string cards_path = g_options.cards.string();
-    openrac_game_disc_image = disc_path.c_str();
+    openrac_game_disc_files = disc_path.c_str();
     openrac_game_card_dir = cards_path.c_str();
     static std::string mods_path = g_options.mods.string();
     campaign_mount = g_options.ship_map ? std::string{} : mods_path;
@@ -646,6 +845,14 @@ int main(int argc, char** argv) {
     bool mods_loaded = false;
 
 #ifdef OPENRAC_FRONTEND
+    // The joint poses the game reads (openrac_game_moby_chain) need its moby layout with or without
+    // a window: a run without one read rac2's poses at rac1's offsets, and Notak's chain spawned
+    // until the moby pool was full.
+    scene::set_moby_anim_fields(host::game_profile(openrac_game.id).moby_anim_fields());
+    scene::set_moby_layer_records(host::game_profile(openrac_game.id).moby_layer_records());
+    // The port's own region, which a mod's enemy copies keep their larger pvars in: their joint
+    // modifiers and pose layers are read there, not at the RAM address its bits would mask to.
+    scene::set_port_memory(GUEST_PORT, runtime::Memory::get().bytes(GUEST_PORT, GUEST_PORT_SIZE));
     if (g_options.window) {
         std::string why;
         settings::load(g_options.settings);
@@ -654,7 +861,7 @@ int main(int argc, char** argv) {
             if (settings::set_hdr_mode(hdr)) {
                 log::info("HDR output {} (OPENRAC_HDR)", hdr);
             } else {
-                log::warn("OPENRAC_HDR={}: not off, auto or on, ignored", hdr);
+                log::warn("OPENRAC_HDR={}: not off or on, ignored", hdr);
             }
         }
         log::header("settings  " + settings::summary(), false);
@@ -689,27 +896,44 @@ int main(int argc, char** argv) {
             log::info("enhanced rendering on (Vulkan only); probe bakes from {}",
                       g_options.probes.empty() ? std::string("nowhere") : g_options.probes.string());
         }
-        // A texture pack (docs/port/TEXTURE_PACKS.md): <data>/texture_packs/<game id>/, and
-        // OPENRAC_DUMP_TEXTURES=DIR writes every texture under the names a pack uses.
+        // A texture pack (docs/port/TEXTURE_PACKS.md): <data>/texture_packs/<game id>/, a mod like
+        // the others, so --no-mods leaves it out; OPENRAC_DUMP_TEXTURES=DIR writes every texture
+        // under the names a pack uses.
         {
             const auto dump = env::value(env::Var::DumpTextures);
+            const bool use_packs = settings::get().texture_pack && !g_options.no_mods;
+            const auto pcsx2 = env::path(env::Var::Pcsx2TexturePack);
+            renderer::pcsx2_pack::configure(
+                use_packs && pcsx2 ? *pcsx2 : fs::path{}, texture_pack_load<true>
+            );
             renderer::texture_pack::configure(
-                settings::get().texture_pack ? g_options.data / "texture_packs" / openrac_game.id
-                                             : fs::path{},
+                use_packs ? g_options.data / "texture_packs" / openrac_game.id : fs::path{},
                 dump ? fs::path(std::string(*dump)) : fs::path{},
-                {texture_pack_load, texture_pack_save, texture_pack_load_gif},
+                {texture_pack_load<false>,
+                 texture_pack_save,
+                 texture_pack_load_gif,
+                 renderer::pack_pictures::load_ktx2,
+                 renderer::pack_pictures::load_svg},
                 texture_pack_level_name
             );
+            // The HUD's and effects' pictures, read in the background from the start (those the
+            // last runs showed, once it knows them).
+            if (use_packs) {
+                renderer::texture_pack::set_play_list(
+                    cache_folder() / "texture_packs" / (std::string(openrac_game.id) + ".txt")
+                );
+            }
+            renderer::texture_pack::preload();
         }
         fs::path levels = g_options.levels.empty() ? default_levels(g_options.data) : levels_or_flat(g_options.levels);
-        // A mod that makes the Vulkan device with the port (a VR headset's) is loaded before the
-        // window, which makes the device; without one the mods load after it, as always.
-        if (mods::makes_vulkan_device(g_options.plugins, g_options.no_mods)) {
+        const auto vulkan = mods::vulkan_startup(g_options.plugins, g_options.no_mods);
+        // A mod that creates the device must register its callbacks before the window opens.
+        if (vulkan.creates_device) {
             openrac_game_register_functions();
             load_mods();
             mods_loaded = true;
         }
-        if (!frontend::open(openrac_game.id, levels, why)) {
+        if (!frontend::open(openrac_game.id, levels, vulkan.uses_queue, why)) {
             log::fatalf("no window: {}", why);
         }
         g_window = true;

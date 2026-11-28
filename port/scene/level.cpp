@@ -4,8 +4,12 @@
 #include "scene/level.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
 #include <cgltf.h>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <format>
@@ -14,12 +18,17 @@
 #include <map>
 #include <stb_image.h>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
+#include "common/joining_thread.h"
 #include "common/json.h"
 #include "common/log.h"
 #include "common/profiler.h"
-#include "renderer/texture_pack.h"
+#include "materials/catalog.h"
+#include "renderer/textures/pcsx2_pack.h"
+#include "renderer/textures/texture_pack.h"
+#include "scene/joint_name.h"
 #include "scene/material_overrides.h"
 
 namespace openrac::scene {
@@ -27,19 +36,27 @@ namespace openrac::scene {
 namespace fs = std::filesystem;
 
 namespace {
-// The importer already maps exported joint_NNN names to the game's stable joint numbers.
-int bone_number(const cgltf_node* node, int fallback) {
-    if (node && node->name && std::strncmp(node->name, "joint_", 6) == 0) {
-        return std::clamp(std::atoi(node->name + 6), 0, 255);
+// The importer maps exported joint_NNN names to the game's stable joint numbers (joint_name.h). The
+// palette has 256 slots: a number past 255 is 255, so that joint shares slot 255. Clamped, not
+// refused, because every model loads through here (levels, mobys, props); logged.
+int skin_joint(const cgltf_node* node, int fallback) {
+    const int number =
+        node != nullptr && node->name != nullptr ? joint_number(node->name, fallback) : fallback;
+    if (number > 255) {
+        log::warn(
+            "joint {} is past 255: it shares palette slot 255",
+            node && node->name ? node->name : "(unnamed)"
+        );
+        return 255;
     }
-    return fallback;
+    return number;
 }
 
 // Retain bind frames so P*S skinning palettes can recover the attachment frame P.
 void retain_bones(Model& model, const cgltf_skin& skin) {
     for (cgltf_size j = 0; j < skin.joints_count; ++j) {
         const auto* joint = skin.joints[j];
-        const int number = bone_number(joint, int(j));
+        const int number = skin_joint(joint, int(j));
         model.bones.resize(std::max(model.bones.size(), std::size_t(number + 1)));
         auto& bone = model.bones[std::size_t(number)];
         bone.name = joint && joint->name ? joint->name : "joint_" + std::to_string(number);
@@ -59,7 +76,7 @@ void retain_bones(Model& model, const cgltf_skin& skin) {
         }
         for (cgltf_size p = 0; p < skin.joints_count; ++p) {
             if (joint && joint->parent == skin.joints[p]) {
-                bone.parent = bone_number(skin.joints[p], int(p));
+                bone.parent = skin_joint(skin.joints[p], int(p));
                 break;
             }
         }
@@ -123,6 +140,137 @@ fs::path override_of(const fs::path& path, const LevelData& level, int* overridd
     return (level.dir / rel).lexically_normal();
 }
 
+// Editor exports retain the texture's indexed raster and its palette in the PNG.
+void replace_pcsx2(const fs::path& path, renderer::Rgba8Image& image) {
+    if (!renderer::pcsx2_pack::enabled() || image.width > renderer::kMaxTextureSide
+        || image.height > renderer::kMaxTextureSide
+        || !std::has_single_bit(static_cast<unsigned>(image.width))
+        || !std::has_single_bit(static_cast<unsigned>(image.height))) {
+        return;
+    }
+    const auto stride = static_cast<std::size_t>(image.width) + 1;
+    const auto row_bytes = stride * static_cast<std::size_t>(image.height);
+    std::ifstream file(path, std::ios::binary);
+    std::array<char, 8> header{};
+    if (!file.read(header.data(), header.size())
+        || std::string_view(header.data(), header.size()) != "\x89PNG\r\n\x1a\n") {
+        return;
+    }
+    std::array<std::uint8_t, 768> rgb{};
+    std::array<std::uint8_t, 256> alpha{}, raw_alpha{};
+    bool has_palette = false, has_alpha = false, has_raw_alpha = false;
+    std::vector<char> compressed;
+    while (file.read(header.data(), header.size())) {
+        const auto* size_bytes = reinterpret_cast<const unsigned char*>(header.data());
+        const std::uint32_t size = (std::uint32_t{size_bytes[0]} << 24)
+                                   | (std::uint32_t{size_bytes[1]} << 16)
+                                   | (std::uint32_t{size_bytes[2]} << 8) | size_bytes[3];
+        const std::string_view type(header.data() + 4, 4);
+        if (type == "IHDR") {
+            std::array<char, 13> info{};
+            if (size != info.size() || !file.read(info.data(), info.size()) || info[8] != 8
+                || info[9] != 3 || info[12] != 0) {
+                return;
+            }
+        } else if (type == "PLTE" && size == rgb.size()) {
+            has_palette = static_cast<bool>(file.read(reinterpret_cast<char*>(rgb.data()), size));
+        } else if (type == "tRNS" && size == alpha.size()) {
+            has_alpha = static_cast<bool>(file.read(reinterpret_cast<char*>(alpha.data()), size));
+        } else if (type == "orAC" && size == raw_alpha.size()) {
+            has_raw_alpha =
+                static_cast<bool>(file.read(reinterpret_cast<char*>(raw_alpha.data()), size));
+        } else if (type == "IDAT") {
+            const auto offset = compressed.size();
+            if (offset + size > row_bytes + 65536) {
+                return;
+            }
+            compressed.resize(offset + size);
+            file.read(compressed.data() + offset, size);
+        } else if (type == "IEND") {
+            break;
+        } else {
+            file.seekg(size, std::ios::cur);
+        }
+        file.seekg(4, std::ios::cur);  // CRC
+    }
+    if (!has_palette || !has_alpha || compressed.empty()) {
+        return;
+    }
+    std::vector<char> rows(row_bytes);
+    if (stbi_zlib_decode_buffer(
+            rows.data(),
+            static_cast<int>(rows.size()),
+            compressed.data(),
+            static_cast<int>(compressed.size())
+        )
+        != static_cast<int>(rows.size())) {
+        return;
+    }
+    std::vector<std::uint8_t> raster;
+    raster.reserve(row_bytes);
+    for (std::size_t y = 0; y < rows.size(); y += stride) {
+        if (rows[y] != 0) {
+            return;  // The editor writes unfiltered rows.
+        }
+        raster.insert(raster.end(), rows.data() + y + 1, rows.data() + y + stride);
+    }
+    std::array<std::uint32_t, 256> palette{};
+    for (std::size_t i = 0; i < palette.size(); ++i) {
+        const auto a = has_raw_alpha ? raw_alpha[i] : (alpha[i] + 1u) / 2;
+        palette[i] = renderer::rgba(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2], a);
+    }
+    renderer::pcsx2_pack::replace_indexed8(image, raster, palette);
+}
+
+// With a texture pack: the level's textures looked up in it all at once, on several threads, so
+// that its big pictures are decoded side by side, not one after another while the level loads.
+void read_pack_pictures_ahead(const fs::path& dir) {
+    if (!renderer::texture_pack::has_pictures()) {
+        return;
+    }
+    std::vector<fs::path> files;
+    std::error_code e;
+    for (auto it = fs::recursive_directory_iterator(dir, e);
+         it != fs::recursive_directory_iterator();
+         it.increment(e)) {
+        if (it->is_regular_file(e) && it->path().extension() == ".png") {
+            files.push_back(it->path());
+        }
+    }
+    std::vector<renderer::texture_pack::TextureId> ids(files.size());
+    std::atomic<std::size_t> next{0};
+    {
+        constexpr unsigned kMostThreads = 8;
+        const unsigned count = std::clamp(std::thread::hardware_concurrency(), 1u, kMostThreads);
+        std::vector<JoiningThread> workers;
+        for (unsigned i = 0; i < count; ++i) {
+            workers.emplace_back([&] {
+                for (std::size_t at = next++; at < files.size(); at = next++) {
+                    // Read as image_index() reads it, so that the hash is the same.
+                    int w = 0;
+                    int h = 0;
+                    int channels = 0;
+                    unsigned char* pixels =
+                        stbi_load(files[at].string().c_str(), &w, &h, &channels, 4);
+                    if (pixels == nullptr) {
+                        continue;
+                    }
+                    renderer::Rgba8Image image(w, h);
+                    std::copy(
+                        pixels,
+                        pixels + static_cast<std::ptrdiff_t>(w) * h * 4,
+                        image.pixels.begin()
+                    );
+                    stbi_image_free(pixels);
+                    ids[at] = {renderer::texture_pack::image_hash(image), w, h};
+                }
+            });
+        }
+    }
+    std::erase_if(ids, [](const renderer::texture_pack::TextureId& id) { return id.hash == 0; });
+    renderer::texture_pack::read_level_pictures(ids);
+}
+
 int image_index(const fs::path& requested, LevelData& level) {
     int overridden = 0;
     const std::string key =
@@ -150,9 +298,23 @@ int image_index(const fs::path& requested, LevelData& level) {
     // A texture pack's picture of it (docs/port/TEXTURE_PACKS.md), at any size, and its frames
     // when it is animated.
     renderer::texture_pack::Replacement replaced;
-    renderer::texture_pack::replace(image, {.level = level.level}, &replaced);
+    // The original's texels, while a pack may replace them: its material identity is the original's.
+    renderer::Rgba8Image original;
+    if (renderer::texture_pack::has_pictures()) {
+        original = image;
+    }
+    std::string identity;
+    if (renderer::texture_pack::replace(image, {.level = level.level}, &replaced)) {
+        identity = materials::texture_identity(original.width, original.height, original.pixels);
+    } else {
+        replace_pcsx2(key, image);
+    }
+    level.image_identities.resize(level.images.size());
+    level.image_identities.push_back(std::move(identity));
     level.image_animations.resize(level.images.size());
     level.image_animations.push_back(std::move(replaced.animation));
+    level.image_blocks.resize(level.images.size());
+    level.image_blocks.push_back(std::move(replaced.blocks));
     bool translucent = false;
     for (std::size_t i = 3; i < image.pixels.size(); i += 4) {
         if (image.pixels[i] < 250) {
@@ -171,6 +333,9 @@ int material_index(
 ) {
     const auto* source = primitive.material;
     Material m;
+    // The export's extras "opaque": a material the game blends opaque whatever its texels' alpha
+    // (Up Your Arsenal's ties with ALPHA_1 0x20, extractor/ties.py), drawn solid below.
+    bool opaque = false;
     // A missing glTF material is the model's implicit slot.
     m.source_slot = source ? static_cast<int>(source - data.materials) : -1;
     if (source != nullptr) {
@@ -178,6 +343,12 @@ int material_index(
         m.cutout = source->alpha_mode == cgltf_alpha_mode_mask;
         m.metal = source->name != nullptr && std::strncmp(source->name, "metal_", 6) == 0;
         m.blend = source->alpha_mode == cgltf_alpha_mode_blend;
+        if (source->extras.data != nullptr) {
+            json::Value extras;
+            std::string ignored;
+            opaque = json::parse(source->extras.data, extras, ignored)
+                     && extras["opaque"].boolean();
+        }
         const float strength =
             source->has_emissive_strength ? source->emissive_strength.emissive_strength : 1.0f;
         for (unsigned c = 0; c < 3; ++c) {
@@ -209,13 +380,15 @@ int material_index(
     // static layers' and mobys' alpha test, GEQUAL 0x80 for the static layers and TEST 0x5360b for
     // mobys: texels at 0x80 written with depth, the others blended, colour only), whatever the
     // export's alpha mode says: the export marks a texture MASK only when it has fully clear texels
-    // (editor/formats.py, Texture.cutout), so a sheet of glass, part-clear all over, came out
+    // (extractor/formats.py, Texture.cutout), so a sheet of glass, part-clear all over, came out
     // opaque. Kalebo III's glass sheets (moby class 800, alpha 0x32..0x53) were solid teal walls,
     // Novalis's windows by the plumber (a tie, glass at alpha 0x1F in an opaque frame) solid
     // blue-grey panes; part-clear terrain, tie and shrub textures of other levels (Veldin's,
     // alpha 0x3A all over) drew solid as well. The sky and the collision overlay are BLEND
-    // materials and keep their own passes.
-    if (!m.cutout && !m.metal && !m.blend && m.image >= 0
+    // materials and keep their own passes. A material the game blends opaque (extras "opaque")
+    // stays solid: the Galactic Rangers' dropship's hull (Veldin's ties 6759, 6760 and 6762, ALPHA_1
+    // 0x20 on pictures at alpha 0x0B to 0x1E) was drawn see-through.
+    if (!opaque && !m.cutout && !m.metal && !m.blend && m.image >= 0
         && static_cast<std::size_t>(m.image) < level.translucent_images.size()) {
         m.cutout = level.translucent_images[static_cast<std::size_t>(m.image)];
     }
@@ -254,7 +427,7 @@ bool read_matrix(const json::Value& value, Mat4& out) {
 }
 
 // A colour per class number, for boxes: the golden-ratio hue walk the
-// editor's Godot export uses for its markers.
+// OpenRAC Editor's level export uses for its markers.
 std::array<float, 4> class_colour(int class_id) {
     const double hue = std::fmod(class_id * 0.618034, 1.0) * 6.0;
     const double s = 0.65;
@@ -337,6 +510,12 @@ std::optional<std::uint32_t> load_model(
         error = std::format("cannot read the buffers of {}", name);
         return std::nullopt;
     }
+    // Accessors past their buffers, joints with no matrix: read nothing of a broken file.
+    if (cgltf_validate(data) != cgltf_result_success) {
+        cgltf_free(data);
+        error = std::format("{} is not valid glTF", name);
+        return std::nullopt;
+    }
     const fs::path base = path.parent_path();
     Model model;
     model.name = path.filename().string();
@@ -360,12 +539,7 @@ std::optional<std::uint32_t> load_model(
             retain_bones(model, *node.skin);
             for (cgltf_size j = 0; j < node.skin->joints_count; ++j) {
                 const cgltf_node* joint = node.skin->joints[j];
-                int number = static_cast<int>(j);
-                if (joint != nullptr && joint->name != nullptr
-                    && std::strncmp(joint->name, "joint_", 6) == 0) {
-                    number = std::atoi(joint->name + 6);
-                }
-                skin_joints.push_back(static_cast<std::uint8_t>(std::clamp(number, 0, 255)));
+                skin_joints.push_back(static_cast<std::uint8_t>(skin_joint(joint, int(j))));
             }
         }
         for (cgltf_size p = 0; p < node.mesh->primitives_count; ++p) {
@@ -461,10 +635,21 @@ std::optional<std::uint32_t> load_model(
                 out.shell = std::atoi(node.name + 4);
             }
             if (node.name != nullptr && std::strncmp(node.name, "Terrain_", 8) == 0) {
+                // Terrain_MMM, or Terrain_cN_MMM for a streamed chunk's (OpenRAC Editor's openrac/tools/godot.py
+                // chunk_terrain).
+                const char* at = node.name + 8;
+                long chunk = 0;
+                if (*at == 'c') {
+                    char* after = nullptr;
+                    chunk = std::strtol(at + 1, &after, 10);
+                    at = after != at + 1 && *after == '_' ? after + 1 : node.name;
+                }
                 char* end = nullptr;
-                const long fragment = std::strtol(node.name + 8, &end, 10);
-                if (end != node.name + 8 && *end == 0 && fragment >= 0 && fragment < 1000000) {
+                const long fragment = std::strtol(at, &end, 10);
+                if (at != node.name && end != at && *end == 0 && fragment >= 0 && fragment < 1000000
+                    && chunk >= 0 && chunk < 16) {
                     out.terrain_fragment = static_cast<int>(fragment);
+                    out.terrain_chunk = static_cast<int>(chunk);
                 }
             }
             model.primitives.push_back(out);
@@ -476,6 +661,166 @@ std::optional<std::uint32_t> load_model(
     }
     level.models.push_back(std::move(model));
     return static_cast<std::uint32_t>(level.models.size() - 1);
+}
+
+bool load_preview_animation(
+    const fs::path& path, Model& model, const char* clip, const LevelData* geometry
+) {
+    cgltf_options options{};
+    cgltf_data* raw = nullptr;
+    const auto name = path.string();
+    if (cgltf_parse_file(&options, name.c_str(), &raw) != cgltf_result_success) {
+        return false;
+    }
+    const std::unique_ptr<cgltf_data, decltype(&cgltf_free)> data(raw, cgltf_free);
+    if (cgltf_load_buffers(&options, raw, name.c_str()) != cgltf_result_success
+        || raw->skins_count != 1 || model.bones.empty()) {
+        return false;
+    }
+    const cgltf_animation* animation = nullptr;
+    for (cgltf_size i = 0; i < raw->animations_count; ++i) {
+        if (raw->animations[i].name && std::strcmp(raw->animations[i].name, clip) == 0) {
+            animation = &raw->animations[i];
+        }
+    }
+    if (!animation) {
+        return false;
+    }
+    float duration = 0;
+    for (cgltf_size i = 0; i < animation->samplers_count; ++i) {
+        const auto& sampler = animation->samplers[i];
+        if (!sampler.input || !sampler.output || sampler.input->count == 0
+            || sampler.output->count != sampler.input->count
+            || sampler.interpolation == cgltf_interpolation_type_cubic_spline) {
+            return false;
+        }
+        float last = 0;
+        if (!cgltf_accessor_read_float(sampler.input, sampler.input->count - 1, &last, 1)
+            || !std::isfinite(last)) {
+            return false;
+        }
+        duration = std::max(duration, last);
+    }
+    // Retail weapon display sequences can be a single authored pose at time zero.
+    if (duration < 0 || duration > 30) {
+        return false;
+    }
+    const auto& skin = raw->skins[0];
+    std::vector<std::vector<Mat4>> poses;
+    const int frames = std::max(1, int(std::ceil(duration * 60)));
+    for (int frame = 0; frame < frames; ++frame) {
+        const float time = float(frame) / 60;
+        for (cgltf_size i = 0; i < animation->channels_count; ++i) {
+            const auto& channel = animation->channels[i];
+            auto* node = channel.target_node;
+            if (!node || !channel.sampler) {
+                return false;
+            }
+            const auto& sampler = *channel.sampler;
+            cgltf_size a = 0;
+            float ta = 0, tb = 0;
+            cgltf_accessor_read_float(sampler.input, 0, &ta, 1);
+            while (a + 1 < sampler.input->count) {
+                cgltf_accessor_read_float(sampler.input, a + 1, &tb, 1);
+                if (tb > time) {
+                    break;
+                }
+                ta = tb;
+                ++a;
+            }
+            const auto b = std::min(a + 1, sampler.input->count - 1);
+            cgltf_accessor_read_float(sampler.input, b, &tb, 1);
+            const bool rotation = channel.target_path == cgltf_animation_path_type_rotation;
+            const int count = rotation ? 4 : 3;
+            float from[4]{}, to[4]{}, value[4]{};
+            if (!cgltf_accessor_read_float(sampler.output, a, from, count)
+                || !cgltf_accessor_read_float(sampler.output, b, to, count)) {
+                return false;
+            }
+            const float weight = sampler.interpolation == cgltf_interpolation_type_step || tb <= ta
+                                     ? 0
+                                     : std::clamp((time - ta) / (tb - ta), 0.0f, 1.0f);
+            float dot = 0;
+            for (int j = 0; j < count; ++j) {
+                dot += from[j] * to[j];
+            }
+            float norm = 0;
+            for (int j = 0; j < count; ++j) {
+                value[j] = from[j] * (1 - weight) + to[j] * weight * (rotation && dot < 0 ? -1 : 1);
+                norm += value[j] * value[j];
+            }
+            node->has_matrix = false;
+            if (rotation) {
+                if (norm <= 0) {
+                    return false;
+                }
+                for (int j = 0; j < 4; ++j) {
+                    node->rotation[j] = value[j] / std::sqrt(norm);
+                }
+                node->has_rotation = true;
+            } else if (channel.target_path == cgltf_animation_path_type_translation) {
+                std::copy_n(value, 3, node->translation);
+                node->has_translation = true;
+            } else if (channel.target_path == cgltf_animation_path_type_scale) {
+                std::copy_n(value, 3, node->scale);
+                node->has_scale = true;
+            } else {
+                return false;
+            }
+        }
+        std::vector<Mat4> pose(model.bones.size(), renderer::identity());
+        for (cgltf_size j = 0; j < skin.joints_count; ++j) {
+            const auto number = std::size_t(skin_joint(skin.joints[j], int(j)));
+            if (!skin.joints[j] || number >= pose.size()) {
+                return false;
+            }
+            Mat4 world{}, inverse = renderer::identity();
+            cgltf_node_transform_world(skin.joints[j], world.data());
+            if (skin.inverse_bind_matrices
+                && !cgltf_accessor_read_float(skin.inverse_bind_matrices, j, inverse.data(), 16)) {
+                return false;
+            }
+            pose[number] = renderer::multiply(world, inverse);
+        }
+        poses.push_back(std::move(pose));
+    }
+    if (geometry) {
+        std::vector<std::uint32_t> vertices;
+        for (const auto& primitive : model.primitives) {
+            for (std::uint32_t i = 0; i < primitive.index_count; ++i) {
+                vertices.push_back(geometry->indices[primitive.first_index + i]);
+            }
+        }
+        std::sort(vertices.begin(), vertices.end());
+        vertices.erase(std::unique(vertices.begin(), vertices.end()), vertices.end());
+        Vec3 low{3.0e38f, 3.0e38f, 3.0e38f}, high{-3.0e38f, -3.0e38f, -3.0e38f};
+        for (const auto& pose : poses) {
+            for (const auto index : vertices) {
+                const auto& vertex = geometry->vertices[index];
+                const Vec3 position{vertex.position[0], vertex.position[1], vertex.position[2]};
+                Vec3 skinned{};
+                float weight = 0;
+                for (int j = 0; j < 4; ++j) {
+                    if (vertex.weights[j] <= 0 || vertex.joints[j] >= pose.size()) {
+                        continue;
+                    }
+                    const auto point = renderer::transform_point(pose[vertex.joints[j]], position);
+                    for (int axis = 0; axis < 3; ++axis) {
+                        skinned[axis] += point[axis] * vertex.weights[j];
+                    }
+                    weight += vertex.weights[j];
+                }
+                grow(low, high, weight > 0 ? skinned : position);
+            }
+        }
+        if (!vertices.empty()) {
+            model.preview_min = low;
+            model.preview_max = high;
+            model.preview_bounds = true;
+        }
+    }
+    model.preview_poses = std::move(poses);
+    return true;
 }
 
 std::uint32_t add_box_model(LevelData& level) {
@@ -566,9 +911,17 @@ bool load_level(
     LevelData& out,
     std::string& error,
     const fs::path& edited,
-    const std::vector<fs::path>& mod_roots
+    const std::vector<fs::path>& mod_roots,
+    void (*prepare_geometry)(LevelData&)
 ) {
     const profiling::Zone trace("Load level assets");
+
+    // The pack's pictures read ahead for this level and not used are freed, whatever the outcome.
+    struct DropPictures {
+        ~DropPictures() { renderer::texture_pack::drop_level_pictures(); }
+    } drop_pictures;
+
+    read_pack_pictures_ahead(dir);
 
     out = LevelData{};
     out.dir = dir;
@@ -814,6 +1167,52 @@ bool load_level(
                     fades_known = fades_known && cls["billboard_fade"].is_number();
                 }
             }
+        }
+    }
+
+    // Moby classes the level imports from other levels (the editor's classes.tsv beside the
+    // edited placements, "class<TAB>level" lines; rac1/host/foreign_class.c runs them): each
+    // class's model as its own level's manifest has it.
+    if (!out.overrides.empty()) {
+        std::ifstream imported(out.overrides / "classes.tsv");
+        std::string line;
+        while (std::getline(imported, line)) {
+            int id = -1, from = -1;
+            if (line.empty() || line[0] == '#'
+                || std::sscanf(line.c_str(), "%d\t%d", &id, &from) != 2 || id < 0 || from < 0
+                || mobys.contains(id)) {
+                continue;
+            }
+            const fs::path other = dir.parent_path() / std::format("level_{:02}", from);
+            if (other.filename() == dir.filename()) {
+                continue;  // its own level's: the runtime leaves it out too (foreign_class.c)
+            }
+            json::Value other_manifest;
+            std::string other_error;
+            if (!json::parse_file(
+                    (other / "manifest.json").string(), other_manifest, other_error
+                )) {
+                log::warn("imported moby class {}: {}", id, other_error);
+                continue;
+            }
+            const json::Value& cls = other_manifest["classes"]["moby"][std::to_string(id)];
+            if (!cls["mesh"].is_string()) {
+                // A class with no data (a controller or trigger) has no model, and says so by its
+                // empty blob; any other is worth a warning.
+                std::error_code e;
+                const auto blob = out.overrides / "classes" / std::format("{}.bin", id);
+                if (fs::file_size(blob, e) != 0 || e) {
+                    log::warn("imported moby class {}: level {} has no model of it", id, from);
+                }
+                continue;
+            }
+            std::string model_error;
+            auto model = load_model(other / cls["mesh"].string(), out, model_error);
+            if (!model) {
+                log::warn("imported moby class {}: {}", id, model_error);
+                continue;
+            }
+            mobys[id] = {*model, static_cast<float>(cls["scale"].number(1.0)), false};
         }
     }
 
@@ -1189,8 +1588,8 @@ bool load_level(
         if (!edit.is_object()) {
             continue;
         }
-        // The old whole-material brightness bypass is retired. A legacy flag by
-        // itself must not silently turn an ordinary surface into an emitter.
+        // A preserve_authored_lighting flag by itself is ignored: it must not turn an ordinary
+        // surface into an emitter.
         const bool legacy_only =
             edit.members().size() == 1 && !edit["preserve_authored_lighting"].is_null();
         if (legacy_only) {
@@ -1254,6 +1653,13 @@ bool load_level(
         }
         material.emission_vertex_colour =
             edit["vertex_colour"].boolean(material.emission_vertex_colour);
+        if (const auto& average = edit["average_for_bake"]; !average.is_null()) {
+            if (average.type() != json::Value::Type::Bool) {
+                error = "average_for_bake requires a boolean in probe-emission.json";
+                return false;
+            }
+            material.average_emission_for_bake = average.boolean();
+        }
         material.diffuse_scale =
             static_cast<float>(edit["diffuse_scale"].number(material.diffuse_scale));
         if (!std::isfinite(material.diffuse_scale) || material.diffuse_scale < 0
@@ -1324,7 +1730,13 @@ bool load_level(
         out.pvs.grid.empty() ? "unavailable" : "loaded",
         out.pvs.grid.size()
     );
+    if (prepare_geometry) {
+        prepare_geometry(out);
+    }
+    prepare_chrome_geometry(out);
     prepare_material_overrides(out);
+    // The pack's HUD and effect pictures, read now behind the loading screen, not while playing.
+    renderer::texture_pack::preload();
     return true;
 }
 

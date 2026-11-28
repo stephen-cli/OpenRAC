@@ -5,8 +5,11 @@
 #include <cmath>
 #include <map>
 #include <tuple>
+#include <unordered_map>
 
+#include "enhanced/lighting/bake_math.h"
 #include "enhanced/lighting/environment_bake.h"
+#include "enhanced/lighting/environment_water_internal.h"
 
 namespace openrac::lighting {
 namespace {
@@ -35,6 +38,76 @@ std::optional<float> height(const GameplayTriangle& t, Float2 p) {
     return u * a[2] + v * b[2] + (1 - u - v) * c[2];
 }
 
+// XY buckets over collision triangles: a vertical line through p can only meet the triangles
+// listed under p's bucket. Candidates come in increasing index order, as a full scan visits them.
+class Columns {
+public:
+    explicit Columns(std::span<const GameplayTriangle> triangles) : m_triangles(triangles) {
+        for (unsigned i = 0; i < triangles.size(); ++i) {
+            const auto& v = triangles[i].vertices;
+            float low[2] = {v[0][0], v[0][1]}, high[2] = {v[0][0], v[0][1]};
+
+            for (const auto& p : v) {
+                for (unsigned axis = 0; axis < 2; ++axis) {
+                    low[axis] = std::min(low[axis], p[axis]);
+                    high[axis] = std::max(high[axis], p[axis]);
+                }
+            }
+
+            // height() accepts points a little outside the triangle (barycentric slack).
+            const float margin = .001f * std::max(high[0] - low[0], high[1] - low[1]) + .001f;
+            const int x0 = cell(low[0] - margin), x1 = cell(high[0] + margin);
+            const int y0 = cell(low[1] - margin), y1 = cell(high[1] + margin);
+
+            if (!std::isfinite(low[0] + low[1] + high[0] + high[1])
+                || std::int64_t{x1 - x0 + 1} * (y1 - y0 + 1) > 1024) {
+                m_wide.push_back(i);
+                continue;
+            }
+
+            for (int x = x0; x <= x1; ++x) {
+                for (int y = y0; y <= y1; ++y) {
+                    m_buckets[key(x, y)].push_back(i);
+                }
+            }
+        }
+    }
+
+    // Calls visit(triangle) for each candidate under p in index order until visit returns true.
+    template <class Visit>
+    void each(Float2 p, const Visit& visit) const {
+        static const std::vector<unsigned> kNone;
+        const auto found = m_buckets.find(key(cell(p[0]), cell(p[1])));
+        const auto& local = found == m_buckets.end() ? kNone : found->second;
+        auto a = local.begin();
+        auto b = m_wide.begin();
+
+        while (a != local.end() || b != m_wide.end()) {
+            const bool take_local = b == m_wide.end() || (a != local.end() && *a < *b);
+            const auto index = take_local ? *a++ : *b++;
+
+            if (visit(m_triangles[index])) {
+                return;
+            }
+        }
+    }
+
+private:
+    static constexpr float kCell = 8;
+
+    static int cell(float value) {
+        return static_cast<int>(std::floor(std::clamp(value / kCell, -1.e8f, 1.e8f)));
+    }
+
+    static std::uint64_t key(int x, int y) {
+        return (std::uint64_t{static_cast<std::uint32_t>(x)} << 32) | static_cast<std::uint32_t>(y);
+    }
+
+    std::span<const GameplayTriangle> m_triangles;
+    std::unordered_map<std::uint64_t, std::vector<unsigned>> m_buckets;
+    std::vector<unsigned> m_wide;  // too large to bucket; merged into every query
+};
+
 // Only nearly horizontal authored collision faces define a swimming plane; waterfalls do not.
 std::map<Key, Float3> water_cells(std::span<const GameplayTriangle> triangles, float spacing) {
     std::map<Key, Float3> result;
@@ -53,7 +126,13 @@ std::map<Key, Float3> water_cells(std::span<const GameplayTriangle> triangles, f
             }
         }
 
-        if (high[2] - low[2] > .25f) {
+        const auto normal = bake_detail::cross(
+            bake_detail::add(t.vertices[1], bake_detail::mul(t.vertices[0], -1)),
+            bake_detail::add(t.vertices[2], bake_detail::mul(t.vertices[0], -1))
+        );
+        // Test slope, not total height change: broad, gently sloping water triangles
+        // otherwise leave artificial dry gaps while equally sloped small triangles survive.
+        if (std::abs(normal[2]) < .98f * std::sqrt(bake_detail::dot(normal, normal))) {
             continue;
         }
 
@@ -96,12 +175,12 @@ unsigned bank(std::span<const EnvironmentFloorSample> floors, Float3 p) {
 }
 
 // Find the nearest actual basin floor; missing bathymetry must not invent underwater receivers.
-std::optional<float> bottom(std::span<const GameplayTriangle> triangles, Float3 p) {
+std::optional<float> bottom(const Columns& triangles, Float3 p) {
     std::optional<float> result;
 
-    for (const auto& t : triangles) {
+    triangles.each({p[0], p[1]}, [&](const GameplayTriangle& t) {
         if (t.swimmable) {
-            continue;
+            return false;
         }
 
         const auto z = height(t, {p[0], p[1]});
@@ -109,7 +188,9 @@ std::optional<float> bottom(std::span<const GameplayTriangle> triangles, Float3 
         if (z && *z < p[2] - .1f && *z >= p[2] - 64 && (!result || *z > *result)) {
             result = z;
         }
-    }
+
+        return false;
+    });
 
     return result;
 }
@@ -153,6 +234,7 @@ std::optional<EnvironmentFloorSample> swimming_sample(
     sample.sky = underwater ? 0.f : shore.sky;
     sample.lighting_labels = shore.lighting_labels;
     sample.water_height = water;
+    sample.water_bottom = point.bottom;
     // Both layers are swimming domains, not walking-floor fragments.
     sample.swimming_surface = true;
     sample.underwater = underwater;
@@ -180,6 +262,14 @@ void append_pool(
             }
 
             const auto p = sample->position;
+            if (underwater && std::any_of(floors.begin(), floors.end(), [&](const auto& floor) {
+                    const float dx = floor.position[0] - p[0], dy = floor.position[1] - p[1];
+                    return !floor.swimming_surface
+                           && dx * dx + dy * dy <= .25f * grid.spacing * grid.spacing
+                           && std::abs(floor.position[2] - p[2]) <= .5f * grid.spacing;
+                })) {
+                continue;  // Existing solid-floor samples already represent this basin bed.
+            }
             sample->region = region;
             cells[{int(std::round(p[0] / grid.spacing)), int(std::round(p[1] / grid.spacing))}] =
                 unsigned(floors.size());
@@ -232,36 +322,40 @@ void append_wading(
 
 // Keep sealed rooms beneath a basin dry even when their XY footprints overlap water collision.
 void classify_land(
-    std::span<const GameplayTriangle> triangles,
+    const Columns& triangles,
     std::vector<EnvironmentFloorSample>& floors,
     const std::function<bool(Float3)>& wet_mask,
     float minimum_swim_depth
 ) {
     // Classify existing reachable basin floors before attempting any spatial merges.
     for (auto& floor : floors) {
-        for (const auto& t : triangles) {
+        triangles.each({floor.position[0], floor.position[1]}, [&](const GameplayTriangle& t) {
             if (!t.swimmable) {
-                continue;
+                return false;
             }
 
             const auto z = height(t, {floor.position[0], floor.position[1]});
 
             if (z && floor.position[2] <= *z - minimum_swim_depth) {
                 if (wet_mask && !wet_mask({floor.position[0], floor.position[1], *z})) {
-                    continue;
+                    return false;
                 }
 
                 const auto basin = bottom(triangles, {floor.position[0], floor.position[1], *z});
 
                 if (!basin || floor.position[2] < *basin - .25f) {
-                    continue;  // A sealed room beneath a basin is not automatically underwater.
+                    return false;  // A sealed room beneath a basin is not automatically underwater.
                 }
 
                 floor.water_height = *z;
+                floor.water_bottom = basin;
                 floor.underwater = true;
-                break;
+                floor.height_bounds = Float2{floor.position[2] - .8f, *z - .25f};
+                return true;
             }
-        }
+
+            return false;
+        });
     }
 }
 
@@ -319,7 +413,8 @@ void append_swimming_surfaces(
     std::vector<EnvironmentFloorSample>& floors,
     float spacing,
     const std::function<bool(Float3)>& wet_mask,
-    float minimum_swim_depth
+    float minimum_swim_depth,
+    const BakeTraversalSettings& traversal
 ) {
     if (!std::isfinite(spacing) || spacing < .5f || spacing > 8) {
         throw std::runtime_error("invalid swimming surface sample spacing");
@@ -337,28 +432,34 @@ void append_swimming_surfaces(
     }
 
     const auto land = floors;
+    const auto original_count = unsigned(floors.size());
     unsigned region = 0;
 
     for (const auto& floor : floors) {
         region = std::max(region, floor.region + 1);
     }
 
-    classify_land(triangles, floors, wet_mask, minimum_swim_depth);
+    const Columns columns(triangles);
+    classify_land(columns, floors, wet_mask, minimum_swim_depth);
 
     while (!cells.empty()) {
         const auto pool = take_pool(cells, land);
 
-        if (pool.shore != ~0u) {
+        {
             std::vector<WaterPoint> points;
 
             // Reuse bathymetry across wading classification and both swimming layers.
             for (auto surface : pool.points) {
-                points.push_back({surface, bottom(triangles, surface)});
+                points.push_back({surface, bottom(columns, surface)});
             }
 
-            append_wading(points, land[pool.shore], region, minimum_swim_depth, floors);
-            append_pool(points, land[pool.shore], region, {spacing, minimum_swim_depth}, floors);
+            // Shore proximity supplies initial metadata only. Actual reachability below
+            // requires a clear entry and connected swimming routes from gameplay anchors.
+            const auto shore = pool.shore != ~0u ? land[pool.shore] : EnvironmentFloorSample{};
+            append_wading(points, shore, region, minimum_swim_depth, floors);
+            append_pool(points, shore, region, {spacing, minimum_swim_depth}, floors);
         }
     }
+    bake_detail::connect_reachable_water(triangles, floors, original_count, spacing, traversal);
 }
 }  // namespace openrac::lighting

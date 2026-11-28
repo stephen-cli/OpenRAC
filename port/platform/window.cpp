@@ -235,7 +235,7 @@ std::vector<DisplayInfo> displays() {
     return list;
 }
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(OPENRAC_IOS)
 void macos_set_app_name(const char* name);  // macos_app.mm
 #else
 void install_app_menus(bool) {}
@@ -249,7 +249,7 @@ void set_app_metadata(const char* name, const char* id) {
     if (name != nullptr) {
         SDL_SetHint(SDL_HINT_APP_NAME, name);
     }
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(OPENRAC_IOS)
     // Outside its bundle the menu bar would show the program file's name (openrac-rac1-pal).
     macos_set_app_name("OpenRAC");
 #endif
@@ -259,6 +259,9 @@ Platform::Platform(unsigned subsystems) {
     SDL_InitFlags flags = 0;
     if ((subsystems & kVideo) != 0) {
         flags |= SDL_INIT_VIDEO;
+#if defined(OPENRAC_IOS)
+        SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
 #if defined(__linux__) || defined(__FreeBSD__)
         // On Wayland, allow tearing / immediate presentation when vsync is disabled.
         SDL_SetHint("SDL_VIDEO_WAYLAND_ALLOW_TEARING", "1");
@@ -273,7 +276,10 @@ Platform::Platform(unsigned subsystems) {
         // ...and the controller still plays it. The keyboard counts only while the window has the
         // focus (Input::update), so typing elsewhere never moves Ratchet.
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-#if !defined(__ANDROID__)
+#if defined(OPENRAC_IOS)
+        // UIKit's GameController backend handles paired controllers without scanning Bluetooth.
+        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+#elif !defined(__ANDROID__)
         // A Steam Controller (2015 or 2026) is read by SDL's own driver, so it plays a game started
         // outside Steam as a gamepad. An SDL_JOYSTICK_HIDAPI_STEAM=0 in the environment still wins.
         SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
@@ -282,6 +288,12 @@ Platform::Platform(unsigned subsystems) {
     if ((subsystems & kAudio) != 0) {
         flags |= SDL_INIT_AUDIO;
     }
+    // The captured mouse as the hardware moves it (docs/port/KEYBOARD_MOUSE.md): the device's own
+    // counts, with no pointer acceleration or speed of the system's on them (Windows' raw input,
+    // X11's raw XInput2 values, Wayland's unaccelerated motion). These are SDL's defaults, said
+    // here so that they stay; an SDL_MOUSE_RELATIVE_* in the environment still wins.
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SPEED_SCALE, "1");
     m_ok = SDL_Init(flags);
     if (!m_ok) {
         m_error = std::format("SDL could not start: {}", SDL_GetError());
@@ -324,12 +336,14 @@ GlApi default_gl_api() {
         if (value == "desktop" || value == "gl") {
             return GlApi::Desktop;
         }
-        if (value == "vulkan" || value == "vk") {
+        if (value == "vulkan" || value == "vk" || value == "metal") {
             return GlApi::Vulkan;
         }
-        log::warn("OPENRAC_GL_API={}: not es, desktop or vulkan, ignored", value);
+        log::warn("OPENRAC_GL_API={}: not es, desktop, vulkan or metal, ignored", value);
     }
-#if defined(__ANDROID__)
+#if defined(OPENRAC_IOS)
+    return GlApi::Vulkan;
+#elif defined(__ANDROID__)
     return GlApi::ES;
 #else
     return GlApi::Desktop;
@@ -367,7 +381,12 @@ bool load_vulkan_library(bool validation, std::string& error) {
     if (!library.empty()) {
         paths.emplace_back(library);
     }
+#if defined(OPENRAC_IOS)
+    const std::string bundled =
+        (program_folder() / "Frameworks/MoltenVK.framework/MoltenVK").string();
+#else
     const std::string bundled = (program_folder().parent_path() / "Frameworks" / "libMoltenVK.dylib").string();
+#endif
     std::vector<std::string> folders;
     const std::string sdk = env::system_variable("VULKAN_SDK").value_or("");
     if (!sdk.empty()) {
@@ -461,8 +480,18 @@ bool Window::open_vulkan(const WindowConfig& config, std::string& error) {
          g_vulkan_setup.physical_device,
          g_vulkan_setup.create_device};
     vk.validation = config.debug_context;
+    vk.compile_missing_shaders = config.compile_missing_shaders;
     vk.gpu_breadcrumbs = config.gpu_breadcrumbs;
+#if defined(__APPLE__)
+    // Keep live HDR switching available when MoltenVK exposes HDR colour spaces.
+    vk.hdr_colour_spaces = true;
+#else
     vk.hdr_colour_spaces = config.hdr;
+#endif
+    // A mod-provided device factory keeps the thread it was registered on.
+    if (vk.setup.create_device == nullptr && vk.setup.physical_device == nullptr) {
+        vk.device_work = config.vulkan_device_work;
+    }
     if (!vkgl::open(vk, error)) {
         SDL_DestroyWindow(m_window);
         m_window = nullptr;
@@ -505,6 +534,10 @@ std::unique_ptr<Window> Window::open(const WindowConfig& asked, std::string& err
         if (window->open_vulkan(config, why)) {
             return window;
         }
+#if defined(OPENRAC_IOS)
+        error = std::format("Metal renderer could not start: {}", why);
+        return nullptr;
+#endif
         // Drawn with OpenGL instead: the game still runs.
         log::warn("graphics: Vulkan could not be used ({}); drawing with OpenGL", why);
 #if defined(__ANDROID__)
@@ -690,11 +723,7 @@ std::unique_ptr<Window> Window::open(const WindowConfig& asked, std::string& err
 }
 
 Window::~Window() {
-#if defined(OPENRAC_VULKAN)
-    if (m_vulkan) {
-        vkgl::close();
-    }
-#endif
+    close_vulkan();
     if (m_context != nullptr) {
         SDL_GL_DestroyContext(m_context);
     }
@@ -704,6 +733,15 @@ Window::~Window() {
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan_library) {
         SDL_Vulkan_UnloadLibrary();
+    }
+#endif
+}
+
+void Window::close_vulkan() {
+#if defined(OPENRAC_VULKAN)
+    if (m_vulkan) {
+        vkgl::close();
+        m_vulkan = false;
     }
 #endif
 }
@@ -915,7 +953,29 @@ bool Window::focused() const {
 void Window::swap() {
 #if defined(OPENRAC_VULKAN)
     if (m_vulkan) {
-        vkgl::present();
+        int width = 0, height = 0;
+        drawable_size(width, height);
+        swap(width, height);
+        return;
+    }
+#endif
+    swap(0, 0);
+}
+
+#if defined(OPENRAC_IOS)
+void Window::restore_vulkan_surface() {
+#if defined(OPENRAC_VULKAN)
+    if (m_vulkan) {
+        vkgl::restore_window_surface();
+    }
+#endif
+}
+#endif
+
+void Window::swap([[maybe_unused]] int drawable_width, [[maybe_unused]] int drawable_height) {
+#if defined(OPENRAC_VULKAN)
+    if (m_vulkan) {
+        vkgl::present(drawable_width, drawable_height);
         return;
     }
 #endif

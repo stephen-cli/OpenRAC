@@ -48,6 +48,10 @@ pub struct VersionView {
     /// The game is built, but from an older OpenRAC than the checkout holds now (an update): it is
     /// built again from scratch before it is played (port_build.rs).
     pub port_outdated: bool,
+    /// Set when the game is outdated and only a build from scratch is safe, with why (a sentence
+    /// that goes after "from scratch because it ..."-style text). The Incremental builds setting
+    /// still cleans then. None: an incremental build can catch up (port_build::Why).
+    pub port_clean_reason: Option<String>,
 }
 
 /// A version's status, with the disc image a set-up from the player's disc
@@ -56,7 +60,7 @@ fn version_status(root: &std::path::Path, config: &Config, version: &Version) ->
     let mut status = status::version_status(root, version);
     if status.disc.state != DiscState::Found {
         let installed =
-            config.install_dir.as_deref().and_then(|dir| install::disc_image(dir, &version.game, &version.serial));
+            config.install_dir.as_deref().and_then(|dir| install::disc_image(dir, &version.game, &version.key));
         if let Some(image) = installed {
             status.disc.state = DiscState::Found;
             status.disc.message = "set up from your disc".into();
@@ -115,8 +119,11 @@ pub fn library(config: &Config) -> Result<Library, String> {
                     };
                     let actions = views(file.as_ref().and_then(|f| f.versions.get(&version.key)), &ctx);
                     let built = actions.iter().any(|a| a.id == "play" && a.this_platform && a.done);
-                    let port_outdated = built && port_build::outdated(&root, &version.key.replace('/', "-"));
-                    VersionView { version, status, actions, port_outdated }
+                    let why =
+                        if built { port_build::outdated_why(&root, &version.key.replace('/', "-")) } else { None };
+                    let port_outdated = why.is_some();
+                    let port_clean_reason = why.and_then(|w| w.clean_reason()).map(str::to_string);
+                    VersionView { version, status, actions, port_outdated, port_clean_reason }
                 })
                 .collect(),
             id: game.id,
@@ -175,6 +182,24 @@ pub fn is_play(config: &Config, scope: &Scope, id: &str) -> bool {
     actions::load(root).is_ok_and(|file| file.is_play(scope, id))
 }
 
+/// The command that plays version `key` from a shortcut (`--play`): its first `play` action, as
+/// the Play button runs it, so the data folder, the mods and the build checks are the same. An
+/// action that asks the player to confirm is not started unseen; the error says why it can't
+/// start now, and the launcher shows the game instead.
+pub fn direct_play(config: &Config, key: &str) -> Result<Plan, String> {
+    let root = config.root()?;
+    let file = actions::load(root)?;
+    let action = file
+        .versions
+        .get(key)
+        .and_then(|list| list.iter().find(|a| a.kind == actions::Kind::Play && !a.developer))
+        .ok_or_else(|| format!("{key} has no Play"))?;
+    if action.warning.is_some() {
+        return Err(format!("{}: it needs your confirmation first", action.label));
+    }
+    plan(config, &Scope::Version(key.to_string()), &action.id, &Inputs::default())
+}
+
 /// A version's action's arguments and artifact, filled in, whether or not it can run now
 /// (Action::filled).
 pub fn filled(config: &Config, key: &str, id: &str) -> Result<(Vec<String>, Option<std::path::PathBuf>), String> {
@@ -210,20 +235,21 @@ mod tests {
         let mut keys: Vec<String> = file
             .versions
             .iter()
-            .filter(|(_, list)| list.iter().any(|a| a.id == "editor-extract" && a.state != actions::State::Planned))
+            .filter(|(_, list)| list.iter().any(|a| a.id == "assets-export" && a.state != actions::State::Planned))
             .map(|(key, _)| key.clone())
             .collect();
         keys.sort();
         keys
     }
 
-    /// The Mods page offers "Make your own" for a version whose actions have the editor's
-    /// (Mods.svelte, editable): each version the editor reads has them, on this platform.
+    /// The Mods page offers "Make your own" for a version whose levels are read for packs
+    /// (Mods.svelte, editable): its models and textures export, and adding a pack, on this
+    /// platform. The level editor's own steps come with OpenRAC Editor (editor_install.rs).
     fn assert_the_editor_is_offered(library: &Library, editable: &[String]) {
         for key in editable {
             let version = library.games.iter().flat_map(|g| &g.versions).find(|v| &v.version.key == key);
             let version = version.unwrap_or_else(|| panic!("{key} is not in the library"));
-            for id in ["editor-extract", "editor-open"] {
+            for id in ["assets-export", "overrides-add"] {
                 let action = version.actions.iter().find(|a| a.id == id && a.this_platform);
                 let action = action.unwrap_or_else(|| panic!("{key} has no {id}"));
                 assert_ne!(action.state, actions::State::Planned, "{key} {id}");
@@ -232,19 +258,41 @@ mod tests {
     }
 
     #[test]
+    fn a_shortcut_plays_only_what_play_could() {
+        let config = Config { root: Some(checkout()), ..Config::default() };
+        // Nothing is built or installed here: the same refusal the Play button gives.
+        let err = direct_play(&config, "rac1/pal").unwrap_err();
+        assert!(err.starts_with("Play:"), "{err}");
+        assert!(direct_play(&config, "nope/pal").unwrap_err().contains("no Play"));
+        assert!(direct_play(&Config::default(), "rac1/pal").is_err(), "no OpenRAC folder");
+    }
+
+    #[test]
     fn every_game_the_editor_reads_offers_it() {
         let editable = editable_versions();
-        for key in ["rac1/pal", "rac1/ntsc", "rac2/ntsc", "rac3/ntsc", "rac4/ntsc"] {
+        for key in [
+            "rac1/pal",
+            "rac1/ntsc",
+            "rac1/pal1",
+            "rac1/jp",
+            "rac2/ntsc",
+            "rac2/pal",
+            "rac2/ntsc2",
+            "rac3/ntsc",
+            "rac3/pal",
+            "rac4/ntsc",
+            "rac4/pal",
+        ] {
             assert!(editable.iter().any(|k| k == key), "{key} is not editable: {editable:?}");
         }
         let config = Config { root: Some(checkout()), ..Config::default() };
         assert_the_editor_is_offered(&library(&config).unwrap(), &editable);
     }
 
-    /// `tauri dev` with a copy left in its resources by an installer built there (0fdd5b1e's, from
-    /// before the mods came into the copy): the launcher worked on that copy, whose actions had no
-    /// level editor, and the Mods page showed none for any game. A contributor's launcher leaves
-    /// it for the checkout it runs from (detect::leave_copy).
+    /// `tauri dev` with a stale copy left in its resources by an installer built there (one whose
+    /// actions have no level editor): working on that copy, the Mods page would show no editor for
+    /// any game. A contributor's launcher leaves it for the checkout it runs from
+    /// (detect::leave_copy).
     #[test]
     fn a_contributors_launcher_leaves_an_old_copy_for_its_checkout() {
         let tmp = tempfile::tempdir().unwrap();
@@ -303,18 +351,58 @@ mod tests {
     /// its enhanced lighting bake.
     #[test]
     fn going_commandos_play_and_bake_are_for_players() {
+        // The same for each of its three discs: one path whatever the disc.
+        for key in ["rac2/ntsc", "rac2/pal", "rac2/ntsc2"] {
+            going_commandos_play_and_bake(key);
+        }
+    }
+
+    fn going_commandos_play_and_bake(key: &str) {
         let action_of = |config: &Config, id: &str| {
             let library = library(config).unwrap();
-            let version = library.games.iter().flat_map(|g| &g.versions).find(|v| v.version.key == "rac2/ntsc");
-            version.expect("rac2/ntsc").actions.iter().find(|a| a.id == id).cloned()
+            let version = library.games.iter().flat_map(|g| &g.versions).find(|v| v.version.key == key);
+            version.expect(key).actions.iter().find(|a| a.id == id).cloned()
         };
         let player = Config { root: Some(checkout()), ..Config::default() };
         let bake = action_of(&player, "probe-bake").expect("a player has Going Commando's bake");
         assert!(!bake.developer);
         let play = action_of(&player, "play").expect("a player has Going Commando's Play");
         assert!(!play.developer);
+        // A checkout builds the game from the player's disc without Developer tools, as
+        // Ratchet & Clank's: else Play waited for a program nothing offered to make.
+        for id in ["port-build", "port-rebuild"] {
+            let build = action_of(&player, id).unwrap_or_else(|| panic!("a player has Going Commando's {id}"));
+            assert!(!build.developer, "{id}");
+        }
         assert_ne!(play.state, actions::State::Planned);
-        assert!(play.warning.as_deref().is_some_and(|w| w.contains("early and unstable")), "{:?}", play.warning);
+        // Playable from every disc: no warning to accept before Play.
+        assert!(play.warning.is_none(), "{:?}", play.warning);
+    }
+
+    /// Up Your Arsenal's discs are played the way Going Commando's are (set up, build, levels,
+    /// Play), with a warning first: the port is early. NTSC-U's program is PAL's carried to its
+    /// addresses (port/game/rac3-ntsc).
+    #[test]
+    fn up_your_arsenals_discs_play_their_levels() {
+        let player = Config { root: Some(checkout()), ..Config::default() };
+        let library = library(&player).unwrap();
+        let version = |key: &str| library.games.iter().flat_map(|g| &g.versions).find(|v| v.version.key == key);
+        for key in ["rac3/pal", "rac3/ntsc"] {
+            let disc = version(key).unwrap_or_else(|| panic!("{key}"));
+            let action = |id: &str| disc.actions.iter().find(|a| a.id == id).cloned();
+            let play = action("play").unwrap_or_else(|| panic!("a player has {key}'s Play"));
+            assert!(!play.developer, "{key}");
+            assert_ne!(play.state, actions::State::Planned, "{key}");
+            let warning = play.warning.unwrap_or_else(|| panic!("{key}'s Play says what does not work yet"));
+            assert!(warning.contains("early port") && !warning.contains("no level loads"), "{key}: {warning}");
+            for id in ["port-build", "port-rebuild", "port-levels"] {
+                let a = action(id).unwrap_or_else(|| panic!("a player has {key}'s {id}"));
+                assert!(!a.developer, "{key} {id}");
+            }
+            for a in &disc.actions {
+                assert!(!a.description.to_lowercase().contains("not playable"), "{key} {}", a.id);
+            }
+        }
     }
 
     #[test]
@@ -377,28 +465,66 @@ mod tests {
         dir
     }
 
+    /// OpenRAC Editor brings the level editor's actions (editor_install.rs): none without it,
+    /// and once it is downloaded its preview opens the level asked for, in the checkout's assets/.
     #[test]
-    fn previews_a_level_once_the_godot_project_exists() {
+    fn previews_a_level_once_the_editor_and_the_project_exist() {
         let dir = scratch_checkout();
-        let config =
-            Config { root: Some(dir.path().to_path_buf()), godot: Some("/usr/bin/godot".into()), ..Config::default() };
+        let home = tempfile::tempdir().unwrap();
+        let config = Config { root: Some(dir.path().to_path_buf()), ..Config::default() };
         let scope = Scope::Version("rac1/pal".into());
-        // Listed without a level, an action stands for level 00.
-        let err = plan(&config, &scope, "editor-preview", &Inputs::default()).unwrap_err();
-        assert!(err.contains("assets/levels/rac1/pal/level_00/project.godot"), "{err}");
+        crate::saves::with_data_home(home.path(), || {
+            let err = plan(&config, &scope, "editor-preview", &Inputs::default()).unwrap_err();
+            assert!(err.contains("editor-preview"), "no editor, no editor actions: {err}");
 
-        // Each level is a project of its own: the one asked for is the one opened.
-        let project = dir.path().join("assets/levels/rac1/pal/level_07");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(project.join("project.godot"), "").unwrap();
-        assert!(
-            plan(&config, &scope, "editor-preview", &Inputs { level: Some(3), ..Inputs::default() }).is_err(),
-            "level 03 was not extracted"
-        );
-        let plan = plan(&config, &scope, "editor-preview", &Inputs { level: Some(7), ..Inputs::default() }).unwrap();
-        assert_eq!(plan.program, PathBuf::from("/usr/bin/godot"));
-        assert!(plan.detached);
-        assert_eq!(plan.args, ["--path", "assets/levels/rac1/pal/level_07", "res://levels/level_07/level_07.tscn"]);
+            let editor = home.path().join("editor");
+            std::fs::create_dir_all(editor.join("openrac")).unwrap();
+            let program = if cfg!(windows) { "ed.exe" } else { "ed" };
+            std::fs::write(editor.join(program), "").unwrap();
+            std::fs::write(
+                editor.join("openrac/editor.json"),
+                format!(
+                    r#"{{"format": 1, "version": "dev", "extractorApi": 1,
+                    "program": {{"linux": "{program}", "windows": "{program}", "macos": "{program}"}},
+                    "versions": {{"rac1/pal": [{{"id": "editor-preview", "label": "Preview", "kind": "edit",
+                        "area": "editor", "state": "connected", "program": "{{editor}}",
+                        "args": ["--path", "{{projects}}/level_{{level}}", "res://levels/level_{{level}}/level_{{level}}.tscn"],
+                        "cwd": ".", "requires": ["editor", "artifact"], "artifact": "{{projects}}/level_{{level}}/project.godot",
+                        "detached": true}}]}}}}"#
+                ),
+            )
+            .unwrap();
+            std::fs::create_dir_all(dir.path().join("extractor")).unwrap();
+            std::fs::write(dir.path().join("extractor/extractor_api.json"), r#"{"version": 1}"#).unwrap();
+            // Listed without a level, an action stands for level 00.
+            let err = plan(&config, &scope, "editor-preview", &Inputs::default()).unwrap_err();
+            assert!(err.contains("level_00/project.godot"), "{err}");
+
+            // Each level is a project of its own: the one asked for is the one opened.
+            let project = dir.path().join("assets/levels/rac1/pal/level_07");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join("project.godot"), "").unwrap();
+            assert!(
+                plan(&config, &scope, "editor-preview", &Inputs { level: Some(3), ..Inputs::default() }).is_err(),
+                "level 03 was not extracted"
+            );
+            let plan =
+                plan(&config, &scope, "editor-preview", &Inputs { level: Some(7), ..Inputs::default() }).unwrap();
+            assert_eq!(plan.program, editor.join(program));
+            assert!(plan.detached);
+            // Compared as paths: on Windows the placeholders add '/' after the root's backslashes.
+            assert_eq!(std::path::Path::new(&plan.args[1]), project);
+            assert!(plan.env.iter().any(|(k, _)| k == "OPENRAC_ROOT"), "the editor's tools find OpenRAC by it");
+
+            // An editor written for another extractor is not run.
+            std::fs::write(dir.path().join("extractor/extractor_api.json"), r#"{"version": 2}"#).unwrap();
+            let err = plan_err(&config, &scope);
+            assert!(err.contains("update the editor"), "{err}");
+        });
+    }
+
+    fn plan_err(config: &Config, scope: &Scope) -> String {
+        plan(config, scope, "editor-preview", &Inputs { level: Some(7), ..Inputs::default() }).unwrap_err()
     }
 
     /// The port is one program for Windows, Linux and macOS: building it and playing it are

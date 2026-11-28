@@ -36,6 +36,7 @@ Color* field(Colors& c, std::string_view name) {
     };
 
     static constexpr Named kNames[] = {
+        {"ink", &Colors::ink},
         {"ink-deep", &Colors::ink_deep},
         {"panel", &Colors::panel},
         {"panel-hi", &Colors::panel_hi},
@@ -54,6 +55,9 @@ Color* field(Colors& c, std::string_view name) {
         {"line", &Colors::line},
         {"line-strong", &Colors::line_strong},
         {"err", &Colors::err},
+        {"control-card", &Colors::control_card},
+        {"control-card-hi", &Colors::control_card_hi},
+        {"glow", &Colors::glow},
     };
     const auto* found = std::find_if(std::begin(kNames), std::end(kNames), [&](const Named& n) {
         return n.name == name;

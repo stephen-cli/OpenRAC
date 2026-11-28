@@ -5,9 +5,9 @@
 #include <array>
 
 #include "enhanced/renderer/gtao_depth.h"
-#include "renderer/ambient_occlusion.h"
-#include "renderer/framebuffer.h"
-#include "renderer/shader.h"
+#include "renderer/effects/ambient_occlusion.h"
+#include "renderer/gl/framebuffer.h"
+#include "renderer/gl/shader.h"
 
 namespace openrac::renderer {
 struct FrameInput;
@@ -20,15 +20,13 @@ struct RenderTarget;
 // colour composite is retained only for legacy prelit paths. evaluate_only
 // exposes the raw horizon/guide texture for fused early-lighting denoising.
 //
-// The renderer's ambient occlusion hook (renderer/ambient_occlusion.h): a program registers one
+// The renderer's ambient occlusion hook (renderer/effects/ambient_occlusion.h): a program registers one
 // with Renderer::set_ambient_occlusion, and the tests also run it alone.
 class Gtao final : public AmbientOcclusion {
 public:
     // The single-sample horizon path can freeze bindings before its depth producer records.
     bool prepares_surface_chain() const override { return true; }
 
-    // Declares depth/normal attachment writes and their copy, resolve or sampling consumers on Vulkan.
-    void render_prepass(unsigned framebuffer, const std::function<void()>& record) override;
     bool render(
         const FrameInput& input,
         const RenderTarget& target,
@@ -48,7 +46,7 @@ public:
 
 private:
     // Four scale/normal specialisations and one uniform-controlled reference.
-    static constexpr unsigned kProgramVariants = 5;
+    static constexpr unsigned kProgramVariants = 4;
     // Records the depth hierarchy, horizon evaluation and optional filter with either synchronisation path.
     bool execute(const FrameInput&, const RenderTarget&, bool apply_to_colour, bool evaluate_only);
     // Declares Vulkan consumers after the copied or resolved depth producer.
@@ -74,7 +72,7 @@ private:
     // Each quality has separate Hi-Z/no-Hi-Z variants; both share the full-resolution filter.
     std::array<Shader, kProgramVariants * 2> m_evaluate, m_evaluate_performance;
     std::array<Shader, kProgramVariants> m_composite;
-    unsigned m_program = 4;
+    unsigned m_program = 0;
     unsigned m_vao = 0;
     bool m_failed = false;
 };

@@ -13,15 +13,21 @@ inputs:
   components:
     description: Rust components, comma separated
     default: ""
+outputs:
+  cache-hit:
+    description: '"true" when the Cargo cache had this exact key'
+    value: ${{ steps.cargo.outputs.cache-hit }}
 runs:
   using: composite
   steps:
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
-        node-version: "22"
+        node-version: "26.13.0"
         package-manager-cache: false
     - shell: bash
-      run: corepack enable
+      # Node 25 and later do not bundle Corepack. --force: the Windows image ships its own
+      # yarn shim in npm's prefix, which corepack's would otherwise refuse to replace.
+      run: npm install --global --force corepack@0.36.0 && corepack enable
     - uses: ./.github/actions/yarn-cache
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
       with:
@@ -32,10 +38,11 @@ runs:
     # build compiles anyway), kept small enough that the repository's cache holds every system's.
     # Saved only by a job that succeeded: one that failed before Cargo ran kept an empty target/
     # under the key, which every later run then restored and built every dependency again.
-    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+    - id: cargo
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         workspaces: launcher -> target
         shared-key: ${{ inputs.cache-key }}
         cache-on-failure: false
-        # PR-private snapshots cannot warm other branches and evict the shared caches.
-        save-if: ${{ github.event_name != 'pull_request' }}
+        # PR- and merge-queue-private snapshots cannot warm other branches and evict the shared caches.
+        save-if: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}

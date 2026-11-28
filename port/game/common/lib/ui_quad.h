@@ -3,7 +3,7 @@
 
 /*
  * The 2D layer's quads drawn natively, what every game's wrapped draw routines share (rac1/host/
- * ui2d.c, rac2-ntsc/host/ui2d.c): a quad goes to the window as a record (openrac_game_ui_quad) with
+ * ui2d.c, rac2/host/ui2d.c): a quad goes to the window as a record (openrac_game_ui_quad) with
  * the corners and texel coordinates its packet would have held, and the display list gets a marker
  * in its place, so the window draws it where it came.
  */
@@ -34,6 +34,14 @@ static inline int openrac_ui_send(const openrac_game_ui_rect* q, gaddr cursor) {
     GREF(uint64_t, at + 40) = 0x7Full;
     GREF(gaddr, cursor) = at + 48;
     return 1;
+}
+
+/* The quad to the window through the frame recorder (openrac/frame.h), placed where the display list
+ * whose cursor is the word at `cursor` has got to: nothing is written into the list. False when the
+ * 2D layer is replayed, and the caller sends the game's own packet. */
+static inline int openrac_ui_record(const openrac_game_ui_rect* q, gaddr cursor) {
+    openrac_frame_anchor_at(cursor);
+    return openrac_frame_ui_quad(q);
 }
 
 /* An axis-aligned quad, (x0, y0) to (x1, y1) on the screen (12.4, offset as the game sends them)

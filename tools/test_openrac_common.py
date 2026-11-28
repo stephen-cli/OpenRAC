@@ -12,7 +12,7 @@ fcheck_gate.fcheck_commit); once their callers have moved and a copy is gone, it
 goes with it, as the copies in tools/, port/tools, the probe tools and the editor's disc reader
 already went (hostgen's readers keep their characterisation in
 port/tools/hostgen/test_tables.py; the editor's reader, now on iso9660, keeps its stricter
-checks' tests in editor/test_disc.py).
+checks' tests in extractor/test_disc.py).
 """
 import contextlib
 import hashlib
@@ -28,7 +28,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from openrac_common import digest, files, games, iso9660, paths, proc, tables
+from openrac_common import background, digest, files, games, iso9660, paths, proc, tables
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -206,7 +206,7 @@ class PathsTests(TempDir):
 # the editor imports nothing of tools/ but the package, and its port.py keeps its name beside
 # tools/port.py because a script's own folder comes before tools/ on the path
 # (test_the_editor_runs_from_the_launchers_bundled_copy).
-BOOTSTRAPPED = ("port/tools", "port/enhanced/tools/baker", "editor")
+BOOTSTRAPPED = ("port/tools", "port/enhanced/tools/baker", "extractor")
 NAMES_CHECKED = ("port/tools", "port/enhanced/tools/baker")
 
 
@@ -246,16 +246,16 @@ class BootstrapTests(TempDir):
         self.assertEqual(self.run_script(top), [top / paths.PACKAGE_DIR, top])
 
     def test_the_editor_runs_from_the_launchers_bundled_copy(self):
-        # The copy carries editor/ beside tools/ (openrac_common and port.py among them) and
+        # The copy carries extractor/ beside tools/ (openrac_common and port.py among them) and
         # games/*/game.json, without CONTRIBUTING.md (tools/bundle_standalone.py). Every module of the
         # editor imports there, takes the package from the copy, and its own port.py comes first.
         top = self.layout("bundle", paths.STANDALONE_MARKER).resolve()
-        shutil.copytree(ROOT / "editor", top / "editor", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / "extractor", top / "extractor", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy(ROOT / "tools/port.py", top / "tools/port.py")
         for manifest in (ROOT / "games").glob("*/game.json"):
             (top / "games" / manifest.parent.name).mkdir()
             shutil.copy(manifest, top / "games" / manifest.parent.name / "game.json")
-        script = top / "editor/probe.py"
+        script = top / "extractor/probe.py"
         script.write_text(
             "import importlib\nfrom pathlib import Path\n"
             "here = Path(__file__).parent\n"
@@ -267,7 +267,7 @@ class BootstrapTests(TempDir):
         done = subprocess.run([sys.executable, "-E", str(script)], cwd=self.dir, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.splitlines(), [str(top / paths.PACKAGE_DIR), str(top / paths.PACKAGE_DIR),
-                                                    str(top / "editor/port.py"),
+                                                    str(top / "extractor/port.py"),
                                                     games.load("rac1")["versions"]["pal"]["boot"]["file"]])
 
     def test_the_documented_line_is_the_constant(self):
@@ -294,12 +294,12 @@ class BootstrapTests(TempDir):
 # ---- games ----
 
 RAC8 = {"id": "rac8", "title": "Eight", "versions": {
-    "pal": {"serial": "SCES_888.88", "region": "PAL", "dir": "games/rac8", "source": {"checkout": "~/x"},
+    "pal": {"serial": "SCES_888.88", "region": "PAL", "dir": "games/rac8", "source": {"name": "x"},
             "xmap": {"code": []}},
     "ntsc": {"serial": "SCUS_888.88", "region": "NTSC-U"},
 }}
 RAC9 = {"id": "rac9", "title": "Nine", "versions": {
-    "ntsc": {"serial": "SCUS_999.99", "region": "NTSC-U", "source": {"checkout": "~/y"}},
+    "ntsc": {"serial": "SCUS_999.99", "region": "NTSC-U", "source": {"name": "y"}},
 }}
 
 
@@ -328,31 +328,25 @@ class GamesTests(TempDir):
     def test_source_variable_is_the_game_and_version_in_capitals(self):
         self.assertEqual(games.source_variable("rac1", "pal"), "OPENRAC_SOURCE_RAC1_PAL")
 
-    def test_source_checkout_is_the_variable_else_game_json(self):
+    def test_source_checkout_is_the_variable_else_the_submodule(self):
         with mock.patch.dict(os.environ, {"OPENRAC_SOURCE_RAC8_PAL": "/elsewhere"}):
             self.assertEqual(games.source_checkout("rac8", "pal", self.dir), Path("/elsewhere"))
-        # Not set, and set but empty, both fall back to game.json's path with ~ expanded.
+        # Not set, and set but empty, both give the version's own directory (its submodule).
         with mock.patch.dict(os.environ, {"OPENRAC_SOURCE_RAC8_PAL": ""}):
-            self.assertEqual(games.source_checkout("rac8", "pal", self.dir), Path(os.path.expanduser("~/x")))
+            self.assertEqual(games.source_checkout("rac8", "pal", self.dir), self.dir / "games/rac8")
             del os.environ["OPENRAC_SOURCE_RAC8_PAL"]
-            self.assertEqual(games.source_checkout("rac8", "pal", self.dir), Path(os.path.expanduser("~/x")))
+            self.assertEqual(games.source_checkout("rac8", "pal", self.dir), self.dir / "games/rac8")
+        self.assertIsNone(games.source_checkout("rac8", "ntsc", self.dir))
 
-    def test_a_relative_checkout_is_written_from_the_top_of_openrac(self):
-        manifest = self.dir / "games/rac8/game.json"
+    def test_a_shared_source_is_the_checkout_of_the_version_it_shares(self):
+        manifest = self.dir / "games/rac9/game.json"
         data = json.loads(manifest.read_text())
-        data["versions"]["pal"]["source"]["checkout"] = "../rac8-decomp"
+        data["versions"]["pal"] = {"serial": "SCES_999.99", "source": {"shared": "ntsc"}}
         manifest.write_text(json.dumps(data))
-        with mock.patch.dict(os.environ, {"OPENRAC_SOURCE_RAC8_PAL": ""}):
-            self.assertEqual(games.source_checkout("rac8", "pal", self.dir), (self.dir / "../rac8-decomp").resolve())
-            # The same from any working directory: the path is the manifest's, not the caller's.
-            here = os.getcwd()
-            try:
-                os.chdir(self.dir / "games")
-                self.assertEqual(
-                    games.source_checkout("rac8", "pal", self.dir), (self.dir / "../rac8-decomp").resolve()
-                )
-            finally:
-                os.chdir(here)
+        with mock.patch.dict(os.environ, {"OPENRAC_SOURCE_RAC9_NTSC": "", "OPENRAC_SOURCE_RAC9_PAL": "/ignored"}):
+            self.assertEqual(games.source_checkout("rac9", "pal", self.dir), self.dir / "games/rac9/ntsc")
+        with mock.patch.dict(os.environ, {"OPENRAC_SOURCE_RAC9_NTSC": "/mine"}):
+            self.assertEqual(games.source_checkout("rac9", "pal", self.dir), Path("/mine"))
 
     def test_source_checkout_is_none_without_a_source_even_with_the_variable(self):
         with mock.patch.dict(os.environ, {"OPENRAC_SOURCE_RAC8_NTSC": "/elsewhere"}):
@@ -499,6 +493,44 @@ class FilesTests(TempDir):
         self.assertEqual((self.dir / "kept.bin").stat().st_mtime, 1_000_000_000)
         self.assertNotEqual((self.dir / "plain.bin").stat().st_mtime, 1_000_000_000)
 
+    def test_symlinks_when_asked_and_no_hard_link_can_be_made(self):
+        with mock.patch("os.link", side_effect=PermissionError("no hard links")):
+            dest = self.dir / "image.iso"
+            self.assertEqual(files.link_or_copy(self.source, dest, symlink=True), "symlinked")
+        self.assertTrue(dest.is_symlink())
+        self.assertTrue(os.path.isabs(os.readlink(dest)))
+        self.assertEqual(dest.read_bytes(), b"contents")
+
+    def test_link_identical_links_alike_files_and_keeps_the_rest(self):
+        a = self.write("a/mobys/m.glb", b"model")
+        b = self.write("b/mobys/m.glb", b"model")
+        c = self.write("c/mobys/m.glb", b"other")
+        self.assertEqual(files.link_identical([a, b, c]), 5)
+        self.assertEqual(b.stat().st_ino, a.stat().st_ino)
+        self.assertNotEqual(c.stat().st_ino, a.stat().st_ino)
+        self.assertEqual([p.name for p in self.dir.rglob(".*.link")], [])
+        self.assertEqual(files.link_identical([a, b, c]), 0, "already linked")
+
+    def test_link_identical_makes_relative_symlinks_without_hard_links(self):
+        a = self.write("a/textures/t.png", b"texture")
+        b = self.write("b/textures/t.png", b"texture")
+        with mock.patch("os.link", side_effect=PermissionError("no hard links")):
+            self.assertEqual(files.link_identical([a, b]), 7)
+        self.assertTrue(b.is_symlink())
+        self.assertEqual(os.readlink(b), os.path.join("..", "..", "a", "textures", "t.png"))
+        # The folder moves as a whole (a publish's rename): the link still finds its file.
+        os.rename(self.dir / "b", self.dir / "moved")
+        self.assertEqual((self.dir / "moved/textures/t.png").read_bytes(), b"texture")
+        self.assertEqual(files.link_identical([a, self.dir / "moved/textures/t.png"]), 0)
+
+    def test_link_identical_keeps_a_copy_when_no_link_can_be_made(self):
+        a = self.write("a.bin", b"same")
+        b = self.write("b.bin", b"same")
+        with mock.patch("os.link", side_effect=OSError("no")), mock.patch("os.symlink", side_effect=OSError("no")):
+            self.assertEqual(files.link_identical([a, b]), 0)
+        self.assertEqual(b.read_bytes(), b"same")
+        self.assertFalse(b.is_symlink())
+
     def test_copy_tree_keeps_what_keep_accepts(self):
         for name in ("a.py", "test_a.py", "sub/b.py", "sub/c.tsv", "sub/__pycache__/b.pyc", "deep/er/d.py"):
             self.write(f"src/{name}", name)
@@ -612,6 +644,26 @@ class ProcTests(TempDir):
     def test_run_captures_text_and_replaces_bad_bytes(self):
         done = proc.run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok \\xff')"], capture=True)
         self.assertEqual(done.stdout, "ok \ufffd")
+
+    def test_brief_lines_keep_errors_and_shorten_compiles(self):
+        lines = ["-- The C compiler identification is Clang", "[1/100] Building C object a.o",
+                 "[5/100] Building CXX object b.o", "[11/100] hostgen: rac2-pal", "x.c:1:2: error: e",
+                 "FAILED: a.o", "[100/100] Linking CXX executable openrac"]
+        self.assertEqual(list(proc.brief_lines(lines)), [
+            "[  1%] 1/100 steps", "[11/100] hostgen: rac2-pal", "x.c:1:2: error: e", "FAILED: a.o",
+            "[100/100] Linking CXX executable openrac", "(1 CMake status lines left out: OPENRAC_BUILD_LOG=brief)"])
+
+    def test_run_brief_only_under_the_variable(self):
+        code = "print('-- status'); print('[1/2] Building C object a.o'); print('kept'); raise SystemExit(2)"
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"OPENRAC_BUILD_LOG": "brief"}), contextlib.redirect_stdout(out):
+            done = proc.run([sys.executable, "-c", code], check=False, brief=True)
+        self.assertEqual(done.returncode, 2)
+        self.assertEqual(out.getvalue().splitlines(),
+                         ["[ 50%] 1/2 steps", "kept", "(1 CMake status lines left out: OPENRAC_BUILD_LOG=brief)"])
+        with mock.patch.dict(os.environ, {"OPENRAC_BUILD_LOG": "brief"}), contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaises(subprocess.CalledProcessError):
+            proc.run([sys.executable, "-c", code], brief=True)
 
     @unittest.skipUnless(shutil.which("git"), "git is not installed")
     def test_git_reads_and_fcheck_gates_commit(self):
@@ -728,6 +780,48 @@ class IsoTests(TempDir):
             with self.subTest(read=read.__name__), self.assertRaises(iso9660.IsoError) as caught:
                 read(cut)
             self.assertEqual(caught.exception.detail, "a directory record is cut short")
+
+
+class BackgroundTests(unittest.TestCase):
+    """lower_priority never touches the test runner's own priority: both system calls are mocked
+    (WinDLL created where ctypes has none), and each test names the platform it takes."""
+
+    def lower(self, platform: str, wanted: str | None) -> tuple[bool, mock.Mock, mock.Mock]:
+        env = {k: v for k, v in os.environ.items() if k != "OPENRAC_PRIORITY"}
+        if wanted is not None:
+            env["OPENRAC_PRIORITY"] = wanted
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(background.sys, "platform", platform), \
+                mock.patch("ctypes.WinDLL", create=True) as windll, \
+                mock.patch.object(background.os, "nice", create=True) as nice:
+            windll.return_value.SetPriorityClass.return_value = 1
+            return background.lower_priority(), windll, nice
+
+    def test_lowers_by_default(self):
+        lowered, windll, _ = self.lower("win32", None)
+        self.assertTrue(lowered)
+        set_class = windll.return_value.SetPriorityClass
+        set_class.assert_called_once()
+        self.assertEqual(set_class.call_args.args[1], 0x00004000)  # BELOW_NORMAL_PRIORITY_CLASS
+        lowered, _, nice = self.lower("linux", None)
+        self.assertTrue(lowered)
+        nice.assert_called_once_with(10)
+
+    def test_normal_keeps_the_priority(self):
+        for platform in ("win32", "linux"):
+            for wanted in ("normal", " Normal ", "NORMAL"):
+                with self.subTest(platform=platform, wanted=wanted):
+                    lowered, windll, nice = self.lower(platform, wanted)
+                    self.assertFalse(lowered)
+                    windll.assert_not_called()
+                    nice.assert_not_called()
+
+    def test_other_values_still_lower(self):
+        for wanted in ("", "high", "0", "below"):
+            with self.subTest(wanted=wanted):
+                lowered, _, nice = self.lower("linux", wanted)
+                self.assertTrue(lowered)
+                nice.assert_called_once_with(10)
 
 
 if __name__ == "__main__":

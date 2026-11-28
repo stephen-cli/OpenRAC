@@ -18,7 +18,7 @@ listed at the end.
 | **Does the port work with a PS5 DualSense today?** | **Yes.** SDL3 recognises it and the port reads it through SDL's generic gamepad API: buttons, both sticks, both triggers. |
 | **Does the game use analog button pressure?** | **Yes, but only for one thing**: the hero's **swimming turn rate**, scaled by the pressure of the **Cross** and **Square** buttons. |
 | **Could a DualSense supply that?** | **No** — a DualSense's face buttons are digital; only its triggers are analog, and the game never reads the triggers' pressure. |
-| **Does the game use rumble?** | **No — and neither does the retail game.** The retail executable links no motor command at all. There is no rumble to restore; any rumble would be a *new* feature. |
+| **Does the game use rumble?** | **No — and neither does the retail game.** The retail executable links no motor command at all. There is no rumble to restore; any rumble would be a *new* feature. Going Commando does rumble, and the port plays it (section 4); a mod can drive the motors itself (`openrac_api.set_motors`, interface 1.37). |
 | **Does SDL3 expose adaptive triggers?** | **No.** SDL's maintainer ruled it out in 2022; the request was re-opened in 2026 and is still open. The raw escape hatch, `SDL_SendGamepadEffect()`, exists since SDL 3.2.0. |
 | **Does SDL3 expose the light bar?** | **Yes** — `SDL_SetGamepadLED()`, since 3.2.0. |
 | **Does SDL3 expose the gyroscope?** | **Yes** — `SDL_GamepadHasSensor` / `SDL_SetGamepadSensorEnabled` / `SDL_GetGamepadSensorData`, since 3.2.0. |
@@ -54,11 +54,14 @@ frontend::pad(port, &buttons, analog[4])         port/game/common/frontend.cpp:3
 openrac_game_pad(port, &buttons, analog)          port/game/common/main.cpp:1220-1231
         |
         v
-openrac_lib_scePad2Read(socket, data)             port/game/common/lib/pad.c:42-64
-  18 bytes: 2 buttons + 4 sticks + 12 pressures
+openrac_pad_report(port, report)                  port/game/common/lib/pad.c
+  18 bytes: 2 buttons + 4 sticks + 12 pressures, through the mods' pad callbacks
         |
         v
-the game's Pad_ProcessReport                     games/rac1/src/game/pad.c:336-492
+the port's pad update (no libpad2 call)           port/game/rac1/host/pad_state.c
+        |
+        v
+the game's Pad_ProcessReport                     games/rac1/decomp/src/game/pad.c:336-492
   analog[0..3]  = the four sticks
   analog[4..15] = the twelve pressures
 ```
@@ -82,7 +85,7 @@ any frame rate. Off, only the first read happens, and the tick sees the pad as t
 | **Touchpad click** (`SDL_GAMEPAD_BUTTON_TOUCHPAD`) | No |
 | **Gyroscope / accelerometer** | No |
 | **Light bar** (`SDL_SetGamepadLED`) | No |
-| **Rumble** (`SDL_RumbleGamepad`) | Called every frame, **always with zero** (`input.cpp:262-264`) |
+| **Rumble** (`SDL_RumbleGamepad`) | **Yes**, for the motor values a game sends (Going Commando's, Up Your Arsenal's, Deadlocked's; Ratchet & Clank sends none) and a mod's (`set_motors`), shaped by the `pad_rumble` and `pad_rumble_style` settings (`port/platform/input.cpp`, `Input::play_rumble`) |
 | **Player LEDs / player index** | No — ports are assigned by connection order (`input.cpp:112-129`, `:190-193`) |
 
 There is no DualSense-specific code anywhere in the tree: no
@@ -109,21 +112,21 @@ if (len >= 0x12) {
 }
 ```
 
-— `games/rac1/src/game/pad.c:363-367` (the `1/255` is what makes the range
-0..1). `PadState.analog[16]` is documented at `games/rac1/include/pad.h:28`:
+— `games/rac1/decomp/src/game/pad.c:363-367` (the `1/255` is what makes the range
+0..1). `PadState.analog[16]` is documented at `games/rac1/decomp/include/pad.h:28`:
 *"[0..3] stick axes (-1..1), [4..15] pressure (0..1)"*.
 
 The order is right, left, up, down, triangle, circle, cross, square, L1, R1,
-L2, R2 — the port's own order (`port/game/common/lib/pad.c:43`,
+L2, R2 — the port's own order (`port/game/common/lib/pad_report.h`,
 `port/platform/pad.h:67-82`), matching the community's memory map
-(`games/rac1/docs/kb/data-structures.md:473-474`).
+(`games/rac1/decomp/docs/kb/data-structures.md:473-474`).
 
 So `analog[10]` is **Cross** and `analog[11]` is **Square**.
 
 ### 3.2 The one consumer: swimming
 
 Searching every `analog[...]` read in the whole game
-(`grep -rn "analog\[" games/rac1/src/`) finds exactly four pressure reads,
+(`grep -rn "analog\[" games/rac1/decomp/src/`) finds exactly four pressure reads,
 and they are all in one place: the hero's **swimming** turn rate.
 
 ```c
@@ -141,7 +144,7 @@ if ((held & 0x80) && !(held & 0x40)) {                            // Square
 }
 ```
 
-— `games/rac1/src/overlays/l01_novalis/help_002343F8.c:663-716`, and the
+— `games/rac1/decomp/src/overlays/l01_novalis/help_002343F8.c:663-716`, and the
 same function in each level's own copy (Kerwan `l03_kerwan/help_00205E28.c`,
 Rilgar `l05_rilgar/help_00245208.c`, Batalia `l08_batalia/help_0021DFB8.c`,
 Pokitaru `l11_pokitaru/help_0023CD98.c`, Hoven `l12_hoven/help_0022E428.c`,
@@ -151,7 +154,7 @@ and the shared copy `overlays/shared/help_002180F8.c`).
 
 The state this is in is the underwater one: the block is `case 0x33/0x34/0x35`,
 and `0x33` is `HERO_STATE_ENTER_UNDERWATER`
-(`games/rac1/ntsc/src/overlays/l01/gameplay/hero/hero_set_state.c:82`). The
+(`games/rac1/ntsc-decomp/src/overlays/l01/gameplay/hero/hero_set_state.c:82`). The
 same block raises `HeroKickUpDust` and `RippleDisturb` — water, not dust.
 
 **Mechanically:** holding Square or Cross turns the hero while swimming; how
@@ -168,10 +171,10 @@ was checked and does not read a pressure value:
 | **Swingshot** | No | `overlays/shared/vendor_002C12B0.c:1806-1860`, no `analog` read |
 | **Suck Cannon** | No | `overlays/shared/vendor_002D9438.c:1036`, no `analog` read |
 | **Thruster Pack / Heli Pack** | No | Flight is stick-driven (`l01_novalis/help_002343F8.c:1936`) |
-| **Ship flight between planets** | No | `games/rac1/src/game/space.c:1074`, no `analog` read |
+| **Ship flight between planets** | No | `games/rac1/decomp/src/game/space.c:1074`, no `analog` read |
 | **Every weapon** | No | `overlays/shared/help_00237B00.c` tests only digital masks |
 | **Camera, galaxy map, vendor menus** | No | Only `analog[0..3]`, the sticks |
-| **Blowtorch** | **Does not exist in R&C1** | It is a Ratchet & Clank 2 weapon; `grep -rni blowtorch games/rac1/` returns nothing |
+| **Blowtorch** | **Does not exist in R&C1** | It is a Ratchet & Clank 2 weapon; `grep -rni blowtorch games/rac1/decomp/` returns nothing |
 
 So: **the whole of Ratchet & Clank 1's analog-button surface is the pressure
 of Cross and Square while the hero is underwater.**
@@ -190,8 +193,8 @@ if (*(unsigned int *)buf == 0xFFFFFFFF) {
 }
 ```
 
-— `games/rac1/src/game/pad.c:221-226`; the field is documented at
-`games/rac1/include/pad.h:56`.
+— `games/rac1/decomp/src/game/pad.c:221-226`; the field is documented at
+`games/rac1/decomp/include/pad.h:56`.
 
 When `unk1DC != 0x79`, the swimming code substitutes a **time ramp** for the
 pressure value — hold the button longer and the turn gets faster, up to 1.0
@@ -203,8 +206,8 @@ degradation.
 
 ### 3.4 What the port reports
 
-The port returns an all-ones button profile
-(`port/game/common/lib/pad.c:67-72`), so the game always takes the pressure
+The port's pad update gives the pad an all-ones button profile
+(`port/game/rac1/host/pad_state.c`), so the game always takes the pressure
 branch. That is the honest answer for what the port emulates — it does
 deliver twelve pressure bytes — but the values it delivers are binary.
 
@@ -213,7 +216,7 @@ deliver twelve pressure bytes — but the values it delivers are binary.
 **Ratchet & Clank 1 has no rumble — not on the console either.**
 
 The retail executable's linked SDK functions in the pad and vibration area are
-exactly these (`games/rac1/ntsc/config/us/rnc1.us.yaml:558-574`):
+exactly these (`games/rac1/ntsc-decomp/config/us/rnc1.us.yaml:558-574`):
 
 ```
 sdk/input/sce_pad2_init
@@ -231,36 +234,41 @@ sdk/vib/sce_vib_get_profile
 There is **no `scePadSetActDirect`, no `scePadSetActAlign`, no
 `sceVibSetActParam`** — the motor command was dead-stripped by the linker.
 The decompilation says so in its own words
-(`games/rac1/src/core/00125218.c:9-11`): *"Sony's libvib, libvib.o
+(`games/rac1/decomp/src/core/00125218.c:9-11`): *"Sony's libvib, libvib.o
 (sceVibGetProfile; sceVibSetActParam was dead-stripped)."*
 
 There *is* a vibration mixer in the game — `actuator_CalcPower`
-(`games/rac1/src/game/actuator.c:30-133`), an eight-slot waveform table
+(`games/rac1/decomp/src/game/actuator.c:30-133`), an eight-slot waveform table
 (`D_00165580[8]`) that mixes down to two motor values per tick. But it has
-**no caller**: `grep -rn "actuator_CalcPower" games/rac1/src/` finds only its
-own definition and the name table (`games/rac1/include/names.h:17`). The
+**no caller**: `grep -rn "actuator_CalcPower" games/rac1/decomp/src/` finds only its
+own definition and the name table (`games/rac1/decomp/include/names.h:17`). The
 retail in-game debug menu even has an **"Actuator" on/off row**
-(`games/rac1/docs/kb/datamining.md:231`), whose flag is initialised and
+(`games/rac1/decomp/docs/kb/datamining.md:231`), whose flag is initialised and
 toggled but never read. The feature was shelved.
 
 **So the port's silence is faithful.** There is no rumble to restore, and
 adding `scePadSetActDirect` to rac1's library table would bind an address the
 game never calls.
 
-The port's plumbing already exists and is simply unused: `platform::Pad`'s
-`small_motor` and `large_motor` (`port/platform/pad.h:104-107`), carried
-across frames (`input.cpp:231-235`) and played through
-`SDL_RumbleGamepad(g, low, high, 100)` (`input.cpp:262-264`) — with `low` and
-`high` always zero.
-
-For the other games this is a real gap:
+The other games do rumble, and the port plays them. Each game's motor
+command becomes `openrac_game_set_motors(port, small, large)` (the small motor
+on or off, the large one 0 to 255; `port` the controller's port, 0 or 1),
+which `frontend::set_motors` hands to `platform::Input`. Its
+`play_rumble` turns the values into `SDL_RumbleGamepad` through the rumble
+shaper (`port/platform/rumble.h`), following the `pad_rumble` strength and
+`pad_rumble_style`; a value not sent again for 0.2 s stops.
 
 | Game | Retail rumble call | Port |
 |---|---|---|
-| rac1 | none linked | none needed |
-| rac2 | `scePadSetActAlign` (`games/rac2/ntsc/symbol_addrs/eu/symbol_addrs.txt:494`) | not bound |
-| rac3 | — | no pad rows at all in `libraries.tsv` |
-| rac4 | `scePadSetActDirect` / `scePadSetActAlign` | bound, but **no-ops returning 0** (`port/game/rac4-ntsc/host/pad.c:123-135`) |
+| rac1 | none linked | none needed; a mod may rumble (`openrac_api.set_motors`) |
+| rac2 | libvib's `sceVibSetActParam`, from the pad poll each read (`port/game/rac2-ntsc/libraries.tsv`) | played (`port/game/common/lib/pad.c`, `openrac_lib_sceVibSetActParam`) |
+| rac3 | `scePadSetActDirect` / `scePadSetActAlign` | played (`port/game/rac3-pal/host/pad.c`) |
+| rac4 | `scePadSetActDirect` / `scePadSetActAlign` | played (`port/game/rac4-ntsc/host/pad.c`) |
+
+A mod's motor values (`set_motors`, interface 1.37) play with the game's:
+each motor the stronger of the game's and every mod's, held 0.2 s as the
+game's are, and a mod's stop with its unload. A mod calls it on the game's
+thread only: `Input` reads the values in `play_rumble` without a lock.
 
 ## 5. The DualSense feature by feature
 
@@ -445,12 +453,10 @@ the launcher or a shortcut needs no "non-Steam game" entry in Steam. The port
 asks for the driver on every desktop (`SDL_JOYSTICK_HIDAPI_STEAM=1`,
 `platform/window.cpp`); `SDL_JOYSTICK_HIDAPI_STEAM=0` in the environment turns
 it off. Android keeps SDL's default (off: it would ask for Bluetooth rights).
-Any controller's L3 opens and closes the menu by default, as its key does,
-while the game's window has the focus (`menu_bar_button`, changed in the
-menu's Controls tab, Menu; the Steam Controller's R4 is `paddle1`). Not
-Select + Start, whose first button reached the game, nor "...": the port cannot keep a
-running Steam client from reading the same controller, and Steam opens its own
-panel on "..." whatever window has the focus.
+Start+Select opens and closes the menu by default (`menu_button`; change it in
+the menu's Controls tab). The game never gets the pair, so no pause and no map.
+A lone Start or Select reaches the game after up to 100 ms
+(`platform/menu_chord.h`). Not "...": Steam opens its own panel on it.
 
 With the Steam client open, Steam's desktop layout may still move the mouse
 from the controller while the game plays; Steam's "desktop configuration"
@@ -530,7 +536,7 @@ Ordered by value per unit of work, for *this* game.
 | 5 | **The gyroscope** — `SDL_SetGamepadSensorEnabled()` / `SDL_GetGamepadSensorData()` | **Medium** | The `keyboard-mouse` mod already turns the mouse into the camera; a gyro could be an alternative for players who prefer it. The game has no use for it, so this is a port-level extra |
 | 6 | **Adaptive triggers** — `SDL_SendGamepadEffect()` with a filled trigger array | **Medium** | **No fidelity payoff**: nothing in R&C1 reads a trigger's travel. It could be a *mod* — a resistance cue on the Swingshot, the Bomb Glove, the Suck Cannon — which is the honest way to offer it, since it changes how the game plays |
 | 7 | **HD haptics** | **Large** | A separate USB audio path SDL cannot do. Only worth it if the port grows a rumble feature the game does not have |
-| 8 | **Rumble** — for the other games | **Medium** | rac2's retail code calls `scePadSetActAlign` and rac4's `scePadSetActDirect`; the port binds neither, and rac4's are no-ops. Worth doing when rac2 and rac3 are playable |
+| 8 | **Rumble** — for the other games | **Done** | rac2's libvib, rac3's and rac4's `scePadSetActDirect` reach the pad (section 4); mods drive the motors through `set_motors` (1.37) |
 
 For **Ratchet & Clank 1** specifically, items 1 and 2 are the only ones that
 change anything the game can feel. Item 1 is also the one that removes a small
@@ -543,7 +549,7 @@ adaptive triggers.
 
 | | |
 |---|---|
-| **The stick dead zone is the game's own** | The game applies its own: `d >= 0x30` with a `/0x4C` scale (`games/rac1/src/game/pad.c:346-362`). SDL3 applies **no** software dead zone to a DualSense, so the game's own is what you get. A `render_scale`/`msaa` tweak will not change it; the port's own dead zone, outer edge and sensitivity per stick can ([CONTROLS.md](CONTROLS.md), section 4) |
+| **The stick dead zone is the game's own** | The game applies its own: `d >= 0x30` with a `/0x4C` scale (`games/rac1/decomp/src/game/pad.c:346-362`). SDL3 applies **no** software dead zone to a DualSense, so the game's own is what you get. A `render_scale`/`msaa` tweak will not change it; the port's own dead zone, outer edge and sensitivity per stick can ([CONTROLS.md](CONTROLS.md), section 4) |
 | **Rebinding** | The controller's buttons and sticks, chords too, every game's and each game's own ([CONTROLS.md](CONTROLS.md)); the keyboard's buttons by `bind_*` keys. The `keyboard-mouse` mod is still the way to play with the mouse |
 | **Sticks are read as 8-bit** | `stick_byte()` converts SDL's ±32767 to the console's byte (`port/platform/pad.cpp:75-79`), so the resolution the game sees is the console's, not the pad's |
 | **The touchpad and the Edge paddles are free buttons** | Two inputs the DS2 did not have. Mapped to weapon switching, they would remove a thumbstick movement from a run |
@@ -562,11 +568,11 @@ See [speedrun/PRACTICE.md](speedrun/PRACTICE.md) and
 - `port/game/common/lib/pad.c`, `port/game/common/frontend.cpp`,
   `port/game/common/main.cpp`
 - `port/game/rac1-pal/libraries.tsv`, `port/game/rac4-ntsc/host/pad.c`
-- `games/rac1/src/game/pad.c`, `games/rac1/src/game/actuator.c`,
-  `games/rac1/src/core/00125218.c`, `games/rac1/include/pad.h`,
-  `games/rac1/docs/kb/data-structures.md`
-- `games/rac1/src/overlays/*/help_*.c` (the swimming code and its copies)
-- `games/rac1/ntsc/config/us/rnc1.us.yaml` (the retail binary's linked SDK)
+- `games/rac1/decomp/src/game/pad.c`, `games/rac1/decomp/src/game/actuator.c`,
+  `games/rac1/decomp/src/core/00125218.c`, `games/rac1/decomp/include/pad.h`,
+  `games/rac1/decomp/docs/kb/data-structures.md`
+- `games/rac1/decomp/src/overlays/*/help_*.c` (the swimming code and its copies)
+- `games/rac1/ntsc-decomp/config/us/rnc1.us.yaml` (the retail binary's linked SDK)
 
 **SDL3**
 

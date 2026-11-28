@@ -1,0 +1,189 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (c) 2026 the OpenRAC contributors */
+
+/*
+ * Going Commando: what the follow camera's right stick turn will be, for the picture's late camera
+ * latch (settings responsive_controls, frontend/camera_latch.cpp), as Ratchet & Clank's
+ * (rac1/host/camera_latch.c says what the latch does with it).
+ *
+ * Each tick the follow camera (func_L00_00426340) reads the sticks (func_L00_00424F98, Ratchet &
+ * Clank's FollowCamera_ReadStickInput, paired at 0.48): its x, the pad's analog float at +0x100
+ * (0x00138280: the report's byte with a dead zone of 0x30 about 0x7F, the rest over 0x4C, as the
+ * profile's stick_dead_zone says), negated unless the camera's left/right option (0x001A7BA8) is
+ * set, and 0 while the camera's flags (its data +0x1C0, bit 0) lock it. func_L00_00425118 then
+ * eases a spring towards that (func_002702C8: the value at +0x1C0, its speed at +0x1C4, stiffness
+ * and damping the level's 0x001B14AC and 0x001B14B0, no limit) and turns the camera's offset from
+ * the hero (+0x160) about the camera block's axis (0x001B8E20 + 0x20) by that value times the turn
+ * speed at +0x1D4 (set from 0x001A8904 whenever the stick is moved).
+ *
+ * The read runs under a host function that only notes the camera it read for, so that the frontend
+ * can ask between ticks what the next ticks would turn with the stick as it is now: the same spring
+ * stepped from the camera's state, never written back. The vertical stick is left out, as in
+ * Ratchet & Clank.
+ */
+#include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "follow_mouse.h"
+#include "game_protos.h"
+#include "openrac/game_host.h"
+#include "rac2.h"
+
+#define CAM_LEFT_RIGHT RAC2_ADDR(0x001A7BA8u)
+#define ANALOG_X RAC2_ADDR(0x00138280u) /* right stick x as a float */
+#define SPRING_STIFFNESS OPENRAC_LDATA(0, RAC2_LADDR(00, 0x001B14ACu))
+#define SPRING_DAMPING OPENRAC_LDATA(0, RAC2_LADDR(00, 0x001B14B0u))
+#define CAMERA_BLOCK OPENRAC_LDATA(0, RAC2_LADDR(00, 0x001B8E20u))
+#define TILT_RANGE                                                                                 \
+    OPENRAC_LDATA(0, RAC2_LADDR(00, 0x001B14C4u)) /* the tilt target at a full stick */
+
+/* The camera's stick state: its data (the moby's +0x70) + 0x1C0. */
+#define STATE_FLAGS 0x10u
+#define STATE_VALUE 0x00u
+#define STATE_SPEED 0x04u
+#define STATE_TURN_SPEED 0x14u
+#define STATE_SIZE 0x30u
+
+static gaddr s_state;    /* the stick state the last read was for */
+static openrac_rac2_follow_mouse_fn s_follow_mouse; /* the mouse's turn (follow_mouse.h) */
+static openrac_rac2_aligned_mouse_fn s_aligned_mouse; /* the same for the first-person view */
+
+/* The first-person camera (func_L00_004266E8): the camera table (each entry's +0x1C points at the
+ * entry's parameters, whose +0x26 halfword stops the stick for one tick), the camera state block
+ * (+0x290: the view's blend phase) and the hero's block (+0x22A0: his aim mode). */
+#define CAMERA_TABLE OPENRAC_LDATA(0, RAC2_LADDR(00, 0x001B1844u))
+#define CAMERA_PHASE (OPENRAC_LDATA(0, RAC2_LADDR(00, 0x001B8C80u)) + 0x290u)
+#define HERO_AIM_MODE (RAC2_g_heroPos - 0x80u + 0x22A0u)
+
+void openrac_rac2_set_follow_mouse(openrac_rac2_follow_mouse_fn fn) {
+    s_follow_mouse = fn;
+}
+
+void openrac_rac2_set_aligned_mouse(openrac_rac2_aligned_mouse_fn fn) {
+    s_aligned_mouse = fn;
+}
+
+int openrac_rac2_follow_axis(float up[3]) {
+    if (openrac_game_loaded_overlay() < 0) {
+        return 0;
+    }
+    const gaddr block = CAMERA_BLOCK;
+    for (int i = 0; i < 3; ++i) {
+        up[i] = GREF(float, block + 0x20u + 4u * (unsigned)i);
+    }
+    return 1;
+}
+
+float openrac_rac2_follow_tilt_range(void) {
+    return openrac_game_loaded_overlay() < 0 ? 0.0f : GREF(float, TILT_RANGE);
+}
+static unsigned s_reads; /* how many reads so far: the frontend sees whether one ran this tick */
+
+/* The stick read (a mod's rac2.camera.follow.read_stick runs within, as func_L00_00424F98__hooked),
+ * then the camera it read for noted, the stick's turn scaled and the mouse's own turn. */
+void func_L00_00424F98(gaddr camera, gaddr x, gaddr y) {
+    func_L00_00424F98__hooked(camera, x, y);
+    s_state = GREF(gaddr, camera + 0x70u) + 0x1C0u;
+    ++s_reads;
+    /* Sensitivity above 100%: scale the stick's turn, as in rac1. */
+    if (openrac_game_camera_speed != 1.0f && (GREF(int32_t, s_state + STATE_FLAGS) & 1) == 0
+        && GREF(float, ANALOG_X) != 0.0f) {
+        GREF(float, x) *= openrac_game_camera_speed;
+    }
+    /* The mouse turns the camera itself, before the camera turns by the stick. */
+    if (s_follow_mouse != NULL) {
+        s_follow_mouse(camera, x, y);
+    }
+}
+
+/* The first-person camera's turn by the stick (cam_aligned_update_from_input), then the mouse's,
+ * which turns the view itself. The stick's locks are read first: the game clears them as it runs. */
+void func_L00_004266E8(gaddr camera) {
+    int turn_locked = 0;
+    int tilt_locked = 0;
+    if (s_aligned_mouse != NULL) {
+        const gaddr entry =
+            GREF(gaddr, CAMERA_TABLE) + (gaddr)(GREF(int16_t, camera + 0x84u) * 0x20);
+        const gaddr params = GREF(gaddr, entry + 0x1Cu);
+        turn_locked = GREF(int16_t, params + 0x26u) != 0;
+        tilt_locked =
+            turn_locked || (GREF(int16_t, CAMERA_PHASE) != 0 && GREF(int32_t, HERO_AIM_MODE) == 2);
+    }
+    func_L00_004266E8__game(camera);
+    const gaddr moby = GREF(gaddr, RAC2_g_pHeroMoby);
+    if (s_aligned_mouse == NULL || moby == 0) {
+        return;
+    }
+    float up[3];
+    float length = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        up[i] = GREF(float, moby + 0xE0u + 4u * (unsigned)i);
+        length += up[i] * up[i];
+    }
+    if (!(length > 1e-6f)) {
+        return;
+    }
+    length = sqrtf(length);
+    for (int i = 0; i < 3; ++i) {
+        up[i] /= length;
+    }
+    s_aligned_mouse(camera, GREF(gaddr, camera + 0x70u), up, turn_locked, tilt_locked);
+}
+
+/* The pad's analog x for a report byte (func_002B88F0), then as the camera reads it. */
+static float stick_turn(uint8_t x) {
+    const int d = x < 0x7F ? 0x7F - x : x - 0x7F;
+    if (d < 0x30) {
+        return 0.0f;
+    }
+    float f = (float)(d - 0x30) / (float)0x4C;
+    f = f > 1.0f ? 1.0f : f;
+    if (x < 0x7F) {
+        f = -f;
+    }
+    f *= openrac_game_camera_speed;
+    return GREF(int32_t, CAM_LEFT_RIGHT) == 0 ? -f : f;
+}
+
+static int camera_turn(uint8_t right_x, float ticks, float* radians, float axis[3], unsigned* reads) {
+    *reads = s_reads;
+    *radians = 0.0f;
+    if (openrac_game_loaded_overlay() < 0 || s_state == 0 || openrac_guest_ram_size < STATE_SIZE
+        || s_state > openrac_guest_ram_size - STATE_SIZE || (GREF(int32_t, s_state + STATE_FLAGS) & 1) != 0) {
+        return 0;
+    }
+    const float target = stick_turn(right_x);
+    if (target == 0.0f) {
+        return 0;
+    }
+    const gaddr block = CAMERA_BLOCK;
+    for (int i = 0; i < 3; ++i) {
+        axis[i] = GREF(float, block + 0x20u + 4u * (unsigned)i);
+    }
+    /* func_002702C8, a tick at a time, the last one in part. */
+    const float speed = GREF(float, s_state + STATE_TURN_SPEED);
+    const float stiffness = GREF(float, SPRING_STIFFNESS);
+    const float damping = GREF(float, SPRING_DAMPING);
+    float r = GREF(float, s_state + STATE_VALUE);
+    float v = GREF(float, s_state + STATE_SPEED);
+    float turned = 0.0f;
+    for (float left = ticks; left > 0.0f; left -= 1.0f) {
+        const float diff = target - r;
+        v = v + (stiffness * diff - damping * v);
+        if (fabsf(diff) < v) {
+            v = fabsf(diff);
+        } else if (v < -fabsf(diff)) {
+            v = -fabsf(diff);
+        }
+        r += v;
+        turned += speed * r * (left < 1.0f ? left : 1.0f);
+    }
+    *radians = turned;
+    return isfinite(turned) ? 1 : 0;
+}
+
+/* From crt0 (entry.c), with the other host hooks: nothing else names this file. */
+void rac2_install_camera_latch(void) {
+    openrac_game_camera_turn = camera_turn;
+}

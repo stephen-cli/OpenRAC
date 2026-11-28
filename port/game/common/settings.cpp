@@ -10,6 +10,8 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <system_error>
 
 #include "common/log.h"
@@ -22,13 +24,11 @@ void Settings::reset_enhanced() {
     enhanced_graphics = defaults.enhanced_graphics;
     enhanced_shadows = defaults.enhanced_shadows;
     shadow_quality = defaults.shadow_quality;
+    shadow_filter = defaults.shadow_filter;
+    early_lighting_quality = defaults.early_lighting_quality;
+    cloud_shadow_override.reset();
     volumetric_quality = defaults.volumetric_quality;
-    rim_light = defaults.rim_light;
-    rim_shadow_lift = defaults.rim_shadow_lift;
-    rim_lift_exponent = defaults.rim_lift_exponent;
-    rim_lift_max_gain = defaults.rim_lift_max_gain;
-    rim_light_strength = defaults.rim_light_strength;
-    rim_light_falloff = defaults.rim_light_falloff;
+    nanotech_light = defaults.nanotech_light;
     probe_spheres = defaults.probe_spheres;
     ceiling_area_lights = defaults.ceiling_area_lights;
     probe_gi_multiplier = defaults.probe_gi_multiplier;
@@ -40,6 +40,7 @@ void Settings::reset_enhanced() {
     gtao = defaults.gtao;
     gtao_settings = defaults.gtao_settings;
     temporal_quality = defaults.temporal_quality;
+    bloom = defaults.bloom;
     agx_preview = defaults.agx_preview;
     agx_exposure = defaults.agx_exposure;
     agx_brightness = defaults.agx_brightness;
@@ -49,6 +50,87 @@ void Settings::reset_enhanced() {
     lily_momentum = defaults.lily_momentum;
     temporal_sharpness = defaults.temporal_sharpness;
     texture_filter = defaults.texture_filter;
+    effects_detail = defaults.effects_detail;
+}
+
+namespace {
+// What a preset sets. The rest of Enhanced graphics costs little or is a matter of taste.
+struct PresetValues {
+    int render_scale;
+    renderer::TemporalQuality temporal;
+    renderer::ShadowQuality shadows;
+    renderer::ShadowFilter shadow_filter;
+    renderer::GtaoQuality occlusion;
+    bool motion_blur;
+    renderer::TextureFilter textures;
+    renderer::render_opt::EffectsDetail detail;
+};
+
+constexpr PresetValues kPresets[] = {
+    {75,
+     renderer::TemporalQuality::Performance,
+     renderer::ShadowQuality::Low,
+     renderer::ShadowFilter::Fast,
+     renderer::GtaoQuality::Low,
+     false,
+     renderer::TextureFilter::Normal,
+     renderer::render_opt::EffectsDetail::Low},
+    {100,
+     renderer::TemporalQuality::Balanced,
+     renderer::ShadowQuality::Medium,
+     renderer::ShadowFilter::Soft,
+     renderer::GtaoQuality::Performance,
+     true,
+     renderer::TextureFilter::EdgeAware,
+     renderer::render_opt::EffectsDetail::Medium},
+    {100,
+     renderer::TemporalQuality::Quality,
+     renderer::ShadowQuality::High,
+     renderer::ShadowFilter::Soft,
+     renderer::GtaoQuality::Performance,
+     true,
+     renderer::TextureFilter::EdgeAware,
+     renderer::render_opt::EffectsDetail::High},
+};
+
+// Older settings files used these options to identify a preset.
+bool matches_preset_quality(const Settings& settings, const PresetValues& values) {
+    return settings.temporal_quality == values.temporal && settings.shadow_quality == values.shadows
+           && settings.shadow_filter == values.shadow_filter
+           && settings.gtao_settings.quality == values.occlusion
+           && settings.motion_blur == values.motion_blur
+           && settings.texture_filter == values.textures;
+}
+}  // namespace
+
+void Settings::apply_enhanced_preset(EnhancedPreset preset) {
+    if (preset == EnhancedPreset::Custom) {
+        return;
+    }
+    const PresetValues& values = kPresets[static_cast<int>(preset)];
+    render_scale = values.render_scale;
+    temporal_quality = values.temporal;
+    shadow_quality = values.shadows;
+    shadow_filter = values.shadow_filter;
+    gtao_settings.quality = values.occlusion;
+    motion_blur = values.motion_blur;
+    texture_filter = values.textures;
+    effects_detail = values.detail;
+    early_lighting_quality = renderer::EarlyLightingQuality::Normal;
+}
+
+EnhancedPreset Settings::enhanced_preset() const {
+    if (early_lighting_quality != renderer::EarlyLightingQuality::Normal) {
+        return EnhancedPreset::Custom;
+    }
+    for (int n = 0; n < static_cast<int>(EnhancedPreset::Custom); ++n) {
+        const PresetValues& values = kPresets[n];
+        if (render_scale == values.render_scale && effects_detail == values.detail
+            && matches_preset_quality(*this, values)) {
+            return static_cast<EnhancedPreset>(n);
+        }
+    }
+    return EnhancedPreset::Custom;
 }
 
 std::optional<std::array<float, 3>> Settings::sunlight_direction() const {
@@ -71,6 +153,15 @@ Settings g_settings;
 std::atomic<float> g_gain{1.0f};  // g_settings.volume, read by the sound's thread
 std::atomic<bool> g_muted{false};
 std::filesystem::path g_file;
+// The file's time when the port last read or wrote it (reread_keyboard_mouse).
+std::optional<std::filesystem::file_time_type> g_file_seen;
+
+std::optional<std::filesystem::file_time_type> file_time() {
+    std::error_code e;
+    const auto t = std::filesystem::last_write_time(g_file, e);
+    return e ? std::nullopt : std::optional(t);
+}
+
 bool g_display_mode_in_file = false;  // the file load() read said display_mode or fullscreen
 
 // How far from 0 a game's option in the file may be (game_option): no option a game keeps comes
@@ -81,8 +172,10 @@ constexpr int kGameOptionLimit = 1'000'000;
 constexpr const char* kDisplayMode[] = {"windowed", "borderless"};
 constexpr const char* kAspect[] = {"4:3", "16:10", "16:9", "21:9", "32:9", "window", "custom"};
 constexpr const char* kHud[] = {"centre", "edges"};
-constexpr const char* kGtaoQuality[] = {"performance", "quality"};
+constexpr const char* kGtaoQuality[] = {"low", "performance", "quality"};
+constexpr const char* kBlurQuality[] = {"performance", "quality"};
 constexpr const char* kTextureFilter[] = {"normal", "edge-aware"};
+constexpr const char* kEffectsDetail[] = {"low", "medium", "high"};
 constexpr const char* kVSync[] = {"off", "on", "adaptive"};
 
 std::string trimmed(const std::string& s) {
@@ -162,7 +255,10 @@ bool parse_listed(const std::string& value, const int (&list)[N], int& out) {
     } else if (!parse_int(value, 0, 1000, number)) {
         return false;
     }
-    number = std::max(number, 1);  // 0 is "off" too
+    // 0 is "off" too, unless the list has it (Draw distance's Unlimited)
+    if (number == 0 && std::find(std::begin(list), std::end(list), 0) == std::end(list)) {
+        number = 1;
+    }
     if (std::find(std::begin(list), std::end(list), number) == std::end(list)) {
         return false;
     }
@@ -230,6 +326,7 @@ Settings& get() {
 
 void load(const std::filesystem::path& file) {
     g_file = file;
+    g_file_seen = file_time();
     g_display_mode_in_file = false;
     g_settings = Settings{};
     fixes::reset();
@@ -238,7 +335,9 @@ void load(const std::filesystem::path& file) {
     // A file from before `vsync` was a key of its own: a frame waited for the display only at the
     // "display" frame rate, and so it does until the player says otherwise.
     bool has_vsync = false;
+    bool has_menu_button = false;  // menu_button read: an older menu_bar_button does not count
     bool has_frame_rate = false;
+    bool has_effects_detail = false;  // a file from before it follows the preset it matches
     // A file from before the strafe was a mod (2026-10-21): its `strafe` or `lock_strafe` is left
     // out, and said once.
     bool old_strafe = false;
@@ -299,24 +398,19 @@ void load(const std::filesystem::path& file) {
             known = parse(value, renderer::kVolumetricQualityKeys, s.volumetric_quality);
         } else if (key == "shadow_quality") {
             known = parse(value, renderer::kShadowQualityKeys, s.shadow_quality);
+        } else if (key == "shadow_filter") {
+            known = parse(value, renderer::kShadowFilterKeys, s.shadow_filter);
         } else if (key == "enhanced_shadows") {
             known = parse_bool(value, s.enhanced_shadows);
-        } else if (key == "rim_light") {
-            known = parse_bool(value, s.rim_light);
         } else if (key == "texture_pack") {
             known = parse_bool(value, s.texture_pack);
-        } else if (key == "rim_shadow_lift") {
-            known = parse_bool(value, s.rim_shadow_lift);
-        } else if (key == "rim_lift_exponent") {
-            known = parse_float(value, 0.01f, 1.0f, s.rim_lift_exponent);
-        } else if (key == "rim_lift_max_gain") {
-            known = parse_float(value, 1.0f, 16.0f, s.rim_lift_max_gain);
-        } else if (key == "rim_light_strength") {
-            known = parse_float(value, 0.0f, 1.0f, s.rim_light_strength);
-        } else if (key == "rim_light_falloff") {
-            known = parse_float(value, 1.0f, 8.0f, s.rim_light_falloff);
+        } else if (key == "rim_light" || key == "rim_shadow_lift" || key == "rim_lift_exponent"
+                   || key == "rim_lift_max_gain" || key == "rim_light_strength"
+                   || key == "rim_light_falloff") {
+            // Read and ignored: enhanced mode uses the built-in rim lighting.
+            known = true;
         } else if (key == "probe_lighting") {
-            // Legacy preference: probe lighting now follows enhanced graphics.
+            // Read and ignored: probe lighting follows enhanced graphics.
             bool ignored = true;
             known = parse_bool(value, ignored);
         } else if (key == "probe_spheres") {
@@ -331,6 +425,18 @@ void load(const std::filesystem::path& file) {
             known = parse_float(value, 0.0f, 2.0f, s.probe_normal_bias);
         } else if (key == "probe_view_bias") {
             known = parse_float(value, 0.0f, 2.0f, s.probe_view_bias);
+        } else if (key == "nanotech_light") {
+            known = parse_bool(value, s.nanotech_light.enabled);
+        } else if (key == "nanotech_light_red") {
+            known = parse_float(value, 0.0f, 1.0f, s.nanotech_light.colour[0]);
+        } else if (key == "nanotech_light_green") {
+            known = parse_float(value, 0.0f, 1.0f, s.nanotech_light.colour[1]);
+        } else if (key == "nanotech_light_blue") {
+            known = parse_float(value, 0.0f, 1.0f, s.nanotech_light.colour[2]);
+        } else if (key == "nanotech_light_brightness") {
+            known = parse_float(value, 0.0f, 8.0f, s.nanotech_light.brightness);
+        } else if (key == "nanotech_light_range") {
+            known = parse_float(value, 0.1f, 12.0f, s.nanotech_light.range);
         } else if (key == "probe_gi_multiplier") {
             known = parse_float(value, 0.0f, 5.0f, s.probe_gi_multiplier);
         } else if (key == "sun_direction_override") {
@@ -357,6 +463,16 @@ void load(const std::filesystem::path& file) {
             known = parse_float(value, 0.0f, 3.0f, s.gtao_settings.strength);
         } else if (key == "temporal_quality") {
             known = parse(value, renderer::kTemporalKeys, s.temporal_quality);
+        } else if (key == "bloom_enabled") {
+            known = parse_bool(value, s.bloom.enabled);
+        } else if (key == "bloom_strength") {
+            known = parse_float(value, 0.0f, 1.0f, s.bloom.strength);
+        } else if (key == "bloom_threshold") {
+            known = parse_float(value, 0.0f, 4.0f, s.bloom.threshold);
+        } else if (key == "bloom_knee") {
+            known = parse_float(value, 0.0f, 1.0f, s.bloom.knee);
+        } else if (key == "bloom_scatter") {
+            known = parse_float(value, 0.0f, 1.0f, s.bloom.scatter);
         } else if (key == "agx_preview") {
             known = parse_bool(value, s.agx_preview);
         } else if (key == "agx_exposure") {
@@ -369,6 +485,8 @@ void load(const std::filesystem::path& file) {
             known = parse_float(value, 0.0f, 1.0f, s.lily_momentum);
         } else if (key == "motion_blur_strength") {
             known = parse_float(value, 0.0f, 1.0f, s.motion_blur_strength);
+        } else if (key == "motion_blur_quality") {
+            known = parse(value, kBlurQuality, s.motion_blur_settings.quality);
         } else if (key == "motion_blur_radius") {
             known = parse_int(value, 1, 128, s.motion_blur_settings.max_radius);
         } else if (key == "motion_blur_samples") {
@@ -385,6 +503,11 @@ void load(const std::filesystem::path& file) {
             known = parse_float(value, 0.0f, 1.0f, s.temporal_sharpness);
         } else if (key == "texture_filter") {
             known = parse(value, kTextureFilter, s.texture_filter);
+        } else if (key == "effects_detail") {
+            has_effects_detail = true;
+            known = parse(value, kEffectsDetail, s.effects_detail);
+        } else if (key == "early_lighting_quality") {
+            known = parse(value, renderer::kEarlyLightingQualityKeys, s.early_lighting_quality);
         } else if (key == "anisotropy") {
             if (value == "auto") {
                 s.anisotropy = 0;
@@ -397,6 +520,16 @@ void load(const std::filesystem::path& file) {
             known = parse_int(value, 0, hdr::kPaperWhiteMax, s.hdr_paper_white);
         } else if (key == "hdr_peak") {
             known = parse_int(value, 0, hdr::kPeakMax, s.hdr_peak);
+        } else if (key == "hdr_highlights") {
+            known = parse_int(value, 0, 100, s.hdr_highlights);
+        } else if (key == "hdr_sdr_hue") {
+            known = parse_int(value, 0, 100, s.hdr_sdr_hue);
+        } else if (key == "hdr_sdr_chroma") {
+            known = parse_int(value, 0, 100, s.hdr_sdr_chroma);
+        } else if (key == "hdr_blowout") {
+            known = parse_int(value, 0, 100, s.hdr_blowout);
+        } else if (key == "menu_size") {
+            known = parse_int(value, kMenuSizeMin, kMenuSizeMax, s.menu_size);
         } else if (key == "vsync") {
             known = parse(value, kVSync, s.vsync);
             has_vsync = has_vsync || known;
@@ -423,16 +556,30 @@ void load(const std::filesystem::path& file) {
             if (known) {
                 s.menu_bar_key = value;
             }
-        } else if (key == "menu_bar_button") {
+        } else if (key == "menu_button") {
             // Any button name SDL knows, or "none"; the overlay uses the default for another.
             known = !value.empty();
             if (known) {
+                s.menu_bar_button = value;
+                has_menu_button = true;
+            }
+        } else if (key == "menu_bar_button") {
+            // An older port's key, whose default was L3 (the game's own button): a player's other
+            // pick carries over, L3 becomes Start+Select. menu_button wins over it.
+            if (!has_menu_button && !value.empty() && value != "leftstick") {
                 s.menu_bar_button = value;
             }
         } else if (key == "mute_unfocused") {
             known = parse_bool(value, s.mute_unfocused);
         } else if (key == "original_lod") {
-            known = parse_bool(value, s.original_lod);
+            // Old "Scenery detail", merged into draw_distance: dropped.
+        } else if (key == "draw_distance") {
+            known = parse_listed(value, kDrawDistances, s.draw_distance);
+        } else if (key == "active_distance") {
+            known = value == "match" || value == "original";
+            if (known) {
+                s.original_active_distance = value == "original";
+            }
         } else if (key == "responsive_controls") {
             known = parse_bool(value, s.responsive_controls);
         } else if (key == "low_latency_frames") {
@@ -449,6 +596,8 @@ void load(const std::filesystem::path& file) {
             known = parse_within(value, kTouchScales, s.touch_scale);
         } else if (key == "touch_camera") {
             known = parse_within(value, kTouchCameraSpeeds, s.touch_camera);
+        } else if (key == "touch_style") {
+            known = parse_int(value, 0, 1, s.touch_style);
         } else if (key == "touch_layout") {
             s.touch_layout = value;  // TouchPad::set_layout leaves out what it does not know
         } else if (key == "verbose_log") {
@@ -458,6 +607,10 @@ void load(const std::filesystem::path& file) {
             // (platform/bindings.h), not here: this file knows nothing of SDL. An empty value is
             // kept as it is, and means the port's default.
             s.bindings[key] = value;
+        } else if (key.starts_with(kKeyboardMousePrefix)) {
+            // The built-in keyboard and mouse's setting: checked by the mod loader against the
+            // mod's manifest, which this file does not read.
+            s.keyboard_mouse[key.substr(kKeyboardMousePrefix.size())] = value;
         } else if (key.starts_with(kGameOptionPrefix)) {
             // An option the game keeps itself (game_option): any whole number in the file's range.
             int number = 0;
@@ -480,6 +633,14 @@ void load(const std::filesystem::path& file) {
                 key,
                 value
             );
+        }
+    }
+    if (!has_effects_detail) {
+        for (const auto& preset : kPresets) {
+            if (matches_preset_quality(s, preset)) {
+                s.effects_detail = preset.detail;
+                break;
+            }
         }
     }
     if (has_frame_rate && !has_vsync) {
@@ -565,19 +726,21 @@ void save() {
         << renderer::kVolumetricQualityKeys[static_cast<int>(s.volumetric_quality)] << "\n"
         << "shadow_quality = " << renderer::kShadowQualityKeys[static_cast<int>(s.shadow_quality)]
         << "\n"
+        << "shadow_filter = " << renderer::kShadowFilterKeys[static_cast<int>(s.shadow_filter)]
+        << "\n"
         << "enhanced_shadows = " << (s.enhanced_shadows ? 1 : 0) << "\n"
-        << "rim_light = " << (s.rim_light ? 1 : 0) << "\n"
         << "texture_pack = " << (s.texture_pack ? 1 : 0) << "\n"
-        << "rim_shadow_lift = " << (s.rim_shadow_lift ? 1 : 0) << "\n"
-        << "rim_lift_exponent = " << s.rim_lift_exponent << "\n"
-        << "rim_lift_max_gain = " << s.rim_lift_max_gain << "\n"
-        << "rim_light_strength = " << s.rim_light_strength << "\n"
-        << "rim_light_falloff = " << s.rim_light_falloff << "\n"
         << "probe_spheres = " << (s.probe_spheres ? 1 : 0) << "\n"
         << "medial_axis_debug = " << (s.medial_axis_debug ? 1 : 0) << "\n"
         << "ceiling_area_lights = " << (s.ceiling_area_lights ? 1 : 0) << "\n"
         << "environment_probe_debug = " << (s.environment_probe_debug ? 1 : 0) << "\n"
         << "probe_gi_multiplier = " << s.probe_gi_multiplier << "\n"
+        << "nanotech_light = " << (s.nanotech_light.enabled ? 1 : 0) << "\n"
+        << "nanotech_light_red = " << s.nanotech_light.colour[0] << "\n"
+        << "nanotech_light_green = " << s.nanotech_light.colour[1] << "\n"
+        << "nanotech_light_blue = " << s.nanotech_light.colour[2] << "\n"
+        << "nanotech_light_brightness = " << s.nanotech_light.brightness << "\n"
+        << "nanotech_light_range = " << s.nanotech_light.range << "\n"
         << "probe_normal_bias = " << s.probe_normal_bias << "\n"
         << "probe_view_bias = " << s.probe_view_bias << "\n"
         << "sun_direction_override = " << (s.sun_direction_override ? 1 : 0) << "\n"
@@ -592,14 +755,23 @@ void save() {
         << "gtao_radius = " << s.gtao_settings.radius << "\n"
         << "gtao_strength = " << s.gtao_settings.strength << "\n"
         << "texture_filter = " << kTextureFilter[static_cast<int>(s.texture_filter)] << "\n"
+        << "effects_detail = " << kEffectsDetail[static_cast<int>(s.effects_detail)] << "\n"
+        << "early_lighting_quality = "
+        << renderer::kEarlyLightingQualityKeys[static_cast<int>(s.early_lighting_quality)] << "\n"
         << "temporal_quality = " << renderer::kTemporalKeys[static_cast<int>(s.temporal_quality)]
         << "\n"
+        << "bloom_enabled = " << (s.bloom.enabled ? 1 : 0) << "\n"
+        << "bloom_strength = " << s.bloom.strength << "\n"
+        << "bloom_threshold = " << s.bloom.threshold << "\n"
+        << "bloom_knee = " << s.bloom.knee << "\n"
+        << "bloom_scatter = " << s.bloom.scatter << "\n"
         << "agx_preview = " << (s.agx_preview ? 1 : 0) << "\n"
         << "agx_exposure = " << s.agx_exposure << "\n"
         << "agx_brightness = " << s.agx_brightness << "\n"
         << "motion_blur = " << (s.motion_blur ? 1 : 0) << "\n"
         << "lily_momentum = " << s.lily_momentum << "\n"
         << "motion_blur_strength = " << s.motion_blur_strength << "\n"
+        << "motion_blur_quality = " << kBlurQuality[s.motion_blur_settings.quality ? 1 : 0] << "\n"
         << "motion_blur_radius = " << s.motion_blur_settings.max_radius << "\n"
         << "motion_blur_samples = " << s.motion_blur_settings.samples << "\n"
         << "motion_blur_min_motion = " << s.motion_blur_settings.min_motion << "\n"
@@ -612,20 +784,27 @@ void save() {
         << "hdr = " << hdr::kModeKeys[static_cast<int>(s.hdr)] << "\n"
         << "hdr_paper_white = " << s.hdr_paper_white << "\n"
         << "hdr_peak = " << s.hdr_peak << "\n"
+        << "hdr_highlights = " << s.hdr_highlights << "\n"
+        << "hdr_sdr_hue = " << s.hdr_sdr_hue << "\n"
+        << "hdr_sdr_chroma = " << s.hdr_sdr_chroma << "\n"
+        << "hdr_blowout = " << s.hdr_blowout << "\n"
+        << "menu_size = " << s.menu_size << "\n"
         << "vsync = " << kVSync[static_cast<int>(s.vsync)] << "\n"
         << "frame_rate = " << frame_rate_value(s) << "\n"
         << "show_fps = " << static_cast<int>(s.show_fps) << "\n"
         << "gpu_breadcrumbs = " << (s.gpu_breadcrumbs ? 1 : 0) << "\n"
         << "menu_bar_key = " << s.menu_bar_key << "\n"
-        << "menu_bar_button = " << s.menu_bar_button << "\n"
+        << "menu_button = " << s.menu_bar_button << "\n"
         << "mute_unfocused = " << (s.mute_unfocused ? 1 : 0) << "\n"
-        << "original_lod = " << (s.original_lod ? 1 : 0) << "\n"
+        << "draw_distance = " << s.draw_distance << "\n"
+        << "active_distance = " << (s.original_active_distance ? "original" : "match") << "\n"
         << "responsive_controls = " << (s.responsive_controls ? 1 : 0) << "\n"
         << "low_latency_frames = " << (s.low_latency_frames ? 1 : 0) << "\n"
         << "skip_cutscenes = " << (s.skip_cutscenes ? 1 : 0) << "\n"
         << "volume = " << s.volume << "\n"
         << "touch_scale = " << s.touch_scale << "\n"
-        << "touch_camera = " << s.touch_camera << "\n";
+        << "touch_camera = " << s.touch_camera << "\n"
+        << "touch_style = " << s.touch_style << "\n";
     if (!s.touch_layout.empty()) {
         out << "touch_layout = " << s.touch_layout << "\n";
     }
@@ -644,6 +823,13 @@ void save() {
             out << key << " = " << value << "\n";
         }
     }
+    // The keyboard and mouse's, likewise (the launcher's Mods tab, Keyboard and mouse).
+    if (!s.keyboard_mouse.empty()) {
+        out << "# Keyboard and mouse (the launcher's Mods tab)\n";
+        for (const auto& [key, value] : s.keyboard_mouse) {
+            out << kKeyboardMousePrefix << key << " = " << value << "\n";
+        }
+    }
     if (fixes::count() > 0) {
         out << "# Game fixes: 1 the port's, 0 the console's behaviour (Options, Game fixes)\n";
         for (int i = 0; i < fixes::count(); ++i) {
@@ -659,6 +845,30 @@ void save() {
         log::warn("the settings could not be written to {}", g_file.string());
         std::filesystem::remove(written, moved);
     }
+    g_file_seen = file_time();
+}
+
+bool reread_keyboard_mouse() {
+    const auto now = file_time();
+    if (g_file.empty() || !now || now == g_file_seen) {
+        return false;
+    }
+    g_file_seen = now;
+    std::map<std::string, std::string> read;
+    std::ifstream in(g_file);
+    std::string line;
+    while (in && std::getline(in, line)) {
+        const auto eq = line.find('=');
+        const std::string key = eq == std::string::npos ? "" : trimmed(line.substr(0, eq));
+        if (key.starts_with(kKeyboardMousePrefix) && !trimmed(line).starts_with('#')) {
+            read[key.substr(kKeyboardMousePrefix.size())] = trimmed(line.substr(eq + 1));
+        }
+    }
+    if (read == g_settings.keyboard_mouse) {
+        return false;
+    }
+    g_settings.keyboard_mouse = std::move(read);
+    return true;
 }
 
 bool set_hdr_mode(std::string_view name) {

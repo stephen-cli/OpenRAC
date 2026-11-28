@@ -5,9 +5,10 @@
   // looks when asked. Nothing is installed without the player's click.
   import { api, type ModUpdate } from "$lib/api";
   import { app, saveConfig } from "$lib/app.svelte";
-  import { dismissModUpdates, forgetModUpdates, modUpdates } from "$lib/modUpdates.svelte";
   import { START_UPDATES as T } from "$lib/modsText";
+  import { dismissModUpdates, forgetModUpdates, modUpdates } from "$lib/modUpdates.svelte";
   import { modal } from "$lib/portal";
+
   import Icon from "./Icon.svelte";
 
   let working = $state(false);
@@ -34,14 +35,17 @@
     if (working || !offer) return;
     working = true;
     error = null;
+
     try {
       for (const u of offer.updates) {
         await api.pluginsUpdate(offer.game, offer.version, u.id);
       }
+
       forgetModUpdates(offer.game);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
+
     working = false;
   }
 
@@ -55,7 +59,13 @@
 {#if shown && offer}
   <div class="overlay" role="presentation" use:modal>
     <button class="backdrop" onclick={close} tabindex="-1" aria-label={T.later}></button>
-    <div class="modal rise" role="dialog" aria-modal="true" aria-labelledby="mod-updates-title" tabindex="-1">
+    <div
+      class="modal rise"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mod-updates-title"
+      tabindex="-1"
+    >
       <div class="header">
         <div class="title-row">
           <Icon name="refresh" size={20} />
@@ -72,17 +82,24 @@
         </ul>
         <p class="kept">{T.kept}</p>
         {#if error}
-          <p class="error" role="alert"><Icon name="warn" size={16} /><span>{T.failed(error)}</span></p>
+          <p class="error" role="alert">
+            <Icon name="warn" size={16} /><span>{T.failed(error)}</span>
+          </p>
         {/if}
       </div>
 
       <div class="actions">
-        <button class="ghost small grow" disabled={working} onclick={() => void never()} title={T.neverHint}
-          >{T.never}</button
+        <button
+          class="ghost small grow"
+          disabled={working}
+          onclick={() => void never()}
+          title={T.neverHint}>{T.never}</button
         >
         <button class="ghost" disabled={working} onclick={close}>{T.later}</button>
         <button class="primary" disabled={working} onclick={() => void updateAll()}>
-          {#if working}<span class="spinner"></span>{T.working}{:else}{T.all(offer.updates.length)}{/if}
+          {#if working}<span class="spinner"></span>{T.working}{:else}{T.all(
+              offer.updates.length,
+            )}{/if}
         </button>
       </div>
     </div>
@@ -118,8 +135,11 @@
     z-index: 1;
     width: 100%;
     max-width: 480px;
-    background: var(--panel);
-    border: 1px solid var(--line-strong);
+    /* Never taller than the window: the body scrolls (UpdateModal's too). */
+    max-height: 100%;
+    background: var(--card);
+    --control: var(--control-card);
+    --control-hi: var(--control-card-hi);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
     display: flex;
@@ -132,12 +152,15 @@
   }
 
   .header {
+    flex: none;
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 18px 24px;
     border-bottom: 1px solid var(--line);
-    background: var(--panel-hi);
+    background: var(--card-hi);
+    --control: var(--control-card);
+    --control-hi: var(--control-card-hi);
   }
 
   .title-row {
@@ -161,6 +184,7 @@
     flex-direction: column;
     gap: 12px;
     max-height: 360px;
+    min-height: 0;
     overflow-y: auto;
   }
 
@@ -174,7 +198,6 @@
     padding: 12px 14px;
     list-style: none;
     background: var(--ink-deep);
-    border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     display: flex;
     flex-direction: column;
@@ -197,20 +220,22 @@
     margin: 0;
     padding: 10px 14px;
     background: color-mix(in srgb, var(--err) 12%, transparent);
-    border: 1px solid var(--err);
     border-radius: var(--radius-sm);
     color: var(--err);
     font-size: 0.8125rem;
   }
 
   .actions {
+    flex: none;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 12px;
     padding: 16px 24px;
     border-top: 1px solid var(--line);
-    background: var(--panel-hi);
+    background: var(--card-hi);
+    --control: var(--control-card);
+    --control-hi: var(--control-card-hi);
   }
 
   .grow {

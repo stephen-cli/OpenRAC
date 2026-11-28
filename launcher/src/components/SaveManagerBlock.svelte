@@ -1,25 +1,42 @@
 <script lang="ts">
+  import { tick } from "svelte";
+  import { slide } from "svelte/transition";
+
   // A game's saves: the memory card's used slots as rows (planet, bolts, when it was saved), the
   // empty ones in one line, and the backups folded under a line of their own, each called by its
   // note. File names, sizes and the card's folder name are a contributor's details: a chip and
   // tooltips with developer tools on.
   import Icon from "$components/Icon.svelte";
-  import { api, ask, pickSavesFile, type GameSaveStatus, type SaveBackupInfo, type VersionView } from "$lib/api";
+  import Menu, { type MenuItem } from "$components/Menu.svelte";
+  import {
+    api,
+    ask,
+    type GameSaveStatus,
+    pickMemoryCard,
+    pickSavesFile,
+    type SaveBackupInfo,
+    type SaveCopySource,
+    type VersionView,
+  } from "$lib/api";
   import { app, toast } from "$lib/app.svelte";
+  import { supports } from "$lib/capabilities";
   import { grouped, size } from "$lib/format";
-  import { when } from "$lib/reports";
-  import { isPlaying } from "$lib/player.svelte";
-  import { backupLabel, emptySlots, savedWithMods, stampSeconds } from "$lib/saves";
+  import { hasRead, keepRead, lastRead } from "$lib/lastRead";
   import { fold } from "$lib/motion";
-  import { tick } from "svelte";
-  import { slide } from "svelte/transition";
+  import { holdSlide } from "$lib/motion";
+  import { isPlaying } from "$lib/player.svelte";
+  import { when } from "$lib/reports";
+  import { backupLabel, emptySlots, savedWithMods, stampSeconds } from "$lib/saves";
+  import { copyButtonText } from "$lib/saveTransfer";
 
   let { version }: { version: VersionView } = $props();
 
   const developer = $derived(app.config?.developer ?? false);
 
   let loading = $state(true);
-  let status = $state<GameSaveStatus | null>(null);
+  // The card as the page last read it (lastRead.ts), shown at once as the tab opens, then read again.
+  const savesKey = () => `saves:${version.serial}`;
+  let status = $state<GameSaveStatus | null>(lastRead<GameSaveStatus | null>(savesKey(), null));
   let backupNote = $state("");
   let creatingBackup = $state(false);
   let restoringBackupName = $state<string | null>(null);
@@ -31,22 +48,34 @@
   /** "Back up now" asks for an optional name first, in the backups' own space. */
   let naming = $state(false);
   let noteInput = $state<HTMLInputElement | null>(null);
-  /** Export or Import (SaveTransfer.svelte), while its dialog is open. */
-  let transfer = $state<{ mode: "export" | "import"; source: string | null } | null>(null);
+  /** Export, Import or Copy (SaveTransfer.svelte), while its dialog is open. */
+  let transfer = $state<{ mode: "export" | "import" | "copy"; source: string | null } | null>(null);
+  /** The game's other discs whose cards hold saves this one can copy (PAL and US). */
+  let copySources = $state<SaveCopySource[]>([]);
 
   const used = $derived(status?.slots.filter((s) => !s.isEmpty) ?? []);
-  const empty = $derived(emptySlots(status?.slots.filter((s) => s.isEmpty).map((s) => s.slotIndex + 1) ?? []));
+  const empty = $derived(
+    emptySlots(status?.slots.filter((s) => s.isEmpty).map((s) => s.slotIndex + 1) ?? []),
+  );
 
   /** A slot's save time in words ("9 October at 17:01"); the core's own text when it cannot be read. */
   function saved(stamp: string | null): string {
     const seconds = stampSeconds(stamp);
+
     return seconds === null ? (stamp ?? "") : when(seconds);
   }
 
   async function loadStatus() {
     loading = true;
+    // The other discs' cards are read beside this one's; a failure there only hides Copy.
+    const sources = supports(app.info, "saveTransfer")
+      ? api.saveCopySources(version.serial).catch((): SaveCopySource[] => [])
+      : Promise.resolve([]);
+
     try {
       status = await api.inspectSaves(version.serial);
+      keepRead(savesKey(), $state.snapshot(status));
+      copySources = await sources;
     } catch (e) {
       toast(`Failed to inspect saves: ${String(e)}`, "error");
     } finally {
@@ -64,8 +93,10 @@
   async function createBackup() {
     if (!status) return;
     creatingBackup = true;
+
     try {
       const res = await api.backupSaves(version.serial, backupNote.trim() || undefined);
+
       toast(`Backed up: ${backupLabel(res)}.`, "info");
       backupNote = "";
       naming = false;
@@ -81,13 +112,16 @@
     // A second press while the question is open, or while a restore runs, asks nothing again.
     if (restoringBackupName !== null || confirming) return;
     const label = `${backupLabel(backup)} (${when(backup.createdMillis / 1000)})`;
+
     confirming = true;
     const sure = await ask(
       `Restore the backup "${label}"? Your current saves are backed up first, then replaced.`,
       "Restore",
     ).finally(() => (confirming = false));
+
     if (!sure) return;
     restoringBackupName = backup.name;
+
     try {
       await api.restoreBackup(version.serial, backup.name);
       toast(`Restored ${label}.`, "info");
@@ -103,10 +137,56 @@
   async function startImport() {
     const source = await pickSavesFile("Choose an OpenRAC saves file").catch((e: unknown) => {
       toast(`Could not open the file: ${String(e)}`, "error");
+
       return null;
     });
+
     if (source) transfer = { mode: "import", source };
   }
+
+  /** Import from PCSX2: its memory card's saves of this game onto OpenRAC's card, after a backup. */
+  async function importPcsx2() {
+    const dir = await api.pcsx2MemcardsDir().catch(() => null);
+    const source = await pickMemoryCard("Choose a PCSX2 memory card", dir).catch((e: unknown) => {
+      toast(`Could not open the file: ${String(e)}`, "error");
+
+      return null;
+    });
+
+    if (!source) return;
+    const yes = await ask(
+      "Copy this game's saves from the PCSX2 memory card? The saves on OpenRAC's card are backed up first, then replaced.",
+      "Import saves",
+    );
+
+    if (!yes) return;
+
+    try {
+      const done = await api.importPcsx2Saves(version.serial, source);
+      const kept = done.backup ? " The saves that were there are in Backups." : "";
+
+      toast(`Imported the saves from PCSX2.${kept}`, "info");
+      app.savesChanged++; // the card is read again
+    } catch (e) {
+      toast(`Import failed: ${String(e)}`, "error");
+    }
+  }
+
+  /** Import's menu: an OpenRAC saves file, or a PCSX2 memory card (on Android a card file only). */
+  const importItems = $derived<MenuItem[]>([
+    ...(supports(app.info, "saveTransfer")
+      ? [
+          {
+            label: "An OpenRAC saves file (.zip)…",
+            icon: "download" as const,
+            run: () => void startImport(),
+          },
+        ]
+      : []),
+    ...(version.serial
+      ? [{ label: "A PCSX2 memory card…", icon: "save" as const, run: () => void importPcsx2() }]
+      : []),
+  ]);
 
   async function openFolder() {
     try {
@@ -118,13 +198,18 @@
 
   $effect(() => {
     // Again whenever the card changed elsewhere (app.savesChanged: an import, the game ending).
-    if (app.savesChanged >= 0) void loadStatus();
+    // With nothing kept, the tab's slide waits a moment for the card, so the saves come in with the page.
+    if (app.savesChanged >= 0) {
+      const read = loadStatus();
+
+      if (!hasRead(savesKey())) holdSlide(read);
+    }
   });
 </script>
 
 {#if editing !== null}
   <!-- The save editor loads the first time a slot is edited. -->
-  {#await version.serial === "SCUS_972.68" ? import("$components/SaveEditorRac2.svelte") : import("$components/SaveEditor.svelte") then { default: SaveEditor }}
+  {#await version.game === "rac2" ? import("$components/SaveEditorRac2.svelte") : version.game === "rac3" ? import("$components/SaveEditorRac3.svelte") : import("$components/SaveEditor.svelte") then { default: SaveEditor }}
     <SaveEditor
       serial={version.serial}
       slot={editing}
@@ -143,6 +228,7 @@
       serial={version.serial}
       mode={transfer.mode}
       source={transfer.source}
+      sources={copySources}
       {used}
       onclose={(changedCard) => {
         transfer = null;
@@ -156,21 +242,47 @@
   <div class="row top">
     <h2>Saves</h2>
     {#if developer && status?.exists}
-      <span class="chip mono folder" title="The memory card's folder">{status.gameFolderName ?? version.serial}</span>
+      <span class="chip mono folder" title="The memory card's folder"
+        >{status.gameFolderName ?? version.serial}</span
+      >
     {/if}
     <div class="actions">
       {#if developer && status?.exists}
-        <button class="ghost small" onclick={loadStatus} disabled={loading} title="Read the memory card again">
-          {#if loading}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}Refresh
+        <button
+          class="small"
+          onclick={loadStatus}
+          disabled={loading}
+          title="Read the memory card again"
+        >
+          {#if loading}<span class="spinner"></span>{:else}<Icon
+              name="refresh"
+              size={14}
+            />{/if}Refresh
         </button>
       {/if}
       {#if used.length}
-        <button class="ghost small" onclick={() => (transfer = { mode: "export", source: null })}
+        <button
+          class="small"
+          disabled={!supports(app.info, "saveTransfer")}
+          onclick={() => (transfer = { mode: "export", source: null })}
           ><Icon name="upload" size={14} />Export</button
         >
       {/if}
-      <button class="ghost small" onclick={() => void startImport()}><Icon name="download" size={14} />Import</button>
-      <button class="ghost small" onclick={openFolder}><Icon name="folder" size={14} />Open folder</button>
+      {#if importItems.length}
+        <Menu text="Import" icon="download" label="Import saves" compact items={importItems} />
+      {/if}
+      {#if copySources.length}
+        <!-- The same game's saves on another disc's card (PAL and US): their own card each. -->
+        <button
+          class="small"
+          disabled={!supports(app.info, "saveTransfer")}
+          onclick={() => (transfer = { mode: "copy", source: null })}
+          ><Icon name="copy" size={14} />{copyButtonText(copySources)}</button
+        >
+      {/if}
+      <button class="small" disabled={!supports(app.info, "openFolders")} onclick={openFolder}
+        ><Icon name="folder" size={14} />Open folder</button
+      >
     </div>
   </div>
 
@@ -183,7 +295,9 @@
       <ul class="slots">
         {#each used as slot (slot.slotIndex)}
           <li>
-            <span class="slot" title={developer ? `${slot.filename} · ${size(slot.size)}` : undefined}
+            <span
+              class="slot"
+              title={developer ? `${slot.filename} · ${size(slot.size)}` : undefined}
               >Slot {slot.slotIndex + 1}</span
             >
             <span class="planet">{slot.planetName ?? "Unknown planet"}</span>
@@ -199,7 +313,10 @@
               <span></span>
             {/if}
             {#if slot.editable}
-              <button class="small edit" onclick={() => (editing = slot.slotIndex)}
+              <button
+                class="small edit"
+                disabled={!supports(app.info, "saveEditing")}
+                onclick={() => (editing = slot.slotIndex)}
                 ><Icon name="edit" size={14} />Edit</button
               >
             {:else}
@@ -210,7 +327,27 @@
       </ul>
       {#if empty}<p class="empty">{empty}</p>{/if}
     {:else}
-      <p class="muted">No saves on this card yet: they show here once you have saved in the game.</p>
+      <p class="muted">
+        No saves on this card yet: they show here once you have saved in the game.
+      </p>
+    {/if}
+
+    {#if status.coopSaves.length}
+      <!-- A party's saves: never the player's own slots. They are hosted from the game's Multiplayer page. -->
+      <h4 class="coop-title">Co-op saves</h4>
+      <p class="muted">From your parties. Your own saves above are left as they are.</p>
+      <ul class="slots">
+        {#each status.coopSaves as slot (slot.slotIndex)}
+          <li>
+            <span class="slot">Co-op {slot.slotIndex + 1}</span>
+            <span class="planet">{slot.planetName ?? "Unknown planet"}</span>
+            <span class="bolts"><Icon name="bolt" size={14} />{grouped(slot.bolts ?? 0)}</span>
+            <span class="when">{saved(slot.timestamp)}</span>
+            <span class="modded" title="Whose party this was">{slot.host ?? ""}</span>
+            <span></span>
+          </li>
+        {/each}
+      </ul>
     {/if}
 
     <div class="backups">
@@ -224,7 +361,11 @@
         >
           Backups ({status.backups.length})
         </button>
-        <button class="small" disabled={creatingBackup || naming} onclick={() => void startBackup()}>
+        <button
+          class="small"
+          disabled={creatingBackup || naming}
+          onclick={() => void startBackup()}
+        >
           <Icon name="save" size={14} />Back up now
         </button>
       </div>
@@ -247,7 +388,9 @@
               <button class="primary small" disabled={creatingBackup} onclick={createBackup}>
                 {#if creatingBackup}<span class="spinner"></span>{/if}Back up
               </button>
-              <button class="ghost small" disabled={creatingBackup} onclick={() => (naming = false)}>Cancel</button>
+              <button class="ghost small" disabled={creatingBackup} onclick={() => (naming = false)}
+                >Cancel</button
+              >
             </div>
           {/if}
           {#if status.backups.length}
@@ -264,10 +407,12 @@
                   {/if}
                   <button
                     class="ghost small restore"
-                    disabled={restoringBackupName === backup.name}
+                    disabled={restoringBackupName === backup.name ||
+                      !supports(app.info, "saveEditing")}
                     onclick={() => void restoreBackup(backup)}
                   >
-                    {#if restoringBackupName === backup.name}<span class="spinner"></span>{/if}Restore
+                    {#if restoringBackupName === backup.name}<span class="spinner"
+                      ></span>{/if}Restore
                   </button>
                 </li>
               {/each}
@@ -322,19 +467,22 @@
     gap: 6px;
   }
 
-  /* A narrow panel: a slot's planet and Edit on the first line, its bolts, time and mods under. */
-  @container (max-width: 520px) {
-    .slots li {
-      grid-template-columns: 48px minmax(0, 1fr) auto;
+  /* A narrow panel: two lines a slot, the planet over its bolts, time and mods; Edit beside both. */
+  @container (max-width: 560px) {
+    /* .saves: over the wide row's columns, which come later in the file. */
+    .saves .slots li {
+      grid-template-columns: 52px auto minmax(0, 1fr) auto auto;
       grid-template-areas:
-        "slot planet edit"
-        ". bolts bolts"
-        ". when mods";
-      row-gap: 4px;
+        "slot planet planet planet edit"
+        "slot bolts when mods edit";
+      gap: 2px 12px;
+      padding: 10px 2px;
     }
 
     .slots li > :nth-child(1) {
       grid-area: slot;
+      align-self: start;
+      padding-top: 2px;
     }
 
     .slots li > :nth-child(2) {
@@ -356,6 +504,7 @@
 
     .slots li > :nth-child(6) {
       grid-area: edit;
+      justify-self: end;
     }
   }
 
@@ -366,9 +515,14 @@
   }
 
   /* One used slot per row, the columns aligned down the list. */
+  .coop-title {
+    margin: 16px 0 2px;
+    font-size: inherit;
+  }
+
   .slots li {
     display: grid;
-    grid-template-columns: 48px minmax(0, 1fr) auto minmax(0, auto) auto auto;
+    grid-template-columns: 60px minmax(0, 1fr) auto minmax(0, auto) auto auto;
     align-items: center;
     gap: 14px;
     padding: 9px 2px;
@@ -379,6 +533,8 @@
   .slot {
     font-size: 0.8125rem;
     color: var(--dim);
+    /* "Co-op 1" on one line. */
+    white-space: nowrap;
   }
 
   .planet {
@@ -396,7 +552,6 @@
     text-transform: uppercase;
     color: var(--amber);
     background: color-mix(in srgb, var(--amber) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
     border-radius: 6px;
     padding: 2px 7px;
     cursor: help;
@@ -426,8 +581,7 @@
   .chip {
     font-size: 0.75rem;
     color: var(--soft);
-    background: var(--panel-hi);
-    border: 1px solid var(--line-strong);
+    background: var(--control);
     border-radius: 7px;
     padding: 2px 8px;
     white-space: nowrap;
@@ -445,11 +599,15 @@
   .fold {
     justify-content: flex-start;
     gap: 8px;
-    padding: 4px 0;
     border: 0;
     background: none;
+    box-shadow: none;
     color: var(--lav);
     font-weight: 600;
+    /* Room on both sides, so the triangle sits inside the fill a hover gives it; the negative
+     margin keeps the words in line with the text around. */
+    padding: 8px 12px;
+    margin-left: -12px;
   }
 
   .fold::before {
@@ -503,27 +661,5 @@
 
   .small-text {
     font-size: 0.8125rem;
-  }
-
-  @media (max-width: 640px) {
-    .slots li {
-      grid-template-columns: 48px minmax(0, 1fr) auto;
-      row-gap: 6px;
-    }
-
-    /* The date on a line of its own under the planet, the mods badge beside it, Edit at its end. */
-    .slots .when {
-      grid-column: 2;
-    }
-
-    .slots .modded {
-      grid-column: 3;
-      justify-self: end;
-    }
-
-    .slots li > :last-child {
-      grid-column: 3;
-      justify-self: end;
-    }
   }
 </style>

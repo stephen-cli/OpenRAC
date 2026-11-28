@@ -14,9 +14,10 @@ RAC1_TYPE_func_001FE540_result func_001FE540(int id) {
     if (destination != 0) {
         return (RAC1_TYPE_func_001FE540_result)destination;
     }
+    id = rac1_ship_text_id(id);
 #endif
     const gaddr own = openrac_game_text(id);
-    return own != 0 ? (RAC1_TYPE_func_001FE540_result)own : func_001FE540__game(id);
+    return own != 0 ? (RAC1_TYPE_func_001FE540_result)own : func_001FE540__hooked(id);
 }
 
 /* The game's options a console forgets at power off, which the port remembers between runs in its

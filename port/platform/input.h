@@ -32,13 +32,19 @@
 #include <utility>
 #include <vector>
 
+#include "platform/active_device.h"
 #include "platform/bindings.h"
+#include "platform/gyro.h"
+#include "platform/menu_chord.h"
+#include "platform/mouse_rate.h"
 #include "platform/pad.h"
 #include "platform/players.h"
+#include "platform/rumble.h"
 #include "platform/touch_pad.h"
 
 union SDL_Event;
 struct SDL_Gamepad;
+struct SDL_Sensor;
 
 namespace openrac::platform {
 
@@ -95,11 +101,68 @@ public:
     // The game has read the port's pad: the buttons tapped since (taps) count no more.
     void taps_read(int port);
 
-    // The game sets the motors here (scePadSetActDirect); update() plays them.
-    Pad& pad(int port) { return m_pads[static_cast<std::size_t>(port)]; }
+    // The game's motor values for a port (sent each time it reads the pad). update() plays them
+    // on the player's gamepad, or the phone. Not renewed for kMotorHoldNs: both motors off.
+    void set_motors(int port, const MotorCommand& command);
+
+    // Motor values of another source than the game (a mod's, openrac_api.set_motors), `owner`
+    // telling the sources apart: held as the game's are (kMotorHoldNs) and played with them, each
+    // motor the stronger of the game's and every source's (stronger()).
+    void set_extra_motors(const void* owner, int port, const MotorCommand& command);
+
+    // Forgets an owner's motor values (a mod unloaded): its motors stop. Null forgets every
+    // owner's.
+    void drop_extra_motors(const void* owner);
+
+    // The last motor values, and what was sent to the pad (for tests and tools).
+    const MotorCommand& motors(int port) const {
+        return m_motors[static_cast<std::size_t>(port)].command;
+    }
+
+    // What a port's motors play now: the game's values and every other source's still held,
+    // combined.
+    MotorCommand motors_now(int port) const;
+
+    const RumbleOutput& rumble_output(int port) const {
+        return m_rumble[static_cast<std::size_t>(port)].sent;
+    }
+
+    // Stops all rumble now.
+    void stop_rumble();
 
     // The keyboard and mouse as update() last read them, for the mods.
     const KeyboardMouse& keyboard_mouse() const { return m_km; }
+
+    // The mouse's motion since update() last read it: what the next tick will turn the camera by
+    // (frontend/mouse_turn.h).
+    void pending_mouse(float& dx, float& dy) {
+        pull_raw_mouse();
+        dx = m_dx;
+        dy = m_dy;
+    }
+
+    // How fast the mouse moves now, in its units a second (mouse_rate.h).
+    void mouse_rate(float& vx, float& vy) const;
+
+    // Gyro aiming (gyro.h): the options, from the keyboard and mouse's settings. The gyro read is
+    // player 1's gamepad's, or on a phone or handheld without one the device's own.
+    void set_gyro_options(const GyroOptions& options);
+
+    // The gyro's turn as update() last read it (yaw > 0 left, pitch > 0 up, radians), and whether a
+    // gyro is read at all.
+    float gyro_yaw() const { return m_gyro_yaw; }
+
+    float gyro_pitch() const { return m_gyro_pitch; }
+
+    bool gyro_available() const { return m_gyro_pad != nullptr || m_device_gyro != nullptr; }
+
+    // The gyro's turn since update() last read it: what the next tick will turn the camera by.
+    void pending_gyro(float& yaw, float& pitch) const { m_gyro.peek(yaw, pitch); }
+
+    // Which device the player uses now, the gamepad or the keyboard and mouse (active_device.h).
+    ActiveDevice active_device() const { return m_switch.active(); }
+
+    DeviceSwitch& device_switch() { return m_switch; }
 
     // What each player's keys and gamepad press from now on (bindings.h), by player: the next read
     // uses them. What is held on a player's controller as theirs change, and the keys held as the
@@ -109,6 +172,11 @@ public:
     // What each player's controller and the keyboard hold now reads as let go until it is let go
     // indeed: a menu closed with its button, B or Esc does not also press them in the game.
     void hold_back_held();
+
+    // Start+Select opens the port's menu (menu_chord.h): while on, every port's pair is taken from
+    // the game. take_menu_chord() says whether a pair was pressed since it was last asked.
+    void set_menu_chord(bool on);
+    bool take_menu_chord();
 
     const Bindings& bindings(int port) const { return m_bindings[static_cast<std::size_t>(port)]; }
 
@@ -153,7 +221,7 @@ public:
     void set_stick_dead_zone(const StickDeadZone& dead_zone) { m_dead_zone = dead_zone; }
 
     // Whether the cursor is captured now (the frontend sets it: SDL's relative mouse mode).
-    void set_captured(bool captured) { m_km.captured = captured; }
+    void set_captured(bool captured);
 
     // The on-screen pad, which adds to port 0 (touch_pad.h). The frontend tells it the window's
     // shape and draws it while it is visible.
@@ -161,6 +229,12 @@ public:
 
 private:
     SDL_Gamepad* gamepad(int port) const;
+
+    // Plays the game's motor commands (update()): each port's shaper, then its gamepad, or for
+    // port 0 without one the device's vibrator.
+    void play_rumble();
+    // The device's own vibrator (a phone's), opened the first time it is needed; null if none.
+    SDL_Haptic* device_vibrator();
     struct Connected {
         SDL_Gamepad* gamepad = nullptr;
         std::uint64_t active_ns = 0;  // SDL's time of its last press or stick pushed well out
@@ -177,6 +251,9 @@ private:
     static constexpr std::uint64_t kHandOverNs = 2'000'000'000;
 
     std::vector<Connected>::iterator find(std::uint32_t which);  // SDL_JoystickID
+    // The mouse's own motion (raw_mouse.h) added to the gathered motion while the cursor is
+    // captured, where SDL's is not the device's; dropped otherwise.
+    void pull_raw_mouse();
     // A gamepad's button pressed at SDL's time `ns`: the gamepad may move up the ports.
     void pressed(std::uint32_t which, std::uint64_t ns);
     // Moves the gamepad at from to to, its device with it (the others keep their order).
@@ -185,10 +262,55 @@ private:
     // Works out again which controller each player reads, and the devices' players.
     void assign_players();
 
+    // Works out again which gyro is read (set_gyro_options), its sensors on and the others off.
+    void choose_gyro();
+    // A sample of the gyro read: its button, then the filter.
+    void gyro_sample(const float* data, std::uint64_t ns);
+
     // One read of the capture: the first pad input pressed that was not held.
     void capture_step();
 
     std::array<Pad, kPadPorts> m_pads{};
+
+    // The game's motor commands, and when each was given (SDL's ns).
+    struct Motors {
+        MotorCommand command;
+        std::uint64_t ns = 0;
+    };
+
+    // How long a motor value stays valid (games resend it every frame).
+    static constexpr std::uint64_t kMotorHoldNs = 200'000'000;
+    // Each command to the pad lasts kRumbleMs and is resent every kRumbleRenewNs, so the pad
+    // stops by itself if frames stop.
+    static constexpr std::uint32_t kRumbleMs = 250;
+    static constexpr std::uint64_t kRumbleRenewNs = 100'000'000;
+    std::array<Motors, kPadPorts> m_motors{};
+
+    // The other sources' motor commands (set_extra_motors): one per owner and port.
+    struct ExtraMotors {
+        const void* owner = nullptr;
+        int port = 0;
+        Motors motors;
+    };
+
+    std::vector<ExtraMotors> m_extra_motors;
+
+    MotorCommand motors_at(int port, std::uint64_t now) const;
+
+    // Per port: the shaper, the gamepad it plays on, and what was sent when.
+    struct Rumble {
+        RumbleShaper shaper;
+        SDL_Gamepad* gamepad = nullptr;
+        bool vibrator = false;  // played on the device's vibrator
+        float vibrator_sent = 0.0f;
+        RumbleOutput sent;
+        std::uint64_t sent_ns = 0;
+    };
+
+    std::array<Rumble, kPadPorts> m_rumble{};
+    std::uint64_t m_rumble_ns = 0;  // the last play_rumble()
+    SDL_Haptic* m_vibrator = nullptr;
+    bool m_vibrator_tried = false;
     // The gamepads in port order: first those used so far (the first m_used), then the others in
     // the order they came. A gamepad pressed takes port 0 when port 0's has been left alone for
     // kHandOverNs (or was never used).
@@ -215,6 +337,8 @@ private:
     std::array<bool, kKeyCount> m_key_latch{};
     std::array<SDL_Gamepad*, kPadPorts> m_gates_of{};
     TouchPad m_touch;
+    bool m_menu_chord_on = false;
+    std::array<MenuChord, kPadPorts> m_menu_chord{};
     KeyboardMouse m_km;
     bool m_keyboard_table = true;
     StickDeadZone m_dead_zone;
@@ -222,6 +346,20 @@ private:
     std::array<std::uint8_t, kKeyCount> m_went_down{};
     std::uint32_t m_mouse_went_down = 0;
     float m_dx = 0.0f, m_dy = 0.0f, m_wheel_x = 0.0f, m_wheel_y = 0.0f;
+    MouseRate m_rate;  // the motion counted in m_dx and m_dy, with its time
+    DeviceSwitch m_switch;
+    // Gyro aiming: the filter, the gamepad read (or the device's sensors), the sensor it reads on
+    // that gamepad (SDL_SensorType), and the turn update() last took.
+    GyroAim m_gyro;
+    SDL_Gamepad* m_gyro_pad = nullptr;
+    SDL_Gamepad* m_gyro_for = nullptr;  // player 1's gamepad when the gyro was chosen
+    int m_gyro_sensor = 0;
+    int m_accel_sensor = 0;
+    SDL_Sensor* m_device_gyro = nullptr;
+    SDL_Sensor* m_device_accel = nullptr;
+    bool m_sensors_tried = false;
+    float m_gyro_yaw = 0.0f;
+    float m_gyro_pitch = 0.0f;
 };
 
 }  // namespace openrac::platform

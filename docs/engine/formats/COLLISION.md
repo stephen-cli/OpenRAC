@@ -6,7 +6,7 @@ query reads one cell; plus hero-only groups (invisible walls), the gameplay
 file's shape volumes, and the camera collision grid. The layout is Wrench's
 as ReRAC describes it, confirmed by ReRAC from the game's query code on the
 NTSC-U disc (`SCUS_971.99`, all 19 levels). OpenRAC's editor reads it on PAL
-with the same results ([ASSETS.md](../../../games/rac1/docs/ASSETS.md#collision)).
+with the same results ([ASSETS.md](../../../games/rac1/decomp/docs/ASSETS.md#collision)).
 How the game queries it: [COLLISION_QUERIES.md](../systems/COLLISION_QUERIES.md).
 Moby class collision is a separate format ([MOBY.md](MOBY.md#8-collision-bangles-gif-usage)).
 
@@ -56,7 +56,7 @@ zero-padded to its quadword count); the mesh is zero-padded to 0x40, and the
 hero section after it pads the block to 0x40. The tables and leaves are not in
 coordinate order but in the build tool's own (the slabs of level 0 run Z 8, 9,
 7, 5, ...), so a writer that keeps that order reproduces the block byte for
-byte; OpenRAC's editor does ([collision.py](../../../editor/collision.py)), and
+byte; OpenRAC's editor does ([collision.py](../../../extractor/collision.py)), and
 edits only the cells an edit touches. Leaves with no faces occur (level 15).
 
 ## 3. Leaf
@@ -173,4 +173,4 @@ six levels have none.
 Sources: ReRAC (https://github.com/re-rac/rerac, ISC, Copyright (c) 2026
 ReRAC contributors), `docs/formats/collision_rac1.md`,
 `docs/plan/collision_queries.md`; PAL facts from
-[ASSETS.md](../../../games/rac1/docs/ASSETS.md).
+[ASSETS.md](../../../games/rac1/decomp/docs/ASSETS.md).

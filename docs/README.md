@@ -22,10 +22,11 @@ Where to find what. Start with the first table.
 |---|---|
 | [docs/port](port/README.md) | The port, OpenGOAL's way: the design ([DESIGN.md](port/DESIGN.md)) and the order of work ([ROADMAP.md](port/ROADMAP.md)) |
 | [port/](../port/README.md) | The code: how it fits together, building and testing it |
-| [port/docs/CODING_CONVENTIONS.md](../port/docs/CODING_CONVENTIONS.md) | How the port's C++ and C are written, and what CI checks |
+| [docs/CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) | How the port's C++ and C are written, and what CI checks |
 | [port/WORKFLOW.md](port/WORKFLOW.md) | From a player's report to a fix and a release |
 | [port/BACKFILL.md](port/BACKFILL.md) | Which functions to fill in with C for the port, and the check that says they are right |
 | [port/KNOWN_ISSUES.md](port/KNOWN_ISSUES.md) | Bugs that are understood and guarded but not properly fixed yet |
+| [port/ANTIVIRUS.md](port/ANTIVIRUS.md) | What to do when an antivirus flags an OpenRAC file |
 | [port/SETTINGS.md](port/SETTINGS.md), [port/DEBUGGING.md](port/DEBUGGING.md) | The settings file and where it lives; options and variables for debugging |
 | [port/RENDERER.md](port/RENDERER.md), [port/VU_PROGRAMS.md](port/VU_PROGRAMS.md) | How the game builds a frame; its vector unit programs |
 | [port/MODS.md](port/MODS.md), [port/ANDROID.md](port/ANDROID.md) | The mod SDK; the Android build |
@@ -36,7 +37,8 @@ Where to find what. Start with the first table.
 | Document | For |
 |---|---|
 | [launcher/README.md](../launcher/README.md) | The launcher: using it, developing it, [connecting a game](../launcher/docs/INTEGRATION.md) |
-| [editor/README.md](../editor/README.md) | The Godot level editor: extracting your levels, what it reads, its code |
+| [extractor/README.md](../extractor/README.md) | The extractor: reading your disc's levels, models, textures and sounds for the port and for packs |
+| [OpenRAC Editor](https://github.com/OpenRAC/OpenRAC-Editor) | The level editor, a program of its own: the launcher downloads it from its releases ([its guide](https://github.com/OpenRAC/OpenRAC-Editor/blob/main/docs/LEVEL_EDITOR.md)) |
 
 ## The decompilations
 
@@ -46,13 +48,13 @@ work, every game's document list) is in [decomp/](decomp/README.md).
 
 | Game | Start with |
 |---|---|
-| Ratchet & Clank, PAL | [games/rac1](../games/rac1/README.md) |
-| Ratchet & Clank, NTSC-U | [games/rac1/ntsc](../games/rac1/ntsc/README.md) |
-| Going Commando | [games/rac2/ntsc](../games/rac2/ntsc/README.md) |
-| Up Your Arsenal | [games/rac3/ntsc](../games/rac3/ntsc/README.md) |
-| Deadlocked | [games/rac4/ntsc](../games/rac4/ntsc/README.md) |
-| Size Matters | [games/rac5/ntsc](../games/rac5/ntsc/README.md) |
-| Secret Agent Clank | [games/rac6/ntsc](../games/rac6/ntsc/README.md) |
+| Ratchet & Clank, PAL | [games/rac1/decomp](../games/rac1/decomp/README.md) |
+| Ratchet & Clank, NTSC-U | [games/rac1/ntsc-decomp](../games/rac1/ntsc-decomp/README.md) |
+| Going Commando | [games/rac2/decomp](../games/rac2/decomp/README.md) |
+| Up Your Arsenal | [games/rac3/decomp](../games/rac3/decomp/README.md) |
+| Deadlocked | [games/rac4/decomp](../games/rac4/decomp/README.md) |
+| Size Matters | [games/rac5/decomp](../games/rac5/decomp/README.md) |
+| Secret Agent Clank | [games/rac6/decomp](../games/rac6/decomp/README.md) |
 
 Across the games: [games/](../games/README.md) (how the versions relate),
 [engine/](engine/README.md) (what is known about the engine),

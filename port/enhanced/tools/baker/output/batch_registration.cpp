@@ -28,7 +28,18 @@ std::string region_registry(const ProbeBatchOptions& options, const json::Value&
     std::string regions = "[";
 
     // Final plan order fixes registry order independently of worker completion.
-    for (std::size_t index = 0; index < plan["regions"].items().size(); ++index) {
+    auto count = plan["regions"].items().size();
+    if (plan["island_policy"]["enabled"].boolean()
+        && std::filesystem::exists(options.output_directory / "placement-islands.json")) {
+        const auto islands =
+            bake_json::document(options.output_directory / "placement-islands.json");
+        if (!islands["volumes"].is_object()
+            || !islands["volumes"].members().contains("sparse.orpg")) {
+            throw std::runtime_error("missing watershed allocation registry");
+        }
+        count = islands["volumes"].members().size() - 1;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
         const auto name = std::format("region-{:03}.orpg", index);
         require_asset(options.output_directory / name);
 
@@ -54,7 +65,9 @@ void publish(const std::filesystem::path& path, const std::string& text) {
 }
 
 // Registers only native-verified assets; the result marker is written after both registries.
-void register_outputs(const ProbeBatchOptions& options, const json::Value& plan) {
+void register_outputs(
+    const ProbeBatchOptions& options, const json::Value& plan, bool environment_unavailable
+) {
     const auto regions = region_registry(options, plan);
     const auto& report = plan["registration"];
     const auto& profile = report["bake_profile"];
@@ -73,7 +86,9 @@ void register_outputs(const ProbeBatchOptions& options, const json::Value& plan)
     }
 
     // Optional reflection captures are registered only after their stage completed.
-    if (std::filesystem::is_regular_file(options.output_directory / "environment.orpe")) {
+    if (environment_unavailable) {
+        text += ",\"environment_unavailable\":true";
+    } else if (std::filesystem::is_regular_file(options.output_directory / "environment.orpe")) {
         text += ",\"environment\":\"environment.orpe\"";
     }
 
@@ -84,7 +99,9 @@ void register_outputs(const ProbeBatchOptions& options, const json::Value& plan)
 }
 }  // namespace
 
-Result<void> register_batch_outputs(const ProbeBatchOptions& options) {
+Result<void> register_batch_outputs(
+    const ProbeBatchOptions& options, bool environment_unavailable
+) {
     // Filesystem errors leave the batch incomplete, retaining partial data for diagnosis.
     try {
         const profiling::Zone timing("Register verified bake outputs");
@@ -96,7 +113,7 @@ Result<void> register_batch_outputs(const ProbeBatchOptions& options) {
             throw std::runtime_error("missing native bake registration metadata");
         }
 
-        register_outputs(options, plan);
+        register_outputs(options, plan, environment_unavailable);
         return {};
     } catch (const std::exception& error) {
         return unexpected(Error{error.what()});

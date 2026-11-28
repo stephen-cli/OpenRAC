@@ -39,6 +39,8 @@
         key: v.key,
         name: shortTitle(game.title),
         art: gameThumb(game.id),
+        // Each version its own disc: the NTSC-U or the PAL print (as Games' list).
+        disc: { game: game.id, version: v.name, title: game.title },
         style: themeStyle(game.id),
         group: gi === 0 && vi === 0 ? "Versions" : undefined,
         state: v.progress
@@ -60,10 +62,13 @@
   ]);
 
   /** Android: the game picked in Games, and the tab open, one of its versions or the console. */
-  const picked = $derived(games.find((g) => g.id === app.version?.split("/")[0]) ?? games[0] ?? null);
+  const picked = $derived(
+    games.find((g) => g.id === app.version?.split("/")[0]) ?? games[0] ?? null,
+  );
   const tab = $derived.by(() => {
     if (!picked || app.develop === "console") return app.develop;
     if (picked.versions.some((v) => v.key === app.develop)) return app.develop;
+
     return (playerVersion(picked) ?? picked.versions[0])?.key ?? "console";
   });
   const selected = $derived(onAndroid ? tab : app.develop);
@@ -84,7 +89,9 @@
             tabindex={tab === v.key ? 0 : -1}
             class:on={tab === v.key}
             onclick={() => (app.develop = v.key)}
-            >{regionLabel(v.name)}<span class="dim">{v.progress ? pct(v.progress.percent) : "–"}</span></button
+            >{regionLabel(v.name)}<span class="dim"
+              >{v.progress ? pct(v.progress.percent) : "–"}</span
+            ></button
           >
         {/each}
         <button
@@ -93,7 +100,8 @@
           tabindex={tab === "console" ? 0 : -1}
           class:on={tab === "console"}
           onclick={() => (app.develop = "console")}
-          ><Icon name="terminal" size={16} />Console{#if pending}<span class="busy">{pending}</span>{/if}</button
+          ><Icon name="terminal" size={16} />Console{#if pending}<span class="busy">{pending}</span
+            >{/if}</button
         >
       </div>
     {/if}
@@ -102,7 +110,12 @@
 {:else}
   <SideFrame>
     {#snippet list()}
-      <SideList {entries} selected={app.develop} onpick={(key) => (app.develop = key)} label="Develop" />
+      <SideList
+        {entries}
+        selected={app.develop}
+        onpick={(key) => (app.develop = key)}
+        label="Develop"
+      />
     {/snippet}
     <div class="page">
       <h1 class="sr">Develop</h1>
@@ -139,11 +152,8 @@
     display: flex;
     align-self: flex-start;
     flex-wrap: wrap;
-    gap: 4px;
-    padding: 4px;
-    border: 1px solid var(--line-strong);
-    border-radius: 999px;
-    background: var(--panel);
+    /* Each tab a button of its own, with room between: no strip joining them. */
+    gap: 6px;
   }
 
   .tabs button {
@@ -151,7 +161,7 @@
     align-items: center;
     gap: 8px;
     border: 0;
-    background: none;
+    background: var(--control);
     padding: 8px 18px;
     font-size: 0.875rem;
     font-weight: 600;
@@ -162,9 +172,8 @@
   }
 
   .tabs button.on {
-    background: var(--panel-hi);
+    background: var(--on-fill);
     color: var(--amber);
-    box-shadow: inset 0 0 0 1px var(--line-strong);
   }
 
   .tabs button:focus-visible {
@@ -180,7 +189,7 @@
   .busy {
     min-width: 20px;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--warn) 22%, transparent);
     color: var(--warn);
     font-size: 0.75rem;

@@ -30,10 +30,19 @@
  */
 #include "rac1.h"
 
-enum { SLOTS = 13, SLOT_BYTES = 0x90, SLOT_X = 0x50, SLOT_FLAGS = 0x60, ANCHOR_LEFT = 4, ANCHOR_RIGHT = 8 };
+enum {
+    SLOTS = 13,
+    SLOT_BYTES = 0x90,
+    SLOT_X = 0x50,
+    SLOT_HANDLE = 0x64,
+    SLOT_FLAGS = 0x60,
+    ANCHOR_LEFT = 4,
+    ANCHOR_RIGHT = 8
+};
 
 /* The screen's left in 16ths of a pixel (screen_extent.left), added to every 2D draw's x. */
 #define SCREEN_LEFT GREF(int, RAC1_ADDR(0x0013E610u))
+#define SCREEN_TOP GREF(int, RAC1_ADDR(0x0013E614u))
 
 /* How far each slot is moved while func_001FFFB8 draws them, else all 0. */
 static int moved[SLOTS];
@@ -46,6 +55,14 @@ static int moved[SLOTS];
 #define SCREEN_LINES RAC1_ADDR(0x0013E604u) /* the screen's height in lines */
 #define FONT_PIXELS 16
 
+/* A character a line may have: the printable ones, and the pad's button tokens (interface 1.31:
+ * 0x10 to 0x19, OPENRAC_UI_CROSS ... OPENRAC_UI_RIGHT_STICK), the font's icon cells of row 96,
+ * which the keyboard and mouse paint with the player's keys (key_prompts.h) as they do the game's
+ * own prompts. */
+static int drawable(char c) {
+    return (c >= 32 && c <= 126) || (c >= 0x10 && c <= 0x19);
+}
+
 static void draw_line(
     const openrac_game_hud_text* line, int dx, int dy, unsigned long long colour
 ) {
@@ -56,7 +73,7 @@ static void draw_line(
     const int size = (int)(FONT_PIXELS * scale + 0.5f);
     int width = 0;
     for (const char* c = line->text; *c != '\0'; ++c) {
-        if (*c >= 32 && *c <= 126) {
+        if (drawable(*c)) {
             width += (int)(GREF(int8_t, table + 4u * (unsigned char)*c + 3u) * scale + 0.5f);
         }
     }
@@ -64,7 +81,7 @@ static void draw_line(
     int x = (int)(line->x * 512.0f) - width / 2 + dx;
     const int y = (int)(line->y * (float)(lines > 0 ? lines : 448)) - size / 2 + dy;
     for (const char* c = line->text; *c != '\0'; ++c) {
-        if (*c < 32 || *c > 126) {
+        if (!drawable(*c)) {
             continue;
         }
         /* As the game's own print does: no glyph without an advance, and the space only moves on. */
@@ -110,6 +127,27 @@ static void draw_mod_texts(void) {
     }
 }
 
+/*
+ * Aridia's counters (draw_hud_counter, func_L02_0023D6E0: the bottom corners' sand sharks and
+ * the like) keep only the side of their place and are drawn at that side's fixed x instead
+ * (D_L02_0015FA1C left, D_L02_0015FA20 right), so moving the place did not move them. With
+ * "HUD: Edges" those two are moved out with the others while the HUD is drawn, and put back.
+ */
+#define CURRENT_LEVEL RAC1_ADDR(0x0015EE84u)
+#define ARIDIA 2
+
+static void aridia_counters_out(int by) {
+#if !RAC1_OMIT(func_L02_0023D6E0)
+    if (by == 0 || GREF(int, OPENRAC_DATA(CURRENT_LEVEL)) != ARIDIA) {
+        return;
+    }
+    GREF(int, OPENRAC_LDATA(2, RAC1_LADDR(02, 0x0015FA1Cu))) -= by;
+    GREF(int, OPENRAC_LDATA(2, RAC1_LADDR(02, 0x0015FA20u))) += by;
+#else
+    (void)by;
+#endif
+}
+
 void func_001FFFB8(void) {
     const int side = openrac_game_hud_side();
     const gaddr slots = OPENRAC_DATA(RAC1_ADDR(0x00199C60u));
@@ -119,7 +157,13 @@ void func_001FFFB8(void) {
         moved[i] = side == 0 ? 0 : (flags & ANCHOR_LEFT) != 0 ? -side : (flags & ANCHOR_RIGHT) != 0 ? side : 0;
         GREF(int, slot + SLOT_X) += moved[i];
     }
-    func_001FFFB8__game();
+    aridia_counters_out(side);
+    /* A mod's scene may hide the HUD (openrac_api.hud_hide): its elements' draws are skipped, their
+     * updates still run, and the mods' own lines below stay. */
+    if (!openrac_game_hud_hidden()) {
+        func_001FFFB8__game();
+    }
+    aridia_counters_out(-side);
     for (int i = 0; i < SLOTS; i++) {
         GREF(int, slots + (gaddr)i * SLOT_BYTES + SLOT_X) -= moved[i];
         moved[i] = 0;
@@ -127,19 +171,97 @@ void func_001FFFB8(void) {
     draw_mod_texts();
 }
 
-/* draw_weapon_ammo_hud_panel(element): put back at its own place, with the screen moved instead. */
+/*
+ * draw_weapon_ammo_hud_panel(element): put back at its own place, with the screen moved instead.
+ * The panel draws at a fixed y, so a mod's offset for it (rac1_ammo_panel_offset) moves the
+ * screen for this draw only.
+ */
 int func_L00_0023B140(gaddr element) {
     const gaddr slots = OPENRAC_DATA(RAC1_ADDR(0x00199C60u));
     const gaddr offset = element - slots;
-    const int by =
-        offset < SLOTS * SLOT_BYTES && offset % SLOT_BYTES == 0 ? moved[offset / SLOT_BYTES] : 0;
-    if (by == 0) {
+    const int slot_ok = offset < SLOTS * SLOT_BYTES && offset % SLOT_BYTES == 0;
+    const int by = slot_ok ? moved[offset / SLOT_BYTES] : 0;
+    int across = 0;
+    int down = 0;
+    if (slot_ok) {
+        (void)openrac_game_ammo_panel_offset(GREF(int, element + SLOT_HANDLE), &across, &down);
+    }
+    const int native_icon = slot_ok ? GREF(int, element) : 0;
+    const int icon = slot_ok ? openrac_game_rac1_weapon_hud_icon(native_icon) : 0;
+    /* A weapon's icon key is a stand-in until its native records are patched in. Do not pass
+     * that key to the stock draw path: it indexes native icon data and can show a black
+     * placeholder. The panel returns on the next bound frame through the same function. */
+    if ((native_icon == 60001 || native_icon == 60036) && icon == 0) {
+        return 0;
+    }
+    if (by == 0 && across == 0 && down == 0 && icon == 0) {
         return func_L00_0023B140__game(element);
     }
+    if (icon != 0) {
+        GREF(int, element) = icon;
+    }
     GREF(int, element + SLOT_X) -= by;
-    SCREEN_LEFT += by * 16;
+    SCREEN_LEFT += (by + across) * 16;
+    SCREEN_TOP += down * 16;
     const int result = func_L00_0023B140__game(element);
-    SCREEN_LEFT -= by * 16;
+    SCREEN_TOP -= down * 16;
+    SCREEN_LEFT -= (by + across) * 16;
     GREF(int, element + SLOT_X) += by;
+    if (icon != 0) {
+        GREF(int, element) = native_icon;
+    }
     return result;
+}
+
+/*
+ * The menus' panels (draw_pause_menu_pages in a level, render_level_effects_and_screen_sprites
+ * between levels):
+ * the game parks the panels of the pages not shown past its screen's left side and still draws their
+ * dark fill. The television never showed them. With "HUD: Edges" the picture's sides are drawn, so the
+ * frame recorder is told (openrac_frame_picture_band) to keep what the menu draws inside the picture.
+ */
+
+/* The frame recorder's place for what follows: the 2D list's write pointer, as ui2d.c's quads take
+ * it. Nothing is written into the list. */
+static void anchor(void) {
+    openrac_frame_anchor_at(OPENRAC_DATA(RAC1_ADDR(0x00161000u)));
+}
+
+static void picture_band(int on) {
+    anchor();
+    openrac_frame_picture_band(on);
+}
+
+void func_0021A610(void) {
+    const int side = openrac_game_hud_side();
+    if (side != 0) {
+        picture_band(1);
+    }
+    func_0021A610__game();
+    if (side != 0) {
+        picture_band(0);
+    }
+}
+
+void func_L00_002781D8(int transfer_only) {
+    const int side = openrac_game_hud_side();
+    if (side != 0) {
+        picture_band(1);
+    }
+    func_L00_002781D8__game(transfer_only);
+    if (side != 0) {
+        picture_band(0);
+    }
+}
+
+/* The Visibomb's out-of-range static is a full-screen effect made of 32-pixel
+ * textured tiles. Unlike HUD textures, the entire grid must cover the target,
+ * including its widescreen sides. The whole target is this draw's only
+ * (openrac_frame_wide), for both native UI quads and replayed GS packets. */
+void func_L01_00303810(gaddr moby) {
+    anchor();
+    openrac_frame_wide(1);
+    func_L01_00303810__game(moby);
+    anchor();
+    openrac_frame_wide(0);
 }

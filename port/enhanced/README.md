@@ -18,8 +18,8 @@ Start with the [lighting guide](lighting/README.md) for builds, bakes and contro
 
 ## Integration
 
-GTAO (`renderer/gtao.h`) implements `port/renderer/ambient_occlusion.h`, registered in
-`game/common/frontend/world.cpp`. It uses `port/renderer/gtao_settings.h` and builds with its
+GTAO (`renderer/gtao.h`) implements `port/renderer/effects/ambient_occlusion.h`, registered in
+`game/common/frontend/world.cpp`. It uses `port/renderer/settings/gtao_settings.h` and builds with its
 shaders in `openrac_renderer`.
 
 The Enhanced menu's hierarchical-depth checkbox enables up to four min/max depth levels
@@ -38,7 +38,7 @@ through `lighting::use_scene_lighting`. Loader and baker share explicit emission
 in exported `probe-emission.json`.
 
 Shared integration and core Vulkan optimisations stay in `port/renderer/` and
-`port/scene/`. Editor bake inputs live in `editor/enhanced/`.
+`port/scene/`. Editor bake inputs live in `extractor/enhanced/`.
 
 Texture upscaling and its 64 MiB cache live in `renderer/texture_upscale.*`.
 Edge-aware mode combines 2x colour reconstruction with conservative directional
@@ -51,8 +51,9 @@ are retired. Only the enhanced texture library depends on the Vulkan copy helper
 
 Enhanced graphics > Diagnostics > Ratchet fur view shows the authored coverage mask or
 UV growth directions with arrows. Detail normals shows the shaded surface orientation.
-Graphics > Enhanced Settings > Materials & water > Material inspector controls fur appearance
-through the shared `ratchet-fur` preset or a selected object material. Save writes the local JSON
+Developer settings > Material Studio controls shared material
+definitions. Choose Lit, Glass Lit, Lit Fur Surface, Lit Wet Fur Surface, Lit Foliage, or Original.
+The `ratchet-coat` material uses Lit Wet Fur Surface. Save writes the local JSON
 overlay; coverage and groom assets remain separate. See [Materials](../materials/README.md).
 
 The optional Geometry (prototype) controls add a short shell coat to the verified player fur
@@ -104,21 +105,31 @@ spilling onto equipment. Shared vertices between fur and excluded islands are re
 and live-palette checks exclude attachments, other materials and UI copies. Diagnostics are
 session-only and default off.
 
+## Thin glass
+
+In enhanced mode, the verified NTSC-U Veldin and green ships have panes fitted to their animated canopies.
+Select the canopy surface in Material Studio to edit reflections, clear transmission and its linear RGB tint.
+The RAC1 game profile owns the verified fits. PAL retains retail geometry; NTSC replacement meshes
+receive panes only when their complete layout matches.
+See [materials](../materials/README.md) for shared editing and saved overrides.
+
 ## Foliage
 
 Enhanced Vulkan supports reviewed thin-leaf materials through `material-overrides.json`. Texture-content hashes select materials; ordinary cutouts,
 trunks, metal and blended effects retain their existing response. The initial shared rac1
 profile covers nine Novalis leaf/fern textures. Fresh PAL and NTSC exports copy that profile;
-existing exports need the metadata copied in or a fresh export. Replacement artwork opts out
+automatic bake preparation refreshes existing exported profiles. Replacement artwork opts out
 unless explicitly reviewed.
 
 Thin-sheet diffuse transmission shares energy with surface diffuse reflection. The original
 paint supplies transmitted hue; Beer-Lambert absorption uses an authored optical thickness.
 Rough GGX supplies dielectric highlights (F0 0.04, 25% wax coverage to preserve painted colour). Directional and Forward+ point/spot lights
-use the existing light bank. Backlit leaves use light-facing primary-shadow bias while keeping
-external blockers. Local lights retain their existing unshadowed policy. Alpha, depth, mesh
+use the existing light bank. Early-lit and fast blended leaves reuse front-side shadow visibility
+on both sides. The full per-fragment path uses light-facing shadow bias on backlit leaves and
+keeps external blockers. Local lights retain their existing unshadowed policy. Alpha, depth, mesh
 positions and the original texture are unchanged. No extra render target or texture is added;
-four bounded controls occupy the last two spare words of the 96-byte GPU material record.
+four bounded controls occupy two packed words in the GPU material record. The 144-byte record
+also carries shared optical controls so changes in finish do not split compatible draw batches.
 
 Rules match `texture_rgba_sha256` and original cutout eligibility. Optical properties are
 `foliage.transmission` (0-1), `foliage.thickness` (0-4), `foliage.normal_bend` (0-1) and
@@ -137,6 +148,8 @@ surface shading, not a screen-space blur or a change to baked transport. Run the
 The shared prepass writes smooth view-space normals for early GI and GTAO. Depth supplies
 positions/horizons, never reconstructed normals. Colour passes read cached GI/shadows and use
 smooth normals for direct light, with consistent skinning, scaling and camera-facing orientation.
+Early lighting blends the same four cache cells for indirect light and shadow visibility.
+The indirect-only debug view samples probes per fragment so gaps in coverage appear black.
 Invalid normals use a neutral fallback. Raster derivatives only orient normals to visible
 triangles; grazing-angle constraints prevent flips beneath surfaces and GTAO self-occlusion.
 No extra normal texture is needed.
@@ -149,11 +162,11 @@ are unchanged.
 ## Gameplay rim lighting
 
 Gameplay rim lighting uses cached GI colour and smooth normals, fading toward front-facing
-surfaces within a brightness cap. It needs valid probe coverage, adds no samples/targets, and
-leaves emission, diagnostics, UI and blended effects unchanged. Ratchet, attachments, pickups,
+surfaces within a brightness cap. It uses the cache's ambient estimate where local probe coverage
+is missing and requires no extra probe samples or render targets. Ratchet, attachments, pickups,
 crates, enemies, NPCs and tool targets use the class list in `port/game/rac1/gameplay_lighting.h`;
 Going Commando's identified ones (Ratchet, the vendor, crates, the ammo pickup) are its profile's
-(`port/game/rac2-ntsc/profile.cpp`).
+(`port/game/rac2/profile.cpp`).
 Enhanced Settings toggles it; Advanced saves live strength/falloff controls. Higher falloff
 narrows the edge. Reflections stay separate from diffuse texture/vertex tint, including chrome
 overlays such as Clank's, keeping dark materials readable.

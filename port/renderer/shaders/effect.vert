@@ -8,6 +8,10 @@
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec2 st;
 layout(location = 2) in vec4 colour;  // normalised bytes
+#ifdef OPENRAC_EFFECT_PAIR
+layout(location = 3) in float pair;  // 1: the quad samples its batch's second texture (tex_T2)
+flat out float v_pair;
+#endif
 
 uniform mat4 view_projection;
 uniform mat4 view;
@@ -24,10 +28,17 @@ void main() {
     v_world = position;
     vec2 uv = st;
     v_colour = colour * 255.0;
+#ifdef OPENRAC_EFFECT_PAIR
+    v_pair = pair;
+#endif
 #ifdef OPENRAC_EFFECT_POSITION
     effect_vertex(v_world, uv, v_colour);
 #endif
     gl_Position = view_projection * vec4(v_world, 1.0);
+    // A little nearer (reversed depth: larger is nearer), about five steps of a 24-bit depth buffer:
+    // a strip the game lays on a surface it drew before, a few millimetres apart (Kalebo III's dome
+    // glass over its fading panes), passes there as on the GS instead of tearing in and out of it.
+    gl_Position.z += 6.0e-7 * gl_Position.w;
 #ifdef OPENRAC_OCEAN_SPECTRUM
     // The ocean extends beyond the world camera's far plane at clear depth.
     if (water_mesh != 0 && gl_Position.w > 0.)

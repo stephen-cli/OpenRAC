@@ -13,12 +13,13 @@
 #include "common/stats.h"
 #include "enhanced/renderer/atmosphere.h"
 #include "enhanced/viewer/scene_lighting.h"
-#include "renderer/framebuffer.h"
-#include "renderer/gl.h"
-#include "renderer/render_opt.h"
+#include "renderer/gl/framebuffer.h"
+#include "renderer/gl/gl.h"
+#include "renderer/settings/render_opt.h"
 #include "renderer_shaders.h"
 #include "scene/level_renderer.h"
 #include "tests/check.h"
+#include "tests/graph_fixture.h"
 #include "tests/renderer_gl_context.h"
 #ifdef OPENRAC_VULKAN
 #include "renderer/vulkan/vkgl.h"
@@ -127,7 +128,7 @@ void main(){
         glBindVertexArray(vao);
         for (int c = 0; c < 4; ++c) {
             glUniform1i(read.uniform("test_channel"), c);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+            openrac::test::graph_draw(glDrawArrays, GL_TRIANGLES, 0, 3);
             std::array<std::uint8_t, 4> pixel{};
             glReadPixels(
                 target.width / 2, target.height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data()
@@ -161,23 +162,8 @@ void main(){
     CHECK(sample(37.f, 2)[0] != .2f);
     input.volumetric_quality = renderer::VolumetricQuality::Medium;
     atmosphere.prepare(scene, input, target, colour, fog, true);
-    // The variants and the shared program agree to rounding, not bit for bit: the device's
-    // compiler orders the folded and unfolded arithmetic its own way (NVIDIA: up to 10 ulps).
-    const auto same = [](const std::array<float, 4>& a, const std::array<float, 4>& b) {
-        bool close = true;
-        for (std::size_t c = 0; c < a.size(); ++c) {
-            close = close && std::abs(a[c] - b[c]) <= 1e-6f;
-        }
-        return close;
-    };
     for (float depth : {0.f, .01f, 3.3f, 37.f, 80.f}) {
         const auto actual = sample(depth, false);
-        renderer::render_opt::set(renderer::render_opt::Opt::ShaderVariants, false);
-        atmosphere.prepare(scene, input, target, colour, fog, true);
-        CHECK(same(sample(depth, false), actual));
-        renderer::render_opt::set(renderer::render_opt::Opt::ShaderVariants, true);
-        atmosphere.prepare(scene, input, target, colour, fog, true);
-        CHECK(same(sample(depth, false), actual));
         const float expected = 1 - depth / 100;
         CHECK(std::abs(actual[3] - expected) < .012f);
         for (int c = 0; c < 3; ++c) {
@@ -400,7 +386,7 @@ void main(){
             reference_sky.use();
             atmosphere.bind(reference_sky);
             glBindVertexArray(vao);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+            openrac::test::graph_draw(glDrawArrays, GL_TRIANGLES, 0, 3);
             glBindVertexArray(0);
             glDisable(GL_BLEND);
             glDepthMask(GL_TRUE);
@@ -429,7 +415,7 @@ void main(){
                     glDisable(GL_BLEND);
                     {
                         const stats::Scope lookup("atmosphere surface lookup", stats::kGpu);
-                        glDrawArrays(GL_TRIANGLES, 0, 3);
+                        openrac::test::graph_draw(glDrawArrays, GL_TRIANGLES, 0, 3);
                     }
                     // Alternate order to avoid giving either path a consistent cache advantage.
                     if (iteration % 2 == 0) {

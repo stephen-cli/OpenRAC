@@ -23,6 +23,9 @@
 #include "controls_store.h"
 #include "debug/menu_ui.h"
 #include "frontend.h"
+#include "game/common/profile.h"
+#include "mods.h"
+#include "openrac/game_host.h"
 #include "platform/bindings.h"
 #include "platform/input.h"
 #include "platform/players.h"
@@ -627,7 +630,7 @@ void player_panel(controls::Store& store, platform::Input& input, int p) {
         write(keyboard, choices[static_cast<std::size_t>((at + by + count) % count)].first);
     }
     note_hover(static_cast<int>(id));
-    static constexpr const char* kKeyboardNames[] = {"No", "Only without a controller", "Always"};
+    static constexpr const char* kKeyboardNames[] = {"No", "If no pad", "Always"};
     if (const int by =
             menu_choice("Keyboard", kKeyboardNames[keyboard], keyboard > 0, keyboard < 2);
         by != 0 && can) {
@@ -667,7 +670,7 @@ void menu_open_panel() {
         s.menu_button_capture = true;
     }
     note_hover(static_cast<int>(id));
-    if (menu_bar_button() != SDL_GAMEPAD_BUTTON_INVALID) {
+    if (menu_bar_chord() || menu_bar_button() != SDL_GAMEPAD_BUTTON_INVALID) {
         if (sub_row("No button", ui().soft)) {
             settings::get().menu_bar_button = "none";
             settings::save();
@@ -681,6 +684,14 @@ void menu_open_panel() {
         }
         note_hover(static_cast<int>(id));
     }
+}
+
+// Whether the controller vibrates in this game at all: the game drives its motors (its profile's
+// has_rumble), or a loaded mod does (openrac_api.set_motors), and then the vibration settings
+// apply to the mod's rumble. A mod may also turn Vibration on itself (openrac_api.menu_option_set).
+bool game_has_rumble() {
+    return host::game_profile(openrac_game.id).has_rumble() || mods::any_mod_motors()
+           || mods::menu_option(menu::option_name(Id::RumbleStrength)) == OPENRAC_MENU_OPTION_ON;
 }
 
 }  // namespace
@@ -720,6 +731,27 @@ ControlsRow controls_row(Id id) {
             break;
         case Id::PadBackground:
             r.on = tuning.background;
+            break;
+        case Id::RumbleStrength:
+            r.enabled = game_has_rumble();
+            r.value = !r.enabled                    ? std::string("Not in this game")
+                      : tuning.rumble.strength == 0 ? std::string("Off")
+                                                    : std::format("{}%", tuning.rumble.strength);
+            r.can_lower = tuning.rumble.strength > 0;
+            r.can_raise = tuning.rumble.strength < 200;
+            break;
+        case Id::RumbleStyle:
+            r.enabled = game_has_rumble();
+            r.value =
+                tuning.rumble.style == platform::RumbleStyle::Classic ? "Classic" : "Enhanced";
+            break;
+        case Id::RumbleTriggers:
+            r.enabled = game_has_rumble();
+            r.on = tuning.rumble.triggers;
+            break;
+        case Id::RumblePhone:
+            r.enabled = game_has_rumble();
+            r.on = tuning.rumble.phone;
             break;
         case Id::ControlsReset:
             r.label = w.confirm_reset ? std::string("Press again to reset")
@@ -778,6 +810,34 @@ void controls_act(Id id, int by) {
                 store->set(scope(), key_for("pad_background"), tuning.background ? "0" : "1");
             }
             break;
+        case Id::RumbleStrength:
+            if (writable(*store)) {
+                // In tens: off, 10% .. 200%.
+                const int strength = std::clamp(tuning.rumble.strength + 10 * by, 0, 200);
+                store->set(scope(), key_for("pad_rumble"), std::to_string(strength));
+            }
+            break;
+        case Id::RumbleStyle:
+            if (writable(*store)) {
+                store->set(
+                    scope(),
+                    key_for("pad_rumble_style"),
+                    tuning.rumble.style == platform::RumbleStyle::Classic ? "enhanced" : "classic"
+                );
+            }
+            break;
+        case Id::RumbleTriggers:
+            if (writable(*store)) {
+                store->set(
+                    scope(), key_for("pad_rumble_triggers"), tuning.rumble.triggers ? "0" : "1"
+                );
+            }
+            break;
+        case Id::RumblePhone:
+            if (writable(*store)) {
+                store->set(scope(), key_for("pad_rumble_phone"), tuning.rumble.phone ? "0" : "1");
+            }
+            break;
         case Id::PlayersReset:
             if (!store->file(Scope::Global).read_only()) {
                 store->erase(Scope::Global, platform::player_key(0));
@@ -830,6 +890,9 @@ void draw_controls_panel(Id id) {
             break;
         case Id::MenuOpen:
             menu_open_panel();
+            break;
+        case Id::KeyboardMouse:
+            keyboard_mouse_panel();
             break;
         default:
             break;

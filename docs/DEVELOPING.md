@@ -8,7 +8,11 @@ How to work on OpenRAC from a checkout. To play, use the launcher from the
 
 ```sh
 git clone https://github.com/OpenRAC/OpenRAC.git && cd OpenRAC
+python3 tools/sources.py init      # each game's decomp at its pinned commit, with OpenRAC's patches
 ```
+
+Run `python3 tools/sources.py init` again after every pull. The decomps are git submodules under
+`games/`; what they are, how to change one and how to move a pin: [SOURCES.md](SOURCES.md).
 
 Put images of your own discs in `baserom/` ([baserom/README.md](../baserom/README.md)
 lists the supported ones), then:
@@ -41,7 +45,7 @@ cd port && cmake --preset release && cmake --build --preset release && ctest --p
 - [port/README.md](../port/README.md): the code and how it fits together.
 - [docs/port](port/README.md): the design and the order of work.
 - [docs/port/WORKFLOW.md](port/WORKFLOW.md): from a player's report to a fix.
-- [port/docs/CODING_CONVENTIONS.md](../port/docs/CODING_CONVENTIONS.md): how
+- [docs/CODING_CONVENTIONS.md](CODING_CONVENTIONS.md): how
   the port's code is written.
 
 ## CI build caches
@@ -71,22 +75,25 @@ checks on `master` always finish.
 
 ## The level editor
 
-The launcher's **Mods** tab does all of this for you. By hand, for
-Ratchet & Clank (PAL):
+The level editor is [OpenRAC Editor](https://github.com/OpenRAC/OpenRAC-Editor), a program of its own.
+It edits levels of all four Ratchet & Clank discs (Europe v2.00 and v1.00, USA,
+Japan); the later games open in early access.
+The launcher's **Mods** tab does all of this for you. By hand, with `<editor>` the
+editor's folder (the Europe disc here; name your own disc and folder):
 
 ```sh
-# Turn the 19 levels on your disc into Godot projects (about 20 seconds).
-python3 editor/extract.py godot baserom/SCES_509.16.iso assets/levels/rac1/pal --split
+# Turn the 19 levels on your disc into level projects (about 20 seconds).
+python3 <editor>/openrac/tools/openrac_editor.py projects baserom/SCES_509.16.iso assets/levels/rac1/pal --split
 
-# Open one in the Godot 4 editor (level_00 is Veldin).
-godot --path assets/levels/rac1/pal/level_00 -e
+# Open one in OpenRAC Editor (level_00 is Veldin).
+<editor>/openrac-editor.x86_64 --path assets/levels/rac1/pal/level_00 -e
 
 # Pack your edits into game data. Your disc is not changed.
-python3 editor/extract.py pack baserom/SCES_509.16.iso assets/levels/rac1/pal assets/packed/rac1/pal
+python3 <editor>/openrac/tools/openrac_editor.py pack baserom/SCES_509.16.iso assets/levels/rac1/pal assets/packed/rac1/pal
 ```
 
 The port plays the packed levels with `--mods assets/packed/rac1/pal`. More in
-[editor/README.md](../editor/README.md); to change how things behave, use the
+[the editor's guide](https://github.com/OpenRAC/OpenRAC-Editor/blob/main/docs/LEVEL_EDITOR.md); to change how things behave, use the
 mod SDK ([docs/port/MODS.md](port/MODS.md)).
 
 ## The decompilations
@@ -99,7 +106,8 @@ for matching work.
 A few tools work across them:
 
 ```sh
-python3 tools/sources.py status|sync GAME/VER   # follow the original repositories
+python3 tools/sources.py status|update DECOMP # where each decomp is; move its pin (SOURCES.md)
+python3 tools/facts.py publish|fetch|check DECOMP   # a decomp build's facts for the table tools (SOURCES.md)
 python3 tools/xmap.py scan|report|ports FROM TO # the function map across the games
 python3 tools/port.py FROM TO [--check]         # functions FROM matched that TO has unchanged
 python3 tools/permuter run|base|queue PROFILE FUNC   # decomp-permuter for any game

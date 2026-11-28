@@ -3,8 +3,12 @@
 # also puts them on a draft release of that name, to be looked over and
 # published by hand. Each build's updater reads the repository that built it:
 # a tag's, that repository's latest release; a build of a branch, the
-# pre-release launcher-dev-<branch> that the dev-release job keeps current
-# (launcher/docs/RELEASING.md).
+# pre-release launcher-dev-<branch> that the publish_dev_channel job keeps current
+# (launcher/docs/RELEASING.md). The development build players get is a dev release's: its pull
+# request (.github/workflows/dev-release.yml) goes through master's merge queue, which builds
+# every installer here and publishes them on launcher-dev-develop (the launcher's Development
+# channel) once checks.yml's run of the same commit is green. The pull request merges only after
+# that.
 #
 # They are not signed: Windows SmartScreen and macOS Gatekeeper warn about
 # them until the project has certificates.
@@ -27,30 +31,28 @@
 # Every action is pinned to a commit (Dependabot, .github/dependabot.yml,
 # moves the pins), and every download is checked against its SHA-256.
 name: launcher
+# A unique title for each run: the run number, what started it, where, and what.
+run-name: >-
+  ${{ github.ref_type == 'tag'
+      && format('launcher #{0} · tag {1}', github.run_number, github.ref_name)
+  || github.event_name == 'merge_group'
+      && format('launcher #{0} · queue → master', github.run_number)
+  || github.event_name == 'push'
+      && format('launcher #{0} · push {1}', github.run_number, github.ref_name)
+  || format('launcher #{0} · manual {1} · by {2}', github.run_number, github.ref_name, github.actor) }}
 
 on:
   push:
-    branches: [master, develop]
     tags: ["launcher-v*"]
-    paths:
-      - "launcher/**"
-      - "port/**"
-      - "editor/**"
-      - "games/rac1/**"
-      - "tools/bundle_standalone.py"
-      - "tools/build_game.py"
-      - "tools/build_android.py"
-      - "tools/build_port.py"
-      - "tools/extractor.py"
-      # What the Android launcher carries (tools/bundle_standalone.py) and its updates' manifest.
-      - "tools/openrac.py"
-      - "tools/updater_manifest.py"
-      - "progress/**"
-      - "games/*/game.json"
-      - ".github/workflows/launcher.yml"
-      - ".github/actions/**"
-  # Pull requests build nothing here: the push that lands one builds it (develop: the dev release),
-  # and a branch can still be built by hand (workflow_dispatch).
+  # Pull requests and develop build nothing here: each build is five installers of up to two
+  # hours. master's merge queue (a dev release) builds and publishes them; develop's queue starts
+  # no run. A branch can still be built by hand (workflow_dispatch).
+  # A pull request to master runs only so that the checks master requires report (skipped) on it:
+  # GitHub counts only a pull_request run's checks for a pull request, not a manual run's.
+  pull_request:
+    branches: [master]
+  merge_group:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -58,13 +60,24 @@ permissions:
 
 concurrency:
   group: launcher-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer run of the same branch cancels the older one. Each queue entry has a ref of its own.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
+
+env:
+  # The runners have no disc: games whose code is translated from it (rac3-pal's "retail"
+  # "required") build with stubs on purpose instead of stopping (port/tools/hostgen/asmc.py).
+  OPENRAC_HOSTGEN_NO_DISC: "1"
 
 jobs:
-  # A branch build's version, worked out once for every build and the rolling release. Each used to
-  # ask scripts/dev_version.sh itself: a release tag pushed while a run was going made the installers
-  # X.Y.Z and their latest.json X.Y.(Z+1)-dev, and launchers on that channel updated forever.
+  # A branch build's version, worked out once for every build and the rolling release. Each build
+  # asking scripts/dev_version.sh itself could disagree when a release tag is pushed mid-run (the
+  # installers X.Y.Z, their latest.json X.Y.(Z+1)-dev), and launchers on that channel would update
+  # forever.
   version:
+    name: version
+    # Nothing on a pull request to master or on release/dev: they run only so that the checks master
+    # requires report (skipped); its queue builds.
+    if: github.event_name != 'pull_request' && github.ref != 'refs/heads/release/dev'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
@@ -76,14 +89,20 @@ jobs:
           sparse-checkout: launcher
       - id: base
         run: echo "base=$(launcher/scripts/dev_version.sh launcher/src-tauri/tauri.conf.json "$GITHUB_REPOSITORY")" >> "$GITHUB_OUTPUT"
+      # The version the installers carry, for this run's publish (publish_dev_channel below).
+      - run: echo "${{ steps.base.outputs.base }}-dev.$GITHUB_RUN_NUMBER" > "$RUNNER_TEMP/version.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: version
+          path: ${{ runner.temp }}/version.txt
 
-  build:
-    name: ${{ matrix.name }}
+  installer:
+    # installer_windows, installer_linux, installer_linux_arm64, installer_macos, installer_android
+    name: "${{ format('installer_{0}', matrix.name == 'linux-arm64' && 'linux_arm64' || matrix.name) }}"
     needs: version
     runs-on: ${{ matrix.os }}
-    # Fedora's row runs in Fedora itself; the others on the runner.
-    container: ${{ matrix.container }}
-    timeout-minutes: 60
+    # Two hours for every row: a cold compiler cache takes Windows and Android past an hour.
+    timeout-minutes: 120
     env:
       NAME: ${{ matrix.name }}
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
@@ -98,12 +117,22 @@ jobs:
       # Every thread of the runner compiles (tools/build_port.py build_jobs): on a desktop the
       # build leaves a few free: two of a runner's 4, and two of macOS's 3.
       OPENRAC_BUILD_JOBS: all
+      # Short build logs: a progress line each tenth of the compiles instead of one per file, no
+      # CMake status (tools/openrac_common/proc.py brief_lines); warnings and errors stay. Cargo
+      # without its "Compiling ..." lines (its warnings and errors stay too).
+      OPENRAC_BUILD_LOG: brief
+      CARGO_TERM_QUIET: "true"
       # Where the copy goes: the installer's resources, or on Android its project.
       COPY: launcher/src-tauri/resources/openrac
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Every game's programs, Going Commando's three among them, with link-time optimisation
+          # on a four-core runner: with a cold compiler cache the build alone is about two hours
+          # (half its compiles were done when an hour's limit stopped it, 2026-11-07). A warm cache
+          # takes it under half an hour. The programs are built here and not in jobs of their own:
+          # tools/bundle_standalone.py and tools/asm_part.py read them in the build's own folder.
           - name: windows
             os: windows-latest
             python: x86_64-pc-windows-msvc
@@ -139,17 +168,6 @@ jobs:
             python_sha256: 2e1ba0e7f22e01c534caebf7f09e7820322bc0d055271d3434af671e8400f96f
             tauri: build --bundles deb,rpm,appimage
             files: *linux-files
-          # Fedora itself (the release players run): an .rpm made against Fedora's own WebKitGTK
-          # and GTK, carrying a game built with Fedora's compiler.
-          - name: fedora
-            os: ubuntu-26.04
-            container: registry.fedoraproject.org/fedora:44
-            python: x86_64-unknown-linux-gnu
-            python_sha256: ffa8f85f1b56e88b687f08d743d817015524b86a9365fd921243132b80f1a36d
-            tauri: build --bundles rpm
-            files: |
-              launcher/target/release/bundle/rpm/*.rpm
-              launcher/target/release/bundle/rpm/*.sig
           # One launcher for Apple silicon and Intel; the game is Apple silicon's (an Intel Mac's
           # launcher finds no game it can run in its copy and works on a checkout).
           - name: macos
@@ -166,6 +184,9 @@ jobs:
           # APK, signed with the launcher's own key when the repository has it (the
           # ANDROID_KEYSTORE secrets: updates install only over an APK of the same key), else
           # with the runner's debug key; the device tests are in port/android/README.md.
+          # Every game's libraries, twice each (the game's and its windowless checks'): with a cold
+          # compiler cache about an hour and a quarter (four fifths done at an hour, 2026-11-07);
+          # tools/build_android.py builds and collects them in one folder.
           - name: android
             os: ubuntu-latest
             targets: aarch64-linux-android
@@ -175,21 +196,11 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Compilers, tools and Tauri's system libraries (Fedora)
-        if: matrix.name == 'fedora'
-        run: |
-          dnf install -y --setopt=install_weak_deps=False git curl tar xz gcc gcc-c++ make file rpm-build \
-            clang llvm cmake ninja-build ccache python3 python-unversioned-command binutils \
-            webkit2gtk4.1-devel gtk3-devel librsvg2-devel libsoup3-devel openssl-devel \
-            mesa-libGL-devel mesa-libEGL-devel libX11-devel libXext-devel libXrandr-devel libXcursor-devel \
-            libXi-devel libXScrnSaver-devel libXfixes-devel libXtst-devel wayland-devel wayland-protocols-devel \
-            libxkbcommon-devel libdecor-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel \
-            dbus-devel systemd-devel libdrm-devel mesa-libgbm-devel
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/decomp-sources
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        if: matrix.name != 'fedora'
         with:
           python-version: "3.12"
       # Each key's prefix is no other job's: "linux-" was the start of "linux-arm64-" too, and the
@@ -205,6 +216,7 @@ jobs:
       # was a minute on Linux and two on Windows. Any version of either is a good start: a stale
       # translation is made again, a changed CMakeLists.txt configured again. And the ThinLTO
       # link's cache (port/cmake/Optimize.cmake): the link of each game was minutes of the build.
+      # Embree as built for Android (tools/build_android.py build_embree): two minutes a run.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -217,12 +229,14 @@ jobs:
             port/build/*/thinlto-cache
             port/build/embree/install
             port/build/embree/openrac-embree.json
+            build/android/embree/install
+            build/android/embree/openrac-embree.json
             !port/build/*/_deps/openrac_compressonator-src
             !port/build/*/_deps/openrac_compressonator-subbuild
             !port/build/**/*.o
             !port/build/**/*.obj
             !port/build/**/*.pdb
-          key: port-${{ matrix.name }}-h${{ hashFiles('games/rac1/src/**', 'games/rac1/include/**', 'games/rac1/config/**', 'games/rac1/ntsc/src/**', 'games/rac1/ntsc/include/**', 'games/rac1/ntsc/config/**', 'port/game/**', 'port/tools/hostgen/*.py', 'port/tools/hostgen/include/**', 'port/**/CMakeLists.txt', 'port/cmake/**', 'port/CMakePresets.json') }}
+          key: port-${{ matrix.name }}-h${{ hashFiles('games/rac1/decomp/src/**', 'games/rac1/decomp/include/**', 'games/rac1/decomp/config/**', 'games/rac1/ntsc-decomp/src/**', 'games/rac1/ntsc-decomp/include/**', 'games/rac1/ntsc-decomp/config/**', 'games/rac2/**', 'port/game/**', 'port/tools/hostgen/*.py', 'port/tools/hostgen/include/**', 'port/**/CMakeLists.txt', 'port/cmake/**', 'port/CMakePresets.json') }}
           restore-keys: |
             port-${{ matrix.name }}-h
 
@@ -238,7 +252,7 @@ jobs:
 
       # LLVM 19 from apt.llvm.org (its key checked by fingerprint): Clang, and libc++ to build
       # into the game.
-      - name: Compilers and what SDL3 is built against (Linux)
+      - name: LLVM's apt source (Linux)
         if: matrix.name == 'linux' || matrix.name == 'linux-arm64'
         run: |
           codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
@@ -248,37 +262,23 @@ jobs:
             || { echo "apt.llvm.org's key is not the one expected"; exit 1; }
           sudo install -m 644 "$RUNNER_TEMP/llvm.gpg" /usr/share/keyrings/llvm.gpg
           echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/$codename/ llvm-toolchain-$codename-19 main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list
-          # Packages kept in ~/apt-archives (above); a stalled download is dropped and tried again
-          # rather than waited on.
-          mkdir -p ~/apt-archives/partial
-          apt=(sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
-            -o Dir::Cache::Archives="$HOME/apt-archives")
-          packages=(clang-19 lld-19 llvm-19 libc++-19-dev libc++abi-19-dev
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+      - name: LLVM 19 and the Linux libraries
+        if: matrix.name == 'linux' || matrix.name == 'linux-arm64'
+        uses: ./.github/actions/apt-install
+        with:
+          archives: ~/apt-archives
+          packages: >-
+            clang-19 lld-19 llvm-19 libc++-19-dev libc++abi-19-dev
             ninja-build pkg-config
             libgl1-mesa-dev libegl1-mesa-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxtst-dev
             libxss-dev libxfixes-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev
             libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libdrm-dev libgbm-dev
-            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev patchelf rpm file)
-          "${apt[@]}" update
-          # The downloads first, within five minutes: the runner's Azure mirror has sent the packages
-          # at 90 kB/s, slow enough never to time out (25 minutes for 138 MB). Then once more from
-          # Ubuntu's own archive, keeping what came already.
-          fetch() { timeout 300 "${apt[@]}" install -y --no-install-recommends --download-only "${packages[@]}"; }
-          if ! fetch; then
-            echo "::warning::the packages did not come within five minutes: once more without the Azure mirror"
-            if [ -f /etc/apt/apt-mirrors.txt ]; then
-              sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
-              grep -q '^http' /etc/apt/apt-mirrors.txt \
-                || echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt
-            fi
-            "${apt[@]}" update
-            "${apt[@]}" install -y --no-install-recommends --download-only "${packages[@]}"
-          fi
-          "${apt[@]}" install -y --no-install-recommends "${packages[@]}"
-          "${apt[@]}" install -y libfuse2t64 || "${apt[@]}" install -y libfuse2 || true
-          # The cache saves only the packages, readable by the runner (apt's partial folder is _apt's).
-          sudo find ~/apt-archives -maxdepth 1 -name '*.deb' -exec chmod a+r {} +
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev patchelf rpm file
+      - name: libfuse and the compiler links (Linux)
+        if: matrix.name == 'linux' || matrix.name == 'linux-arm64'
+        run: |
+          timeout 120 sudo apt-get install -y libfuse2t64 || timeout 120 sudo apt-get install -y libfuse2 || true
           sudo ln -sf /usr/bin/clang-19 /usr/local/bin/clang
           sudo ln -sf /usr/bin/clang++-19 /usr/local/bin/clang++
           # CMake reads these when it first configures: libc++ and the compiler's runtime in the game.
@@ -289,7 +289,7 @@ jobs:
       # (port/cmake/MacApp.cmake).
       - name: Ninja and MoltenVK (macOS)
         if: matrix.name == 'macos'
-        run: brew install ninja molten-vk
+        uses: ./.github/actions/macos-vulkan
 
       - name: Clang (Windows)
         if: matrix.name == 'windows'
@@ -303,8 +303,8 @@ jobs:
           echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
           grep Revision "$ANDROID_NDK_LATEST_HOME/source.properties"
           clang --version
-          pip install ninja==1.13.0
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+          pip install -q ninja==1.13.0
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         if: matrix.name == 'android'
         with:
           distribution: temurin
@@ -321,17 +321,22 @@ jobs:
       - name: Build the game
         if: matrix.name != 'android'
         run: |
-          python tools/build_port.py rac1-pal rac1-ntsc --preset standalone --probe-baker || {
+          # Going Commando's three discs are built here too, whole: their code is all C, so the copy
+          # carries them as it carries Ratchet & Clank's and the player needs only the disc.
+          # --require-baker: a baker that cannot be built (Embree) fails here with its reason, not
+          # later as a copy without openrac-enhanced-baker.
+          games="rac1-pal rac1-ntsc rac1-pal1 rac1-jp rac2-ntsc rac2-pal rac2-ntsc2"
+          python tools/build_port.py $games --preset standalone --require-baker || {
             echo "::warning::building again with a fresh configuration"
             rm -rf port/build/standalone/CMakeCache.txt port/build/standalone/CMakeFiles
-            python tools/build_port.py rac1-pal rac1-ntsc --preset standalone --probe-baker
+            python tools/build_port.py $games --preset standalone --require-baker
           }
 
       - name: A Python for the tools
         if: matrix.name != 'android'
         run: |
           file="cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${PYTHON}-install_only_stripped.tar.gz"
-          curl -sSfL -o "$RUNNER_TEMP/python.tar.gz" \
+          curl -sSfL --retry 5 --retry-delay 5 -o "$RUNNER_TEMP/python.tar.gz" \
             "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_RELEASE}/${file}"
           python - "$RUNNER_TEMP/python.tar.gz" "$PYTHON_SHA256" <<'PY'
           import hashlib, sys
@@ -349,7 +354,7 @@ jobs:
           # Its own Python runs its own tools, and the game starts far enough to say what it is.
           py=$COPY/python/bin/python3; [ -x "$py" ] || py=$COPY/python/python.exe
           "$py" "$COPY/tools/extractor.py" --help > /dev/null
-          "$py" "$COPY/editor/extract.py" --help > /dev/null
+          "$py" "$COPY/extractor/extract.py" --help > /dev/null
           # The program as the launcher finds it: openrac-<id>, openrac-<id>.exe, or on macOS the
           # program in its application bundle, apps/openrac-<id>/<title>.app (port/cmake/MacApp.cmake).
           program() {
@@ -362,26 +367,52 @@ jobs:
           us=$(program "$COPY/port/build/release/openrac-rac1-ntsc")
           [ -f "$us" ] || { echo "the copy carries no openrac-rac1-ntsc"; exit 1; }
           "$us" --help || true
+          # And each game's states program, which the level editor runs (OpenRAC Editor's openrac/tools/moby_states.py).
+          states=$COPY/port/build/release/openrac-rac1-pal-states; [ -f "$states" ] || states=$states.exe
+          [ -f "$states" ] || { echo "the copy carries no openrac-rac1-pal-states"; exit 1; }
+          "$states" --help || true
+          for id in rac2-ntsc rac2-pal rac2-ntsc2; do
+            rac2=$(program "$COPY/port/build/release/openrac-$id")
+            [ -f "$rac2" ] || { echo "the copy carries no openrac-$id"; exit 1; }
+            "$rac2" --help || true
+          done
           # The unified native baker carries all enhanced preparation stages.
           baker=$COPY/port/build/release/openrac-enhanced-baker; [ -f "$baker" ] || baker=$baker.exe
           [ -f "$baker" ] || { echo "the copy carries no openrac-enhanced-baker"; exit 1; }
           "$baker" --help > /dev/null || { echo "openrac-enhanced-baker does not start"; exit 1; }
           "$baker" --print-interior-profile > /dev/null || { echo "interior inference does not start"; exit 1; }
           "$baker" --print-water-profile > /dev/null || { echo "water baking does not start"; exit 1; }
+          # The Vulkan shaders, one library beside the programs that every game loads.
+          shaders=$(ls "$COPY"/port/build/release/*openrac-shaders.* 2>/dev/null | head -1)
+          [ -n "$shaders" ] || { echo "the copy carries no openrac-shaders library"; exit 1; }
+          # On Windows each program has Microsoft's C++ runtime beside it: a new Windows has none.
+          if [ "$NAME" = windows ]; then
+            for dll in msvcp140.dll msvcp140_2.dll vcruntime140.dll vcruntime140_1.dll; do
+              [ -f "$COPY/port/build/release/$dll" ] || { echo "the copy carries no $dll"; exit 1; }
+            done
+          fi
           # On macOS each game carries MoltenVK, for the Vulkan renderer (port/cmake/MacApp.cmake).
           if [ "$NAME" = macos ]; then
-            for program in "$game" "$us"; do
+            for id in rac1-pal rac1-ntsc rac2-ntsc rac2-pal rac2-ntsc2; do
+              program=$(program "$COPY/port/build/release/openrac-$id")
               lib="$(dirname "$program")/../Frameworks/libMoltenVK.dylib"
               [ -f "$lib" ] || { echo "$program's bundle carries no libMoltenVK.dylib"; exit 1; }
+              arches=$(lipo -archs "$program") ||
+                { echo "Cannot read architectures from $program"; exit 1; }
+              for arch in $arches; do
+                lipo "$lib" -verify_arch "$arch" ||
+                  { echo "$program's MoltenVK is missing the $arch slice"; exit 1; }
+              done
             done
           fi
           # On Linux: what the game asks of the system, libc and libm but not libstdc++, and on
           # x86_64 (Ubuntu 22.04) glibc 2.35 at most.
           case "$NAME" in linux*)
-            readelf -d "$game" | grep NEEDED
+            echo "::group::What the game needs"; readelf -d "$game" | grep NEEDED; echo "::endgroup::"
             need=$(objdump -T "$game" | grep -oE 'GLIBC_2\.[0-9]+' | sort -t. -k2 -n | tail -1)
             echo "needs $need"
             if readelf -d "$game" | grep -q 'libstdc++'; then echo "the game needs the system's libstdc++"; exit 1; fi
+            if readelf -d "$shaders" | grep -q 'libstdc++'; then echo "$shaders needs the system's libstdc++"; exit 1; fi
           esac
           if [ "$NAME" = linux ]; then
             case "$need" in GLIBC_2.3[6-9]|GLIBC_2.[4-9]*) echo "the game needs a newer glibc than 2.35"; exit 1;; esac
@@ -397,10 +428,16 @@ jobs:
             python tools/build_android.py --no-apk
           }
           llvm=$(ls -d "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin | head -1)
+          echo "::group::What each library needs"
           for lib in libopenrac-rac1-pal.so libopenrac-rac1-pal-cli.so libopenrac-rac1-ntsc.so \
-                     libopenrac-rac1-ntsc-cli.so libopenrac-python.so; do
+                     libopenrac-rac1-ntsc-cli.so libopenrac-rac1-pal1.so libopenrac-rac1-pal1-cli.so \
+                     libopenrac-rac1-jp.so libopenrac-rac1-jp-cli.so libopenrac-rac2-ntsc.so libopenrac-rac2-ntsc-cli.so \
+                     libopenrac-rac2-pal.so libopenrac-rac2-pal-cli.so \
+                     libopenrac-rac2-ntsc2.so libopenrac-rac2-ntsc2-cli.so \
+                     libopenrac-shaders.so libopenrac-python.so; do
             echo "$lib:"; "$llvm/llvm-readelf" -d "launcher/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/$lib" | grep NEEDED
           done
+          echo "::endgroup::"
 
       # The cache keeps target/, and with it the installers of the last version: without this a
       # release carried 0.2.0's files beside 0.3.0's.
@@ -439,7 +476,7 @@ jobs:
           # The launcher looks for its updates where it was built: this repository's releases, a
           # fork's in a fork. A tag's build reads the latest release; a build of a branch is
           # X.Y.Z-dev.<run> and reads that branch's rolling release (launcher-dev-<branch>, the
-          # dev-release job), so each build of a branch updates the last. The desktop packages keep
+          # publish_dev_channel job), so each build of a branch updates the last. The desktop packages keep
           # X.Y.Z (an MSI takes no "-dev", RPM no "-"): the run goes into the program instead
           # (OPENRAC_LAUNCHER_BUILD), which its updater compares with.
           base=$(node -p "require('./src-tauri/tauri.conf.json').version")
@@ -449,23 +486,26 @@ jobs:
             # Newer than any release, also when master was not raised after one (scripts/dev_version.sh).
             base="${{ needs.version.outputs.base }}"
             version=$base
-            channel="launcher-dev-$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
-            endpoint="https://github.com/$GITHUB_REPOSITORY/releases/download/$channel/latest.json"
-            export OPENRAC_LAUNCHER_BUILD="dev.$GITHUB_RUN_NUMBER"
-            if [ "$NAME" = android ]; then
-              version="$base-dev.$GITHUB_RUN_NUMBER"
-            fi
+            # A dev release's builds (master's queue) are published on develop's channel, the
+            # launcher's Development.
+            branch=$GITHUB_REF_NAME; [ "$GITHUB_EVENT_NAME" != merge_group ] || branch=develop
+            channel="launcher-dev-$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-')"
+          endpoint="https://github.com/$GITHUB_REPOSITORY/releases/download/$channel/latest.json"
+          export OPENRAC_LAUNCHER_BUILD="dev.$GITHUB_RUN_NUMBER"
+          if [ "$NAME" = android ]; then
+            version="$base-dev.$GITHUB_RUN_NUMBER"
+          fi
           fi
           echo "LAUNCHER_VERSION=$version" >> "$GITHUB_ENV"
           config=$(VERSION="$version" ENDPOINT="$endpoint" CREATE="$create_updater" node -e '
-            const c = { version: process.env.VERSION,
-                        // The RPM release is the run: rpm -U refuses the same X.Y.Z-1 again.
-                        bundle: { createUpdaterArtifacts: process.env.CREATE === "true",
-                                  linux: { rpm: { release: process.env.GITHUB_RUN_NUMBER } } },
-                        plugins: { updater: { endpoints: [process.env.ENDPOINT] } } };
-            // A fork that signs with a key of its own names its public half here (a variable).
-            if (process.env.UPDATER_PUBKEY) c.plugins.updater.pubkey = process.env.UPDATER_PUBKEY;
-            process.stdout.write(JSON.stringify(c));')
+          const c = { version: process.env.VERSION,
+                      // The RPM release is the run: rpm -U refuses the same X.Y.Z-1 again.
+                      bundle: { createUpdaterArtifacts: process.env.CREATE === "true",
+                                linux: { rpm: { release: process.env.GITHUB_RUN_NUMBER } } },
+                      plugins: { updater: { endpoints: [process.env.ENDPOINT] } } };
+          // A fork that signs with a key of its own names its public half here (a variable).
+          if (process.env.UPDATER_PUBKEY) c.plugins.updater.pubkey = process.env.UPDATER_PUBKEY;
+          process.stdout.write(JSON.stringify(c));')
           echo "updates: $version from $endpoint"
           # Every build a version code of its own, above any version's own (Tauri's major*10^6 +
           # minor*10^3 + patch): a home screen takes a new icon only from a new version code.
@@ -473,23 +513,23 @@ jobs:
           # The launcher's library without debug information (a debug build has it otherwise); Gradle
           # strips the others (app/build.gradle.kts).
           if [ "$NAME" = android ]; then
-            export CARGO_PROFILE_DEV_DEBUG=0
+          export CARGO_PROFILE_DEV_DEBUG=0
           fi
           # A fork's APK is an app of its own, installed beside the project's: its own package
           # (dev.openrac.launcher.fork_<owner>, so its own data too) and name (app/build.gradle.kts).
           # OpenRAC/OpenRAC's own build keeps dev.openrac.launcher and "OpenRAC Launcher".
           apk_name=OpenRAC.Launcher
           if [ "$NAME" = android ] && [ "$GITHUB_REPOSITORY" != OpenRAC/OpenRAC ]; then
-            owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '_')
-            export OPENRAC_ANDROID_APPLICATION_ID="dev.openrac.launcher.fork_$owner"
-            export OPENRAC_ANDROID_APP_LABEL="OpenRAC Fork"
-            apk_name=OpenRAC.Launcher.Fork
-            echo "a fork's APK: $OPENRAC_ANDROID_APPLICATION_ID, \"$OPENRAC_ANDROID_APP_LABEL\""
+          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '_')
+          export OPENRAC_ANDROID_APPLICATION_ID="dev.openrac.launcher.fork_$owner"
+          export OPENRAC_ANDROID_APP_LABEL="OpenRAC Fork"
+          apk_name=OpenRAC.Launcher.Fork
+          echo "a fork's APK: $OPENRAC_ANDROID_APPLICATION_ID, \"$OPENRAC_ANDROID_APP_LABEL\""
           fi
           echo "APK_NAME=$apk_name" >> "$GITHUB_ENV"
           if [ "$NAME" = android ] && [ -n "$ANDROID_KEYSTORE" ]; then
-            printf '%s' "$ANDROID_KEYSTORE" | base64 -d > "$RUNNER_TEMP/openrac.jks"
-            export OPENRAC_ANDROID_KEYSTORE="$RUNNER_TEMP/openrac.jks"
+          printf '%s' "$ANDROID_KEYSTORE" | base64 -d > "$RUNNER_TEMP/openrac.jks"
+          export OPENRAC_ANDROID_KEYSTORE="$RUNNER_TEMP/openrac.jks"
           fi
           unset RAW_KEY ANDROID_KEYSTORE
           yarn install --immutable
@@ -497,31 +537,15 @@ jobs:
           yarn tauri $TAURI --config "$config"
           # tauri build binds each update's signature to the package's version (X.Y.Z), and the
           # updater refuses an update whose latest.json announces another: a desktop build of a
-          # branch is announced as X.Y.Z-dev.<run> (the dev-release job), so its signatures are
+          # branch is announced as X.Y.Z-dev.<run> (the publish_dev_channel job), so its signatures are
           # made again for that version.
           if [ "$create_updater" = true ] && [ -n "${OPENRAC_LAUNCHER_BUILD:-}" ]; then
-            find target -path '*/bundle/*' -name '*.sig' -print0 | while IFS= read -r -d '' sig; do
-              rm "$sig"
-              env -u TAURI_SIGNING_PRIVATE_KEY yarn tauri signer sign -f "$RUNNER_TEMP/updater.key" \
-                -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" --app-version "$base-$OPENRAC_LAUNCHER_BUILD" "${sig%.sig}"
-            done
+          find target -path '*/bundle/*' -name '*.sig' -print0 | while IFS= read -r -d '' sig; do
+            rm "$sig"
+            env -u TAURI_SIGNING_PRIVATE_KEY yarn tauri signer sign -f "$RUNNER_TEMP/updater.key" \
+              -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" --app-version "$base-$OPENRAC_LAUNCHER_BUILD" "${sig%.sig}"
+          done
           fi
-
-      # Its file is named as the one built on Ubuntu is: "fc44" tells them apart on a release,
-      # which takes one file of a name.
-      - name: The installer's name (Fedora)
-        if: matrix.name == 'fedora'
-        working-directory: launcher
-        run: |
-          for f in target/release/bundle/rpm/*.x86_64.rpm; do
-            [ -f "$f" ] || continue
-            mv "$f" "${f%.x86_64.rpm}.fc44.x86_64.rpm"
-          done
-          # A build without the updater key (a fork without the secret) has no signature.
-          for f in target/release/bundle/rpm/*.x86_64.rpm.sig; do
-            [ -f "$f" ] || continue
-            mv "$f" "${f%.x86_64.rpm.sig}.fc44.x86_64.rpm.sig"
-          done
 
       # Named as the desktop installers are, and checked: the game's activity, SDL's and the
       # libraries the programs need are in it. Signed for the launcher's updater when the key is
@@ -536,25 +560,33 @@ jobs:
           built=$(ls src-tauri/gen/android/app/build/outputs/apk/*/debug/*.apk | head -1)
           apk="$(dirname "$built")/${APK_NAME}_${LAUNCHER_VERSION}_android-arm64-debug.apk"
           mv "$built" "$apk"
+          echo "::group::What the APK carries"
           unzip -l "$apk" | grep -E "lib/arm64-v8a/|assets/openrac.zip|classes" | sort -k4
+          echo "::endgroup::"
           unzip -p "$apk" 'classes*.dex' | grep -ac "dev/openrac/game/GameActivity"
           unzip -p "$apk" 'classes*.dex' | grep -ac "org/libsdl/app/SDLActivity"
           for lib in libopenrac-rac1-pal.so libopenrac-rac1-pal-cli.so libopenrac-rac1-ntsc.so \
-                     libopenrac-rac1-ntsc-cli.so libSDL3.so libc++_shared.so libopenrac-python.so \
-                     libpython3.13.so libhook_impl.so libmain_hook.so libfile_redirect_hook.so \
-                     libgsl_alloc_hook.so libopenrac_launcher_lib.so; do
-            unzip -l "$apk" "lib/arm64-v8a/$lib" > /dev/null || { echo "the APK has no $lib"; exit 1; }
+                   libopenrac-rac1-ntsc-cli.so libopenrac-rac1-pal1.so libopenrac-rac1-pal1-cli.so \
+                   libopenrac-rac1-jp.so libopenrac-rac1-jp-cli.so libopenrac-rac2-ntsc.so libopenrac-rac2-ntsc-cli.so \
+                   libopenrac-rac2-pal.so libopenrac-rac2-pal-cli.so \
+                   libopenrac-rac2-ntsc2.so libopenrac-rac2-ntsc2-cli.so \
+                   libopenrac-shaders.so libSDL3.so libc++_shared.so libopenrac-python.so \
+                   libpython3.13.so libhook_impl.so libmain_hook.so libfile_redirect_hook.so \
+                   libgsl_alloc_hook.so libopenrac_launcher_lib.so; do
+          unzip -l "$apk" "lib/arm64-v8a/$lib" > /dev/null || { echo "the APK has no $lib"; exit 1; }
           done
           # None of them carries debug information: that is what makes a player's download large.
           llvm=$(ls -d "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin | head -1)
           libs="$RUNNER_TEMP/apk-libs"
           rm -rf "$libs" && unzip -q "$apk" 'lib/arm64-v8a/*.so' -d "$libs"
           for lib in "$libs"/lib/arm64-v8a/*.so; do
-            if "$llvm/llvm-readelf" -S "$lib" | grep -q '\.debug_info'; then
-              echo "$(basename "$lib") carries debug information"; exit 1
-            fi
+          if "$llvm/llvm-readelf" -S "$lib" | grep -q '\.debug_info'; then
+            echo "$(basename "$lib") carries debug information"; exit 1
+          fi
           done
+          echo "::group::The libraries' sizes"
           du -sh "$libs"/lib/arm64-v8a/*.so | sort -h
+          echo "::endgroup::"
           # Android installs an update only over an APK of the same key: the key's fingerprint is in
           # the run's summary, and a run without the launcher's own key says it will not update.
           signer=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
@@ -562,12 +594,12 @@ jobs:
           echo "APK signing certificate (SHA-256): $cert"
           echo "APK signing certificate (SHA-256): \`$cert\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "$HAVE_ANDROID_KEY" != true ]; then
-            echo "::warning::No ANDROID_KEYSTORE secret: the APK is signed with this runner's own debug key and will not install over an APK of another run. tools/android_keystore.py makes the launcher's key."
+          echo "::warning::No ANDROID_KEYSTORE secret: the APK is signed with this runner's own debug key and will not install over an APK of another run. tools/android_keystore.py makes the launcher's key."
           fi
           # Only an APK of the launcher's own key is offered as an update: one of a runner's debug key
           # downloads and verifies, then Android refuses to install it over the launcher.
           if [ -f "$RUNNER_TEMP/updater.key" ] && [ "$HAVE_ANDROID_KEY" = true ]; then
-            yarn tauri signer sign -f "$RUNNER_TEMP/updater.key" "$apk"
+          yarn tauri signer sign -f "$RUNNER_TEMP/updater.key" "$apk"
           fi
           rm -f "$RUNNER_TEMP/updater.key" "$RUNNER_TEMP/openrac.jks"
 
@@ -582,49 +614,102 @@ jobs:
           path: ${{ matrix.files }}
           if-no-files-found: error
 
-  # Any other build of a branch here or in a fork: its launchers on the
-  # branch's rolling pre-release `launcher-dev-<branch>`, made again each time, where the
-  # launchers built from that branch look for their updates (Build the installers, above). Only
-  # with the update key: a launcher installs no update without its signature.
-  # Also when a system's build failed (a macOS job that got no runner, say): the systems built
-  # still get their update, and latest.json leaves out the one that did not. Not when the run was
-  # cancelled (a newer one of the branch took its place).
-  dev-release:
-    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
-    needs: [version, build]
+      - uses: ./.github/actions/compiler-cache/save
+
+  # A build of a branch here or in a fork: its launchers on the branch's rolling pre-release
+  # `launcher-dev-<branch>`, made again each time, where the launchers built from that branch look
+  # for their updates (Build the installers, above). Only with the update key: a launcher installs
+  # no update without its signature. master's merge queue (a dev release) publishes on
+  # launcher-dev-develop, the launcher's Development channel (launcher/core/src/update.rs,
+  # DEV_BRANCH), once every system built and checks.yml's run of the same commit is green. It is
+  # the last check master waits for: the pull request merges after it. A queue entry removed before
+  # this step publishes nothing; one removed after it leaves the build on the channel until the
+  # next dev release. Another branch publishes also when a system's build failed (a macOS job that
+  # got no runner, say): the systems built still get their update, and latest.json leaves out the
+  # one that did not. Not when the run was cancelled (a newer one of the branch took its place).
+  publish_dev_channel:
+    name: publish_dev_channel
+    # In master's queue it always runs, so that a failed build fails it (a skipped check would pass).
+    if: >-
+      ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/')
+      && (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/master'
+          || github.event_name != 'merge_group' && needs.installer.result != 'skipped') }}
+    needs: [version, installer]
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    # The queue waits here for its checks (the games), which can take as long as the builds.
+    timeout-minutes: 240
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # master's queue: every system built, and checks.yml's run of this commit is green. A red
+      # check fails this job, and the queue drops the pull request.
+      - name: Every installer and every check
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.installer.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "::error::not every installer built ($RESULT): nothing published"
+            exit 1
+          fi
+          run=$(gh run list --workflow checks.yml --event merge_group --commit "$GITHUB_SHA" --limit 1 \
+                --json databaseId -q '.[0].databaseId // ""')
+          if [ -z "$run" ]; then
+            echo "::error::no checks run of the queue at $GITHUB_SHA"
+            exit 1
+          fi
+          if ! gh run watch "$run" --exit-status --interval 60 > /dev/null; then
+            echo "::error::checks run $run is not green: nothing published"
+            exit 1
+          fi
+      # master's queue: only while the entry is still queued (its branch is gone once it is removed).
+      - name: The queue entry
+        id: source
+        if: github.event_name == 'merge_group'
+        run: |
+          if ! git ls-remote --exit-code origin "refs/heads/$GITHUB_REF_NAME" > /dev/null; then
+            echo "::notice::the queue entry is gone: nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.source.outputs.skip != 'true'
         with:
           pattern: openrac-launcher-*
           path: installers
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.source.outputs.skip != 'true'
+        with:
+          name: version
+          path: ${{ runner.temp }}/version
       - name: Rolling release of the branch
+        if: steps.source.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           if ! find installers -name '*.sig' | grep -q .; then
-            echo "::notice::no update signatures (TAURI_SIGNING_PRIVATE_KEY is not set): nothing to publish"
-            exit 0
+          echo "::notice::no update signatures (TAURI_SIGNING_PRIVATE_KEY is not set): nothing to publish"
+          exit 0
           fi
           # The builds' own version (Build the installers, above).
-          base="${{ needs.version.outputs.base }}"
-          version="$base-dev.$GITHUB_RUN_NUMBER"
-          channel="launcher-dev-$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
+          version=$(cat "$RUNNER_TEMP/version/version.txt")
+          branch=$GITHUB_REF_NAME; source=$GITHUB_REF_NAME
+          if [ "$GITHUB_EVENT_NAME" = merge_group ]; then branch=develop; source="dev release"; fi
+          channel="launcher-dev-$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-')"
           python3 tools/updater_manifest.py installers --tag "$channel" --repo "$GH_REPO" \
-            --version "$version" --notes "Built from $GITHUB_REF_NAME at $GITHUB_SHA." --output installers/latest.json
+            --version "$version" --notes "Built from $source at $GITHUB_SHA." --output installers/latest.json
           # The installers' names have spaces in them: an array, not a word list.
           mapfile -d '' files < <(find installers -type f -print0 | sort -z)
-          printf '%s\n' "${files[@]}"
-          title="v$version ($GITHUB_REF_NAME)"
-          notes="The launchers built from $GITHUB_REF_NAME at $GITHUB_SHA; launchers built from this branch update from here."
+          echo "::group::${#files[@]} files"; printf '%s\n' "${files[@]}"; echo "::endgroup::"
+          title="v$version ($source)"
+          notes="The launchers built from $source at $GITHUB_SHA; launchers built from this branch update from here."
           if ! gh release view "$channel" > /dev/null 2>&1; then
             gh release create "$channel" --prerelease --target "$GITHUB_SHA" --title "$title" --notes "$notes" "${files[@]}"
             exit 0
@@ -647,9 +732,10 @@ jobs:
 
   # A tag `launcher-v*`: the installers of all the builds on a draft
   # release. Nothing is published until someone publishes the draft.
-  release:
+  release_draft:
+    name: release_draft
     if: startsWith(github.ref, 'refs/tags/launcher-v')
-    needs: build
+    needs: installer
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -684,7 +770,7 @@ jobs:
         run: |
           # The installers' names have spaces in them: an array, not a word list.
           mapfile -d '' files < <(find installers -type f -print0 | sort -z)
-          printf '%s\n' "${files[@]}"
+          echo "::group::${#files[@]} files"; printf '%s\n' "${files[@]}"; echo "::endgroup::"
           # The release's text is its notes (launcher/release-notes/X.Y.Z.md), which the launcher's
           # update prompt shows, then the commit the installers were built from.
           notes="$RUNNER_TEMP/notes.md"

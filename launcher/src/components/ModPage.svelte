@@ -7,17 +7,28 @@
   // Saving… and then Saved; a refused one says why. Escape or Back returns to the list. No folder
   // shows outside About, folded (players share screenshots of this page).
   // A built-in entry (Enhanced graphics, core/src/enhanced.rs: `builtIn`) has no folder, menu or
-  // source; its page also says how far its lighting bake is, with the way to run it.
+  // source; its page also says how far its lighting bake is, with the way to run it. Keyboard and
+  // mouse (core/src/keyboard_mouse.rs, kind "always-on") is built in and always on: no switch either.
   import { onDestroy, onMount, tick } from "svelte";
-  import { ask, type BakeStatus, type ModSources, type ModUpdate, type PluginPreset, type PluginView } from "$lib/api";
-  import { phaseLabel, readProgress } from "$lib/progress";
-  import type { Job } from "$lib/queue";
+
+  import {
+    ask,
+    type BakeStatus,
+    type ModSources,
+    type ModUpdate,
+    type PluginPreset,
+    type PluginView,
+  } from "$lib/api";
   import { Saver, type SaveState } from "$lib/autosave";
   import { keybindConflicts, sharedBinds } from "$lib/keybinds";
   import { closeMod } from "$lib/modNav.svelte";
   import * as T from "$lib/modsText";
   import { modHint, modKind, settingGroups, sharedWith } from "$lib/plugins";
   import { isPreset, presetChanges } from "$lib/presets";
+  import { phaseLabel, readProgress } from "$lib/progress";
+  import type { Job } from "$lib/queue";
+  import { tablist } from "$lib/tabs";
+
   import Icon from "./Icon.svelte";
   import Menu, { type MenuItem } from "./Menu.svelte";
   import ModSetting from "./ModSetting.svelte";
@@ -37,6 +48,7 @@
     onfolder,
     onhomepage,
     onremove,
+    ontool = () => undefined,
     builtIn = null,
   }: {
     mod: PluginView;
@@ -53,11 +65,20 @@
     onfolder: () => void;
     onhomepage: () => void;
     onremove: () => void;
+    /** Shows the mod's own page (ModTool.svelte), for a mod that has one (`tool`). */
+    ontool?: () => void;
     /** A built-in entry's bake: its status, the job running it, and the way to start it. */
-    builtIn?: { bake: BakeStatus; job: Job | null; onbake: () => void; ondelete: () => void } | null;
+    builtIn?: {
+      bake: BakeStatus;
+      job: Job | null;
+      onbake: () => void;
+      ondelete: () => void;
+    } | null;
   } = $props();
 
-  const bakeProgress = $derived(builtIn?.job ? readProgress(builtIn.job.actionId, builtIn.job.lines) : null);
+  const bakeProgress = $derived(
+    builtIn?.job ? readProgress(builtIn.job.actionId, builtIn.job.lines) : null,
+  );
 
   // ---- Saving as the player goes ----
 
@@ -83,27 +104,44 @@
     },
     onerror: (key, e) => {
       const name = mod.settings.find((s) => s.key === key)?.name ?? key;
-      failure = T.withName(name, typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
+
+      failure = T.withName(
+        name,
+        typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
+      );
     },
   });
 
   /** The settings as their controls show them: a value not saved yet, else the core's. */
-  const shown = $derived(mod.settings.map((s) => (s.key in held ? { ...s, value: held[s.key] } : s)));
+  const shown = $derived(
+    mod.settings.map((s) => (s.key in held ? { ...s, value: held[s.key] } : s)),
+  );
   const groups = $derived(settingGroups(shown));
+  /** The built-in Keyboard and mouse page in two tabs, as the game's Controls tab has them
+   *  (menu_items.cpp, draw_controls_tab): the gyro's section, a controller's, on a tab of its own. */
+  const GYRO = "s-Gyro";
+  let gyroTab = $state(false);
+  const split = $derived(
+    mod.id === T.KEYBOARD_MOUSE.id && groups.some((g) => g.id === GYRO) && groups.length > 1,
+  );
+  const tabGroups = $derived(split ? groups.filter((g) => (g.id === GYRO) === gyroTab) : groups);
   const clashes = $derived(keybindConflicts(shown));
   const presets = $derived(mod.presets ?? []);
   /** The buttons over the settings: the mod's presets, with Default first unless one is "default". */
   const presetButtons = $derived<(PluginPreset | null)[]>(
     presets.length ? (presets.some((p) => p.id === "default") ? presets : [null, ...presets]) : [],
   );
-  const changed = $derived(shown.filter((s) => s.value !== s.default && String(s.value) !== String(s.default)));
+  const changed = $derived(
+    shown.filter((s) => s.value !== s.default && String(s.value) !== String(s.default)),
+  );
 
   function change(key: string, value: unknown, delay: number) {
     saver.set(key, value, delay);
   }
 
   function applyPreset(preset: PluginPreset | null) {
-    for (const [key, value] of Object.entries(presetChanges(shown, presets, preset))) saver.set(key, value, 0);
+    for (const [key, value] of Object.entries(presetChanges(shown, presets, preset)))
+      saver.set(key, value, 0);
   }
 
   async function resetAll() {
@@ -117,10 +155,15 @@
   const kind = $derived(modKind(mod.kind));
   const shared = $derived(sharedWith(mod));
   const sourceLabel = (url: string) => url.replace(/^https?:\/\/(www\.)?github\.com\//, "");
-  const cannotLoad = $derived(mod.enabled && !purist && (mod.state === "refused" || mod.state === "failed"));
+  const cannotLoad = $derived(
+    mod.enabled && !purist && (mod.state === "refused" || mod.state === "failed"),
+  );
+
+  /** Built into the game and always on (Keyboard and mouse): no switch, folder or menu. */
+  const alwaysOn = $derived(mod.kind === "always-on");
 
   const menu = $derived<MenuItem[]>(
-    builtIn
+    builtIn || alwaysOn
       ? []
       : [
           ...(source
@@ -134,7 +177,9 @@
                 },
               ]
             : []),
-          ...(mod.homepage ? [{ label: T.PANEL.homepage, icon: "external" as const, run: onhomepage }] : []),
+          ...(mod.homepage
+            ? [{ label: T.PANEL.homepage, icon: "external" as const, run: onhomepage }]
+            : []),
           { label: T.PANEL.openFolder, icon: "folder" as const, run: onfolder },
           { label: T.PANEL.remove, icon: "trash" as const, danger: true, run: onremove },
         ],
@@ -149,23 +194,30 @@
 
   onMount(() => {
     void tick().then(() => heading?.focus({ preventScroll: true }));
+
     // Escape goes back, unless something on the page takes it first: an open menu (a popover), a
     // key cap waiting (it takes every key), a field being typed in (Escape leaves the field).
     const key = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       if (document.querySelector(":popover-open")) return;
       const at = e.target as HTMLElement | null;
+
       if (at && (at.tagName === "INPUT" || at.tagName === "SELECT" || at.tagName === "TEXTAREA")) {
         const input = at as HTMLInputElement;
+
         if (input.type !== "checkbox" && input.type !== "range") {
           input.blur();
+
           return;
         }
       }
+
       e.preventDefault();
       void back();
     };
+
     window.addEventListener("keydown", key);
+
     return () => {
       window.removeEventListener("keydown", key);
     };
@@ -178,8 +230,11 @@
 
 <div class="mod-page">
   <nav class="crumbs" aria-label={T.MOD_PAGE.crumbsLabel}>
-    <button class="back" aria-label={T.MOD_PAGE.back} title={T.MOD_PAGE.back} onclick={() => void back()}
-      ><Icon name="arrow" size={18} /></button
+    <button
+      class="back"
+      aria-label={T.MOD_PAGE.back}
+      title={T.MOD_PAGE.back}
+      onclick={() => void back()}><Icon name="arrow" size={18} /></button
     >
     <ol>
       <li><button class="crumb" onclick={() => void back()}>{T.MOD_PAGE.crumbRoot}</button></li>
@@ -187,7 +242,7 @@
     </ol>
   </nav>
 
-  <section class="panel head" class:off={!mod.enabled}>
+  <section class="panel head" class:off={!mod.enabled && mod.kind !== "tool"}>
     <div class="title">
       <h2 bind:this={heading} tabindex="-1">{mod.name}</h2>
       <p class="meta">
@@ -200,42 +255,81 @@
                   ? T.pinnedRollback
                   : T.keptAt(source.version)}{/if}</span
           >{/if}
-        <span class={`kind ${kind.tone}`} title={modHint(mod.kind)}><span class="dot"></span>{kind.text}</span>
+        <span class={`kind ${kind.tone}`} title={modHint(mod.kind)}
+          ><span class="dot"></span>{kind.text}</span
+        >
       </p>
       {#if mod.description}<p class="desc">{mod.description}</p>{/if}
     </div>
     <div class="actions">
-      {#if update && !source?.pin}
-        <button disabled={updating} onclick={onupdate}
-          >{#if updating}<span class="spinner"></span>{:else}<Icon name="refresh" size={16} />{/if}{T.MOD_PAGE.update(
-            update.available,
-          )}</button
+      {#if mod.tool}
+        <button class="primary" title={T.MOD_PAGE.openToolHint(mod.name)} onclick={ontool}
+          ><Icon name="external" size={16} />{T.MOD_PAGE.openTool}</button
         >
       {/if}
-      <label class="power" class:on={mod.enabled}>
-        <span>{mod.enabled ? T.MOD_PAGE.on : T.MOD_PAGE.off}</span>
-        <input
-          type="checkbox"
-          role="switch"
-          class="switch"
-          aria-label={T.useAria(mod.name)}
-          checked={mod.enabled}
-          disabled={!mod.enabled && mod.blocked !== ""}
-          onchange={(e) => {
-            onenable(e.currentTarget.checked);
-          }}
-        />
-      </label>
+      {#if update && !source?.pin}
+        <button disabled={updating} onclick={onupdate}
+          >{#if updating}<span class="spinner"></span>{:else}<Icon
+              name="refresh"
+              size={16}
+            />{/if}{T.MOD_PAGE.update(update.available)}</button
+        >
+      {/if}
+      {#if mod.kind === "tool"}
+        <!-- A tool can't be off: its switch shows on, greyed, and says why. -->
+        <label class="power on" title={T.VIEW.toolAlwaysOn}>
+          <span>{T.VIEW.toolAlwaysOnShort}</span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            aria-label={`${mod.name}: ${T.VIEW.toolAlwaysOn}`}
+            checked
+            disabled
+          />
+        </label>
+      {:else if alwaysOn}
+        <label class="power on" title={T.KEYBOARD_MOUSE.alwaysOn}>
+          <span>{T.VIEW.toolAlwaysOnShort}</span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            aria-label={`${mod.name}: ${T.KEYBOARD_MOUSE.alwaysOn}`}
+            checked
+            disabled
+          />
+        </label>
+      {:else}
+        <label class="power" class:on={mod.enabled}>
+          <span>{mod.enabled ? T.MOD_PAGE.on : T.MOD_PAGE.off}</span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            aria-label={T.useAria(mod.name)}
+            checked={mod.enabled}
+            disabled={!mod.enabled && mod.blocked !== ""}
+            onchange={(e) => {
+              onenable(e.currentTarget.checked);
+            }}
+          />
+        </label>
+      {/if}
       {#if menu.length}<Menu label={T.MOD_PAGE.more(mod.name)} items={menu} />{/if}
     </div>
 
-    {#if purist && mod.enabled}
+    {#if purist && mod.enabled && !mod.tool && !alwaysOn}
       <p class="notice"><Icon name="info" size={16} /><span>{T.WITH_MODS.offNotice}</span></p>
     {/if}
     {#if cannotLoad}
-      <div class="notice err"><Icon name="warn" size={16} /><Reason text={mod.reason} tone="err" /></div>
+      <div class="notice err">
+        <Icon name="warn" size={16} /><Reason text={mod.reason} tone="err" />
+      </div>
     {:else if !mod.enabled && mod.blocked}
-      <div class="notice"><Icon name="info" size={16} /><Reason text={T.cannotSwitchOn(mod.blocked)} /></div>
+      <div class="notice">
+        <Icon name="info" size={16} /><Reason text={T.cannotSwitchOn(mod.blocked)} />
+      </div>
     {:else if !mod.enabled && mod.settings.length}
       <p class="notice dim"><Icon name="info" size={16} /><span>{T.MOD_PAGE.offNote}</span></p>
     {/if}
@@ -250,6 +344,7 @@
       <summary>{T.MOD_PAGE.about}</summary>
       <div class="about-body">
         {#if builtIn}<p class="long">{T.ENHANCED.about}</p>
+        {:else if alwaysOn}<p class="long">{T.KEYBOARD_MOUSE.about}</p>
         {:else if mod.description}<p class="long">{mod.description}</p>{/if}
         <dl>
           <dt>{T.MOD_PAGE.aboutKind}</dt>
@@ -257,17 +352,20 @@
           {#if source}
             <dt>{T.PANEL.source}</dt>
             <dd>
-              <span class="mono">{source.url}</span>{#if source.path}&nbsp;(<span class="mono">{source.path}/</span
+              <span class="mono">{source.url}</span>{#if source.path}&nbsp;(<span class="mono"
+                  >{source.path}/</span
                 >){/if}{#if source.tag}, {source.tag}{/if}
             </dd>
           {/if}
           {#if mod.license}<dt>{T.PANEL.license}</dt>
             <dd>{mod.license}</dd>{/if}
-          {#if !builtIn}
+          {#if !builtIn && !alwaysOn}
             <dt>{T.PANEL.folder}</dt>
             <dd class="folder">
               <span class="mono">{mod.path}</span>
-              <button class="small" onclick={onfolder}><Icon name="folder" size={14} />{T.PANEL.openFolder}</button>
+              <button class="small" onclick={onfolder}
+                ><Icon name="folder" size={14} />{T.PANEL.openFolder}</button
+              >
             </dd>
           {/if}
           {#if developer}
@@ -293,7 +391,11 @@
               ? `, ${Math.round(bakeProgress.percent)} %${bakeProgress.left ? `, ${bakeProgress.left}` : ""}`
               : "…"}
           {:else if !bake.available}
-            {bake.noBakerHere ? T.ENHANCED.noBakerHere : bake.levels === 0 ? T.ENHANCED.noLevels : T.ENHANCED.noBaker}
+            {bake.noBakerHere
+              ? T.ENHANCED.noBakerHere
+              : bake.levels === 0
+                ? T.ENHANCED.noLevels
+                : T.ENHANCED.noBaker}
           {:else if bake.ready >= bake.levels}
             {T.ENHANCED.ready(bake.levels)}
           {:else}
@@ -310,8 +412,8 @@
             aria-valuemax={100}
             aria-valuenow={bakeProgress?.percent ?? undefined}
           >
-            {#if bakeProgress?.percent != null}<i style:width={`${bakeProgress.percent}%`}></i>{:else}<i class="moving"
-              ></i>{/if}
+            {#if bakeProgress?.percent != null}<i style:width={`${bakeProgress.percent}%`}
+              ></i>{:else}<i class="moving"></i>{/if}
           </div>
         {:else if bake.ready < bake.levels && !bake.noBakerHere}
           <p class="dim small-print">{T.ENHANCED.fallback}</p>
@@ -340,6 +442,20 @@
   {/if}
 
   {#if mod.settings.length}
+    {#if split}
+      <div class="tabs" role="tablist" aria-label={T.KEYBOARD_MOUSE.tabsLabel} use:tablist>
+        {#each [false, true] as gyro (gyro)}
+          <button
+            role="tab"
+            aria-selected={gyroTab === gyro}
+            tabindex={gyroTab === gyro ? 0 : -1}
+            class:on={gyroTab === gyro}
+            onclick={() => (gyroTab = gyro)}
+            >{gyro ? T.KEYBOARD_MOUSE.tabGyro : T.KEYBOARD_MOUSE.tabKeys}</button
+          >
+        {/each}
+      </div>
+    {/if}
     <div class="toolbar">
       {#if presetButtons.length}
         <div class="presets">
@@ -374,7 +490,7 @@
     </div>
     {#if failure}<div class="failure"><Reason text={failure} tone="err" role="alert" /></div>{/if}
 
-    {#each groups as g (g.id)}
+    {#each tabGroups as g (g.id)}
       {#if g.id === "advanced"}
         <!-- Settings few need: folded, closed at first. -->
         <details class="panel group advanced more">
@@ -427,7 +543,7 @@
       {/if}
     {/each}
   {:else}
-    <p class="none">{T.MOD_PAGE.noSettings}</p>
+    <p class="none">{mod.tool ? T.MOD_PAGE.toolSettings : T.MOD_PAGE.noSettings}</p>
   {/if}
 </div>
 
@@ -436,6 +552,43 @@
     display: flex;
     flex-direction: column;
     gap: var(--page-gap, 16px);
+  }
+
+  /* Keyboard and mouse or Gyro: the Mods page's tabs (Mods.svelte), without icons. */
+  .tabs {
+    display: flex;
+    align-self: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .tabs button {
+    border: 0;
+    background: var(--control);
+    padding: 8px 18px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--soft);
+    transition:
+      color var(--fast) var(--ease),
+      background var(--fast) var(--ease);
+  }
+
+  .tabs button.on {
+    background: var(--on-fill);
+    color: var(--amber);
+  }
+
+  @media (hover: hover) {
+    :global(html:where(:not([data-input="pad"]))) .tabs button:hover:not(.on) {
+      background: var(--control-hi);
+      color: var(--text);
+    }
+  }
+
+  .tabs button:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
   }
 
   /* Where you are: back, then My mods › the mod. */
@@ -491,6 +644,7 @@
   .crumb {
     border: 0;
     background: none;
+    box-shadow: none;
     padding: 6px 4px;
     border-radius: 6px;
     color: var(--amber);
@@ -595,9 +749,8 @@
     gap: 10px;
     min-height: 40px;
     padding: 0 6px 0 14px;
-    border: 1px solid var(--line-strong);
-    border-radius: 999px;
-    background: var(--ink-deep);
+    border-radius: var(--radius-sm);
+    background: var(--control);
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--soft);
@@ -606,7 +759,6 @@
 
   .power.on {
     color: var(--text);
-    border-color: color-mix(in srgb, var(--brand) 60%, transparent);
   }
 
   .power input.switch {
@@ -625,7 +777,10 @@
     margin: 0;
     padding: 9px 12px;
     border-radius: var(--radius-sm);
-    background: var(--panel-hi);
+    /* Warm, as the Get mods card: a hint about the game, not a grey slab. */
+    background: color-mix(in srgb, var(--amber) 9%, var(--panel));
+    --control: color-mix(in srgb, var(--amber) 16%, var(--panel));
+    --control-hi: color-mix(in srgb, var(--amber) 24%, var(--panel));
     font-size: 0.8125rem;
     color: var(--body);
   }
@@ -634,6 +789,14 @@
     flex: none;
     margin-top: 2px;
     color: var(--amber);
+  }
+
+  .notice.err {
+    background: color-mix(in srgb, var(--err) 10%, var(--panel));
+  }
+
+  .notice.dim {
+    background: var(--card-hi);
   }
 
   .notice.err > :global(svg) {

@@ -22,7 +22,7 @@
  └──────────────────────────────┬──────────────────────────────────────┘
                                 ▼
        the checkout's own tools: tools/extractor.py, tools/openrac.py,
-       each game's build, editor/extract.py, Godot (never through a shell)
+       each game's build, extractor/extract.py, OpenRAC Editor (never through a shell)
 ```
 
 ## The rules it keeps
@@ -68,7 +68,7 @@ gets focus, and when settings change.
 
 **Running an action.** `run(scope, action)` in `lib/app.svelte.ts`:
 
-- A _detached_ action (the game, Godot) is started at once through
+- A _detached_ action (the game, OpenRAC Editor) is started at once through
   `run_action`, which returns id 0. The launcher does not follow it.
 - Anything else joins the queue (`lib/queue.ts`). Jobs run one at a time in
   order, so two builds never share the build container or a folder. When it
@@ -120,10 +120,11 @@ camelCase) and generated from there into `src/lib/generated/` (below).
 | `relaunch_app`                                                                                     |                                                                                    | restarts the launcher (after an update installed)                                                                                                                           |
 | `launcher_update_check`                                                                            | `{channel}`                                                                        | a newer launcher on that channel, from Tauri's updater (desktop), or null                                                                                                   |
 | `get_config` / `save_config`                                                                       | `{config}`                                                                         | `Config` (`core/src/config.rs`)                                                                                                                                             |
-| `detect`                                                                                           |                                                                                    | candidates for the checkout, Python, Godot, Docker                                                                                                                          |
+| `detect`                                                                                           |                                                                                    | candidates for the checkout, Python, Docker                                                                                                                                 |
 | `check_root`                                                                                       | `{path}`                                                                           | `{ok, version, message}`: is it an OpenRAC checkout                                                                                                                         |
 | `check_tool`                                                                                       | `{tool, path}`                                                                     | the same, after running the tool's version flag                                                                                                                             |
-| `adopt_godot`                                                                                      |                                                                                    | `Config`, with a Godot that works when none was set or the one set is gone (run at each start)                                                                              |
+| `editor_install_status`                                                                            |                                                                                    | `EditorInstall`: OpenRAC Editor as downloaded (core `editor_install.rs`): its version, and why it cannot be used here                                                       |
+| `editor_newest` / `install_editor` / `remove_editor`                                               |                                                                                    | the newest release's version; downloads it (checked) in place of the one there; removes it                                                                                  |
 | `library`                                                                                          |                                                                                    | `Library` (`core/src/library.rs`)                                                                                                                                           |
 | `install_game`                                                                                     | `{game, image}`                                                                    | the extractor's job, `{id, title, command, detached}`                                                                                                                       |
 | `prepare_disc`                                                                                     | `{image}`                                                                          | the plain image set-up reads: an .iso as it is, a CHD unpacked once into `<install>/discs/<name>.iso` (`core/src/chd.rs`, `disc-copy` events)                               |
@@ -131,12 +132,12 @@ camelCase) and generated from there into `src/lib/generated/` (below).
 | `scan_discs`                                                                                       |                                                                                    | `{found, choices}`: the games folder's discs, and (developers) the games with two to choose from                                                                            |
 | `choose_disc`                                                                                      | `{version}`                                                                        | `Config`, after putting that disc's set-up in place (developers only; below)                                                                                                |
 | `run_action`                                                                                       | `{scope, id, level, path, option}`                                                 | `{id, title, command, detached}`; `level`, `path`, `option` fill `{level}`, `{path}`, `{option}`                                                                            |
-| `open_level_in_godot`                                                                              | `{version, level}`                                                                 | the version's `editor-open` action for that level, started as a job                                                                                                         |
+| `open_level_in_editor`                                                                             | `{version, level}`                                                                 | the version's `editor-open` action for that level, started as a job                                                                                                         |
 | `open_output`                                                                                      | `{path}`                                                                           | opens a folder a job wrote (a file: its folder); only the checkout's `assets/` and `build/` and the install folder                                                          |
 | `overrides_list`                                                                                   | `{game}`                                                                           | the game's overrides packs (`core/src/overrides.rs`), in order                                                                                                              |
 | `overrides_set_enabled` / `overrides_move` / `overrides_remove`                                    | `{game, id, enabled}` / `{game, id, up}` / `{game, id}`                            | the packs again, changed                                                                                                                                                    |
 | `plugins_list` / `plugins_set_enabled` / `plugins_move` / `plugins_set_setting` / `plugins_remove` | `{game, version}`, then `{id, enabled}` / `{id, up}` / `{id, key, value}` / `{id}` | the game's gameplay mods (native and script) in load order, as they stand for that disc (`core/src/plugins.rs`, `PluginView`), changed                                      |
-| `texture_packs_view` / `texture_packs_set`                                                         | `{game, version}`, then `{enabled, dumping}` (either may be null)                  | the game page's Texture packs section (`core/src/texture_packs.rs`, `TexturePackView`): the pack's and the saved textures' counts by folder, the two switches; changed      |
+| `texture_packs_view` / `texture_packs_set`                                                         | `{game, version}`, then `{enabled, dumping}` (either may be null)                  | the Mods tab's Texture packs section (`core/src/texture_packs.rs`, `TexturePackView`): the pack's and the saved textures' counts by folder, the two switches; changed       |
 | `texture_packs_open`                                                                               | `{game, version, dump, folder}`                                                    | opens the pack's or the saved textures' folder, or one of their folders, made if missing                                                                                    |
 | `texture_packs_preview` / `texture_packs_import`                                                   | `{game, version, source}`, then `{mode}` (`merge`, `replace`)                      | what a pack's `.zip` holds, refused for another game's, unsafe names or pictures not named by a texture; imported                                                           |
 | `texture_packs_export`                                                                             | `{game, version}`                                                                  | the pack saved as a `.zip` with its folders and manifest where the player chooses (Android: its save screen); `saved` empty when they backed out                            |
@@ -148,7 +149,14 @@ camelCase) and generated from there into `src/lib/generated/` (below).
 | `plugins_check_updates`                                                                            | `{game, version}`                                                                  | `{updates, errors}`: newer releases (or a pack's newer commit) of the mods added from a link, but those kept at their version                                               |
 | `plugins_update`                                                                                   | `{game, version, id}`                                                              | installs the newest, keeping its place, switch and settings                                                                                                                 |
 | `plugins_sources` / `plugins_set_pin`                                                              | `{game}` / `{game, id, pin}`                                                       | where the mods added from a link came from (`sources.json`); keeps one at its version or lets it update                                                                     |
+| `modset_share_preview` / `modset_share`                                                            | `{game}` / `{game, version, extras}`                                               | what a mod code would hold; makes the code (core `modset.rs`)                                                                                                               |
+| `modset_review` / `modset_apply`                                                                   | `{game, version, text}` / `{game, version, set, code, choices}`                    | what a code would change, with nothing changed; applies it, all or nothing                                                                                                  |
+| `modset_profiles` / `modset_restore`                                                               | `{game}` / `{game, id}`                                                            | the mods as they were before each code (core `profile.rs`); puts them back                                                                                                  |
+| `modset_take_link`                                                                                 | none                                                                               | the `openrac://modset/` link waiting, once; the event `modset-link` says one came                                                                                           |
 | `deeplink_parse`                                                                                   | `{url}`                                                                            | the mods an `openrac://install/…` link asks for (`core/src/deeplink.rs`, `DeepLinkInstall`), or a `ModError`                                                                |
+| `steam_state` / `steam_add`                                                                        | `{version?}`                                                                       | the launcher's, or with a version that game's, entry in Steam (`SteamState`; `core/src/steam.rs`)                                                                           |
+| `shortcut_create`                                                                                  | `{version}`                                                                        | writes a `.desktop` that starts the game (`--play`) on the Desktop, Linux only (`core/src/shortcut.rs`); the path                                                           |
+| `startup_game`                                                                                     |                                                                                    | the game a `--play` start could not start, once, or null                                                                                                                    |
 | `index_fetch`                                                                                      | `{game, version}`                                                                  | the signed mod index, checked and merged (`core/src/index.rs`, `IndexView`); the cache offline; with a game, its revoked mods turned off                                    |
 | `index_resolve`                                                                                    | `{game, version, wanted, turnOff}`                                                 | the change set (`core/src/resolver.rs`, `InstallPlan`)                                                                                                                      |
 | `index_apply`                                                                                      | `{game, version, wanted, turnOff, serial, shared}`                                 | resolves again and installs in order (`core/src/index_apply.rs`, `ApplyResult`; `index-apply` events)                                                                       |
@@ -162,6 +170,7 @@ camelCase) and generated from there into `src/lib/generated/` (below).
 | `open_saves_folder`                                                                                | `{serial}`                                                                         | opens the game's memory card folder, made if it is not there                                                                                                                |
 | `export_saves`                                                                                     | `{serial, slot}` (null: all)                                                       | an OpenRAC saves file (`core/src/save_transfer.rs`) where the player chooses; `{saved, slots}`                                                                              |
 | `preview_save_import` / `import_saves`                                                             | `{serial, source}` / `{serial, source, choice}`                                    | what a saves file holds (`SaveImportPreview`); imports it after a backup, replacing or merging slots                                                                        |
+| `save_copy_sources` / `preview_save_copy` / `copy_saves`                                           | `{serial}` / `{from, serial}` / `{from, serial, choice}`                           | the game's other discs with saves (`SaveCopySource`); what copying one's saves would do (`SaveImportPreview`); the copy, after a backup                                     |
 | `read_save`                                                                                        | `{serial, slot}`                                                                   | one slot for the save editor (`core/src/save_edit.rs`, `SaveView`)                                                                                                          |
 | `write_save`                                                                                       | `{serial, slot, fingerprint, change}`                                              | writes the editor's fields or raw chunks, safely (below); the backup and the slot as it now is                                                                              |
 | `reports_list`                                                                                     | `{game}`                                                                           | the game's session logs and crash reports, newest first (`core/src/reports.rs`)                                                                                             |
@@ -185,12 +194,13 @@ camelCase) and generated from there into `src/lib/generated/` (below).
 | `update_check` / `update_install` (Android)                                                        | `{channel}` / `{url, signature}`                                                   | a newer launcher on the releases (`core/src/update.rs`), or null; downloads its APK, checks the signature and hands it to Android's installer                               |
 | `game_status` / `game_window` (Android)                                                            | - / `{stop}`                                                                       | `{running, library}`: whether the game runs; brings it back in front, or ends it                                                                                            |
 
-| Event         | Payload                                                           |
-| ------------- | ----------------------------------------------------------------- |
-| `job-output`  | `{type: "output", id, stream: "stdout" \| "stderr", line}`        |
-| `job-exit`    | `{type: "exit", id, code, cancelled}`                             |
-| `disc-copy`   | `{name, copied, total}` (Android: a picked disc's copy)           |
-| `index-apply` | `{id, step, at, total}`: each mod of a change set being installed |
+| Event         | Payload                                                                   |
+| ------------- | ------------------------------------------------------------------------- |
+| `job-output`  | `{type: "output", id, stream: "stdout" \| "stderr", line}`                |
+| `job-exit`    | `{type: "exit", id, code, cancelled}`                                     |
+| `disc-copy`   | `{name, copied, total}` (Android: a picked disc's copy)                   |
+| `index-apply` | `{id, step, at, total}`: each mod of a change set being installed         |
+| `open-game`   | the version key: a `--play` start of the open launcher could not start it |
 
 ### Adding a command
 
@@ -459,11 +469,28 @@ separator, drive, or a name Windows refuses). It is refused while the game
 runs with the card, as a restore is. Then it backs the card up
 (`.backup_<time>_before_import`), and either **replaces** (each of the file's
 save folders becomes the file's) or **merges**: only the ticked slots are
-written, with their `.mods` mark (a slot without one loses the card's old
-mark), and the folder's other files only where the card has none. A folder on
+written, with the files beside them (the `.mods` mark and the mods' `.moddata`:
+a slot without one loses the card's old one), and the folder's other files
+only where the card has none. A folder on
 the card in another case takes the file's name. Each file is written beside
 its place and renamed into it. The dialog ticks at first only the slots that
 land in an empty one, and says what each ticked slot replaces.
+
+**Copy from PAL** (or another disc) on the Saves panel does the same from the
+card of another disc of the game instead of a file. Each disc has its own card
+(`memcard/<serial>/`), so a game built from the US disc does not see the saves
+made with the PAL one, though both write the same file: every Ratchet &
+Clank disc (PAL, US, Japan) lists the same chunks (`core/src/save_edit.rs`),
+and Going Commando's US and PAL discs too (`save_edit_rac2.rs`); the saves
+hold no language or 50/60 Hz setting. `save_transfer::SAME_SAVES` lists those
+discs. The button shows when one of them has saves (`save_copy_sources`);
+`preview_save_copy` and `copy_saves` take the other card's save folder,
+renamed to this disc's (`BESCES-50916RATCHET` becomes `BASCUS-97199RATCHET`:
+`card_folder_name`, after the games' own `func_00298BB8`), the folder's
+reserved file named after it renamed too, and write it as an import does,
+after a backup (`before copy from PAL`). A card without the game's folder
+takes the other folder whole, whatever was ticked: Going Commando counts its
+folder's files and takes a folder with fewer for none at all.
 
 ## Security
 
@@ -487,7 +514,7 @@ Tauri builds for Linux (AppImage, deb, rpm), macOS (app, dmg) and Windows
 equally portable: each action lists the platforms it runs on, and the game
 page tucks the others away ("N more for other platforms"). The platform the
 launcher runs on comes from `Platform::current()` in `core/src/actions.rs`.
-Android has no shell, Python, Godot or compiler: there an action that names no
+Android has no shell, Python, editor or compiler: there an action that names no
 platform runs only if it is a `play` action (`runs_on`), and the others are not
 listed.
 
@@ -497,6 +524,29 @@ non-Steam game with its pictures (`core/src/steam.rs`). Steam reads
 while Steam runs: the player closes it and clicks again. Other entries stay
 byte for byte, and the first write keeps `shortcuts.vdf.openrac-bak`. Flathub's
 Steam is refused: its sandbox has no way to start a program outside it.
+
+**One game from a shortcut.** `openrac-launcher --play <id>` (`rac1-pal`, or the
+key `rac1/pal`), or `openrac-launcher --rac1` (a game by its name alone, for
+launch options a player types: the version the game's page plays, that is the
+developer's disc choice, else the disc set up, else the game's first;
+`disc_choice::played_version`), starts a game as its Play button does, with no window:
+`library::direct_play` plans the game's first `play` action (data folder, mods,
+build checks), and a play that asks for confirmation is not started unseen.
+`--update-mods` beside it first puts in the updates the Play button puts in by
+itself (Settings has them on): the signed mod list is waited for at most 20 s,
+then the updates that go in silently are let finish before the game starts, so
+it never starts on a half-changed folder. Majors and new hooks still wait for a
+click on the Mods tab, and the launcher log says what went in and what waits.
+The page knows nothing of a shortcut's game (it is no job of its), so its own
+updates wait while a shortcut start updates or its game runs, and a run of
+updates, the page's or a start's, is one at a time. If
+it cannot start, the window opens on that game. An open launcher gets the
+argument through single instance and starts the game itself; otherwise the
+launcher hides its window and ends with the game. A game's page offers Add to
+Steam (its own entry: the launcher's stable path, `--play <id>`, the game's
+title, icon and library pictures, found again by name and launch options, never mistaken for the
+launcher's) and, on Linux, Create shortcut (a `.desktop` on the Desktop). Both
+are hidden on Android and macOS, and the shortcut on Windows.
 
 ### What Linux gets
 
@@ -532,3 +582,22 @@ file picker, the game's activity, the GPU driver packages. It always plays
 from the copy it carries, unpacked from the APK by `OpenracSetup.kt`; Play
 starts the game's activity instead of a program, and the updater is the
 desktop's only (`capabilities/updater.json`).
+
+## iOS host
+
+`launcher/ios` (`openrac-launcher-ios`) is the C ABI adapter for the signed iOS
+application. It depends on `core`; `core` has no dependency on this adapter or
+on UIKit, WebKit or Python. Desktop builds use the workspace's default members
+(`core`, `src-tauri`), so they do not produce the iOS static library.
+
+The same Svelte UI selects its transport in `src/lib/api.ts`. `src/lib/ios.ts`
+sends plain JSON to the native WebKit bridge and receives the same job events.
+The host reports optional capabilities in `app_info`; existing hosts keep their
+features, while unsupported iOS actions are disabled rather than promised.
+
+`port/ios` owns UIKit, Files access, embedded CPython and the handover to SDL's
+native game. Its generated `ios-bundle.json` describes the engine actually
+linked into the app, with disc and boot metadata read from `games/*/game.json`.
+Only importers explicitly registered in `port/ios/engines.json` may run. The
+current app links one engine, Ratchet & Clank NTSC-U. Showing the other games
+in the shared catalogue does not mean their native iOS engines are included.

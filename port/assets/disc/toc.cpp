@@ -23,7 +23,7 @@ constexpr FieldKind kSector = FieldKind::Sector;
 
 // The RAC1 global header in table order, without the level table. The names
 // are the extracted file names (global/<name>...); they follow Wrench's
-// RacWadInfo, as ReRAC's and editor/disc.py's do, with the epilogue split by
+// RacWadInfo, as ReRAC's and extractor/disc.py's do, with the epilogue split by
 // language as ReRAC splits it.
 constexpr GlobalField kRac1GlobalFields[] = {
     {"debug_font", 0x0008, 1, kRange},
@@ -86,12 +86,12 @@ constexpr DiscLayout kRac1 = {
     19,
     kRac1LevelHeaderSize,
     kRac1GlobalFields,
-    "NTSC-U: ReRAC's docs/formats/disc_layout.md; PAL: OpenRAC's editor/disc.py",
+    "NTSC-U: ReRAC's docs/formats/disc_layout.md; PAL: OpenRAC's extractor/disc.py",
 };
 
-// No table of contents is read for these yet. games/rac4/ntsc/docs/RESEARCH.md
+// No table of contents is read for these yet. games/rac4/decomp/docs/RESEARCH.md
 // places RAC4's at sector 1001 but does not describe its layout;
-// games/rac2/ntsc/docs/LEVEL-ARCHIVE-FORMAT.md describes a prototype's
+// games/rac2/decomp/docs/LEVEL-ARCHIVE-FORMAT.md describes a prototype's
 // RC2.HDR, not the retail disc.
 constexpr DiscLayout kUnknown[] = {
     {Game::Rac2, false, 0, 0, 0, 0, 0, {}, "RAC2's table of contents is not known yet"},

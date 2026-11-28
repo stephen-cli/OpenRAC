@@ -20,7 +20,6 @@
 #include <filesystem>
 #include <format>
 #include <imgui.h>
-#include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl3.h>
 #include <optional>
 #include <string>
@@ -37,12 +36,20 @@
 #include "frontend.h"
 #include "mods.h"
 #include "openrac/game_host.h"
-#include "renderer/gl.h"
-#include "renderer/gl_stats.h"
+#include "program/control.h"
+#include "renderer/frame/colour_transfer.h"
+#include "renderer/gl/gl.h"
+#include "renderer/gl/gl_stats.h"
+#include "renderer/ui/backdrop_blur.h"
 #include "renderer/ui/imgui_gl.h"
 #include "renderer/ui/logo.h"
+#include "renderer/ui/menu_icons.h"
 #include "scene/screenshot.h"
 #include "settings.h"
+
+#if defined(OPENRAC_VULKAN)
+#include "renderer/vulkan/vkgl.h"
+#endif
 
 namespace openrac::frontend::debug_overlay {
 
@@ -71,9 +78,17 @@ void configure() {
     s.configured = true;
     s.developer = env::flag(env::Var::Developer);
     // OPENRAC_MENU=TAB[@TICK]: the menu's tab when it opens, and the tick of the game it opens at
-    // (screenshots, checks of it); without a tick, its key opens it.
+    // (screenshots, checks of it); without a tick, its key opens it. A name none of the port's
+    // tabs has is a mod's tab's title (menu_window.cpp finds it when the menu opens).
     if (const std::optional<std::string_view> v = env::value(env::Var::Menu); v && !v->empty()) {
         const std::string_view tab = v->substr(0, v->find('@'));
+        s.menu_want_mod_tab = tab;
+        std::transform(
+            s.menu_want_mod_tab.begin(),
+            s.menu_want_mod_tab.end(),
+            s.menu_want_mod_tab.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); }
+        );
         for (int t = 0; t < static_cast<int>(menu::Tab::Program); ++t) {
             std::string name = menu::tab_name(static_cast<menu::Tab>(t));
             std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
@@ -81,6 +96,7 @@ void configure() {
             });
             if (name == tab) {
                 s.menu_tab = t;
+                s.menu_want_mod_tab.clear();
             }
         }
         if (const std::size_t at = v->find('@'); at != std::string_view::npos) {
@@ -93,8 +109,8 @@ void configure() {
     // one), "inspect" selects the hero and opens the inspector, "labels" names the mobys in view,
     // "memview" opens the memory viewer.
     if (const std::optional<std::string_view> v = env::value(env::Var::Overlay); v && *v != "0") {
-        s.wanted = true;
         const std::string list(*v);
+        s.wanted = list != "meat-proxy-review";
         const auto has = [&](const char* word) {
             std::size_t at = 0;
             const std::size_t n = std::strlen(word);
@@ -119,6 +135,7 @@ void configure() {
         }
         s.labels = has("labels");
         s.object_viewer.open = s.developer && has("object-viewer");
+        s.meat_proxy_review = s.developer && has("meat-proxy-review");
         set_picker_enabled(has("picker") || s.object_viewer.open);
         s.wireframe = has("wireframe");
         s.memory_viewer = has("memview");
@@ -196,7 +213,11 @@ float window_ui_scale(SDL_Window* window) {
     constexpr bool desktop = false;
 #endif
     return ui_scale(
-        SDL_GetWindowDisplayScale(window), SDL_GetWindowPixelDensity(window), height, desktop
+        SDL_GetWindowDisplayScale(window),
+        SDL_GetWindowPixelDensity(window),
+        height,
+        desktop,
+        settings::get().menu_size
     );
 }
 
@@ -209,30 +230,35 @@ void launcher_style(ImGuiStyle& style) {
         return v;
     };
     const ui_colors::Colors& u = ui();
+    // Keep developer windows darker and their controls distinct from the surrounding panels.
+    const auto panel = ui_colors::mix(u.panel, u.ink_deep, 0.3f);
+    const auto panel_hi = ui_colors::mix(u.panel_hi, u.ink_deep, 0.35f);
+    const auto control = ui_colors::mix(u.control_card, u.text, 0.07f);
+    const auto control_hi = ui_colors::mix(u.control_card_hi, u.text, 0.12f);
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_Text] = c(u.text);
     colors[ImGuiCol_TextDisabled] = c(u.dim);
-    colors[ImGuiCol_WindowBg] = c(u.panel, 0.94f);
+    colors[ImGuiCol_WindowBg] = c(panel, 0.98f);
     colors[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-    colors[ImGuiCol_PopupBg] = c(u.panel, 0.98f);
+    colors[ImGuiCol_PopupBg] = c(panel, 0.99f);
     colors[ImGuiCol_Border] = c(u.line);
-    colors[ImGuiCol_FrameBg] = c(u.ink_deep);
-    colors[ImGuiCol_FrameBgHovered] = c(ui_colors::mix(u.ink_deep, u.amber, 0.12f));
-    colors[ImGuiCol_FrameBgActive] = c(ui_colors::mix(u.ink_deep, u.amber, 0.22f));
+    colors[ImGuiCol_FrameBg] = c(control);
+    colors[ImGuiCol_FrameBgHovered] = c(control_hi);
+    colors[ImGuiCol_FrameBgActive] = c(ui_colors::mix(u.panel, u.amber, 0.18f));
     colors[ImGuiCol_TitleBg] = c(u.ink_deep);
-    colors[ImGuiCol_TitleBgActive] = c(u.panel_hi);
+    colors[ImGuiCol_TitleBgActive] = c(panel_hi);
     colors[ImGuiCol_TitleBgCollapsed] = c(u.ink_deep, 0.8f);
-    colors[ImGuiCol_MenuBarBg] = c(u.panel_hi);
+    colors[ImGuiCol_MenuBarBg] = c(panel_hi);
     colors[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
     colors[ImGuiCol_ScrollbarGrab] = c(u.line_strong);
     colors[ImGuiCol_ScrollbarGrabHovered] = c(u.dim);
     colors[ImGuiCol_ScrollbarGrabActive] = c(u.soft);
     colors[ImGuiCol_CheckMark] = c(u.amber);
-    colors[ImGuiCol_SliderGrab] = c(u.brand);
-    colors[ImGuiCol_SliderGrabActive] = c(u.amber);
-    colors[ImGuiCol_Button] = c(u.panel_hi);
-    colors[ImGuiCol_ButtonHovered] = c(ui_colors::mix(u.panel_hi, u.amber, 0.22f));
-    colors[ImGuiCol_ButtonActive] = c(ui_colors::mix(u.panel_hi, u.amber, 0.38f));
+    colors[ImGuiCol_SliderGrab] = c(u.amber);
+    colors[ImGuiCol_SliderGrabActive] = c(u.gold);
+    colors[ImGuiCol_Button] = c(ui_colors::mix(u.control_card, u.text, 0.1f));
+    colors[ImGuiCol_ButtonHovered] = c(control_hi);
+    colors[ImGuiCol_ButtonActive] = c(ui_colors::mix(control, u.amber, 0.3f));
     colors[ImGuiCol_Header] = c(ui_colors::mix(u.panel_hi, u.amber, 0.14f));
     colors[ImGuiCol_HeaderHovered] = c(ui_colors::mix(u.panel_hi, u.amber, 0.26f));
     colors[ImGuiCol_HeaderActive] = c(ui_colors::mix(u.panel_hi, u.amber, 0.38f));
@@ -242,17 +268,17 @@ void launcher_style(ImGuiStyle& style) {
     colors[ImGuiCol_ResizeGrip] = c(u.line);
     colors[ImGuiCol_ResizeGripHovered] = c(u.amber, 0.6f);
     colors[ImGuiCol_ResizeGripActive] = c(u.amber);
-    colors[ImGuiCol_Tab] = c(u.ink_deep);
+    colors[ImGuiCol_Tab] = c(control);
     colors[ImGuiCol_TabHovered] = c(ui_colors::mix(u.panel_hi, u.amber, 0.26f));
-    colors[ImGuiCol_TabSelected] = c(u.panel_hi);
-    colors[ImGuiCol_TabSelectedOverline] = c(u.amber);
-    colors[ImGuiCol_TabDimmed] = c(u.ink_deep);
-    colors[ImGuiCol_TabDimmedSelected] = c(u.panel_hi);
+    colors[ImGuiCol_TabSelected] = c(ui_colors::mix(u.panel, u.amber, 0.15f));
+    colors[ImGuiCol_TabSelectedOverline] = c(u.amber, 0.0f);
+    colors[ImGuiCol_TabDimmed] = c(control);
+    colors[ImGuiCol_TabDimmedSelected] = c(ui_colors::mix(u.panel, u.amber, 0.10f));
     colors[ImGuiCol_PlotLines] = c(u.soft);
     colors[ImGuiCol_PlotLinesHovered] = c(u.amber);
     colors[ImGuiCol_PlotHistogram] = c(u.brand);
     colors[ImGuiCol_PlotHistogramHovered] = c(u.amber);
-    colors[ImGuiCol_TableHeaderBg] = c(u.panel_hi);
+    colors[ImGuiCol_TableHeaderBg] = c(panel_hi);
     colors[ImGuiCol_TableBorderStrong] = c(u.line_strong);
     colors[ImGuiCol_TableBorderLight] = c(u.line);
     colors[ImGuiCol_TableRowBgAlt] = c(u.text, 0.03f);
@@ -271,15 +297,20 @@ void style_and_font() {
     style = ImGuiStyle();
     ImGui::StyleColorsDark();
     launcher_style(style);
+    // The launcher's corners: 12 px for windows and panels, 6 px for frames, tabs and grabs. No
+    // borders: a fill sets each apart (the site's STYLE.md).
     style.WindowRounding = 12.0f;
-    style.ChildRounding = 8.0f;
-    style.PopupRounding = 8.0f;
+    style.ChildRounding = 12.0f;
+    style.PopupRounding = 12.0f;
     style.FrameRounding = 6.0f;
     style.GrabRounding = 6.0f;
-    style.ScrollbarRounding = 8.0f;
+    style.ScrollbarRounding = 6.0f;
     style.TabRounding = 6.0f;
-    style.WindowBorderSize = 1.0f;
-    style.PopupBorderSize = 1.0f;
+    style.WindowBorderSize = 0.0f;
+    style.ChildBorderSize = 0.0f;
+    style.PopupBorderSize = 0.0f;
+    style.FrameBorderSize = 0.0f;
+    style.TabBorderSize = 0.0f;
     style.WindowPadding = ImVec2(12.0f, 10.0f);
     style.FramePadding = ImVec2(8.0f, 4.0f);
     style.ItemSpacing = ImVec2(8.0f, 5.0f);
@@ -426,9 +457,6 @@ bool initialise(SDL_Window* window) {
     if (s.initialised) {
         return true;
     }
-    // ImGui's OpenGL backend loads the system's GL; a window drawn with Vulkan has none, and has the
-    // renderer's GL instead (imgui_gl.h).
-    s.gl_subset = SDL_GL_GetCurrentContext() == nullptr;
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -438,19 +466,24 @@ bool initialise(SDL_Window* window) {
     style_and_font();
     add_logo();
     std::string error;
-    const bool started =
-        s.gl_subset ? ImGui_ImplSDL3_InitForOther(window) && renderer::ui::imgui_gl::init(error)
-                    : ImGui_ImplSDL3_InitForOpenGL(window, SDL_GL_GetCurrentContext())
-                          && ImGui_ImplOpenGL3_Init(
-                              openrac::gl::is_es() ? "#version 300 es" : "#version 410 core"
-                          );
+    bool started = false;
+    const SDL_GLContext context = SDL_GL_GetCurrentContext();
+    const bool platform_ready = context ? ImGui_ImplSDL3_InitForOpenGL(window, context)
+                                        : ImGui_ImplSDL3_InitForOther(window);
+    // All backends use the same renderer-owned graph passes for ImGui draw data.
+    if (platform_ready) {
+        run_graphics([&] { started = renderer::ui::imgui_gl::init(error); });
+    }
     // The controllers reach ImGui through feed_gamepads, not the backend.
-    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
     if (!started) {
         log::warn("debug overlay: Dear ImGui could not start{}", error.empty() ? "" : ": " + error);
+        if (platform_ready) {
+            ImGui_ImplSDL3_Shutdown();
+        }
         ImGui::DestroyContext();
         return false;
     }
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
     s.initialised = true;
     return true;
 }
@@ -466,12 +499,7 @@ void follow_scale(SDL_Window* window) {
     s.ui_scale = scale;
     style_and_font();
     add_logo();
-    if (s.gl_subset) {
-        renderer::ui::imgui_gl::reload_font();
-    } else {
-        ImGui_ImplOpenGL3_DestroyFontsTexture();
-        ImGui_ImplOpenGL3_CreateFontsTexture();
-    }
+    run_graphics([] { renderer::ui::imgui_gl::reload_font(); });
 }
 
 // ---- The panel ----
@@ -515,7 +543,7 @@ void panel(const Shown& shown) {
             text_coloured(kRed, "PAUSED");
         }
         if (ImGui::Button(keys ? "screenshot (F12)" : "screenshot")) {
-            s.shot_path = shot_name(s.tick);
+            s.shot_tick = s.tick;
         }
         ImGui::SameLine();
         bool dumping = stats::dumping();
@@ -554,7 +582,7 @@ void panel(const Shown& shown) {
             mobys_section();
         }
         if (header(kGame, "Game")) {
-            game_section();
+            game_section(shown);
         }
         if (header(kShaders, "Shaders")) {
             shaders_section();
@@ -566,17 +594,27 @@ void panel(const Shown& shown) {
     ImGui::End();
 }
 
-// The window as it is now, overlay included, to a PNG (the back buffer, before the swap). False
-// when it could not be written.
-bool write_window(const std::string& path, int width, int height) {
-    using namespace openrac::gl;
-    if (width <= 0 || height <= 0) {
-        return false;
+// A screenshot's file: in the working folder; on Android, whose apps run in "/" (not writable),
+// in the app's own files (HOME, which the launcher sets).
+std::string shot_name(std::uint64_t tick, bool enhanced) {
+    const std::string name =
+        std::format("openrac_window_{}{}.png", tick, enhanced ? "_enhanced" : "");
+#if defined(__ANDROID__)
+    if (const std::optional<std::string> home = env::system_variable("HOME");
+        home && !home->empty()) {
+        std::error_code ignored;
+        const std::filesystem::path dir = std::filesystem::path(*home) / "screenshots";
+        std::filesystem::create_directories(dir, ignored);
+        return (dir / name).string();
     }
+#endif
+    return name;
+}
+
+// The window as it is now, overlay included (the back buffer, before the swap), top row first.
+std::vector<std::uint8_t> read_window(int width, int height) {
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    run_graphics([&] { renderer::read_colour(0, width, height, pixels); });
     // OpenGL's first row is the bottom one.
     std::vector<std::uint8_t> flipped(pixels.size());
     const std::size_t stride = static_cast<std::size_t>(width) * 4;
@@ -587,7 +625,15 @@ bool write_window(const std::string& path, int width, int height) {
     for (std::size_t i = 3; i < flipped.size(); i += 4) {
         flipped[i] = 0xFF;
     }
-    if (scene::write_png(path, width, height, flipped)) {
+    return flipped;
+}
+
+// The window to a PNG. False when it could not be written.
+bool write_window(const std::string& path, int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    if (scene::write_png(path, width, height, read_window(width, height))) {
         s.message = "window written to " + path;
         log::info("{}", s.message);
         return true;
@@ -602,22 +648,6 @@ bool write_window(const std::string& path, int width, int height) {
 void set_visible(bool on) {
     s.visible = on;
     stats::set_enabled(stats::Client::Overlay, on);
-}
-
-// A screenshot's file: in the working folder; on Android, whose apps run in "/" (not writable),
-// in the app's own files (HOME, which the launcher sets).
-std::string shot_name(std::uint64_t tick) {
-    const std::string name = std::format("openrac_window_{}.png", tick);
-#if defined(__ANDROID__)
-    if (const std::optional<std::string> home = env::system_variable("HOME");
-        home && !home->empty()) {
-        std::error_code ignored;
-        const std::filesystem::path dir = std::filesystem::path(*home) / "screenshots";
-        std::filesystem::create_directories(dir, ignored);
-        return (dir / name).string();
-    }
-#endif
-    return name;
 }
 
 void request() {
@@ -643,6 +673,16 @@ void set_touch_guides(float x, float y) {
     s.touch_guides = ImVec2(x, y);
 }
 
+void set_touch_selected(float size) {
+    s.touch_selected = size;
+}
+
+int take_touch_size_steps() {
+    const int steps = s.touch_size_steps;
+    s.touch_size_steps = 0;
+    return steps;
+}
+
 void toggle_drawer() {
     if (drawer_possible()) {
         set_menu(!s.menu_open);
@@ -650,16 +690,17 @@ void toggle_drawer() {
 }
 
 bool visible() {
-    return s.visible || s.enhanced_settings;
+    return s.visible || s.enhanced_settings || s.meat_proxy_review || s.material_settings;
 }
 
 bool wants_cursor() {
-    return s.menu_open || s.menu_at > 0.0f || s.visible || s.enhanced_settings
-           || s.object_viewer.open || picker_enabled() || s.touch_editing;
+    return s.menu_open || s.menu_at > 0.0f || visible() || s.object_viewer.open || picker_enabled()
+           || s.touch_editing;
 }
 
 bool event(const SDL_Event& e) {
     configure();
+    release_scripted_pointer(e);
     // A press awaited for a binding (the Controls tab): the controllers' presses are the
     // capture's, not the menu's. The keyboard does nothing either (no menu key, no Enter on
     // another row, no Android Back, which a controller's B may be), but Esc gives the capture up. Key releases still reach the menu, so a key
@@ -702,6 +743,10 @@ bool event(const SDL_Event& e) {
                 return true;
             }
         }
+        // The Keyboard and mouse panel waits for a key's new key, button or wheel.
+        if (keyboard_mouse_capture_event(e)) {
+            return true;
+        }
         if (s.menu_key_capture && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
             s.menu_key_capture = false;
             if (e.key.key != SDLK_ESCAPE) {
@@ -743,10 +788,25 @@ bool event(const SDL_Event& e) {
             return true;
         }
     }
-    // The menu's controller button (menu_bar_button; by default L3), on a desktop and a touch
-    // screen alike, while the game's window has the focus. Not "...": a running Steam client opens
-    // its own panel on it.
+    // The menu's controller button (menu_bar_button), on a desktop and a touch screen alike, while
+    // the game's window has the focus. Not "...": a running Steam client opens its own panel on it.
+    // Start+Select, the default, opens the menu from the game's pad (menu_pad_chord) and closes
+    // it here: the second of the pair pressed while the first is held, on one controller.
     MenuMotion& m = s.menu_motion;
+    if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && s.menu_open && menu_bar_chord()
+        && (e.gbutton.button == SDL_GAMEPAD_BUTTON_START
+            || e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK)
+        && SDL_GetKeyboardFocus() != nullptr && !s.pad_locked && !controls_capturing()) {
+        SDL_Gamepad* pad = SDL_GetGamepadFromID(e.gbutton.which);
+        const SDL_GamepadButton other = e.gbutton.button == SDL_GAMEPAD_BUTTON_START
+                                            ? SDL_GAMEPAD_BUTTON_BACK
+                                            : SDL_GAMEPAD_BUTTON_START;
+        if (pad != nullptr && SDL_GetGamepadButton(pad, other)) {
+            m.pad = true;
+            toggle_menu();
+            return true;
+        }
+    }
     if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && SDL_GetKeyboardFocus() != nullptr
         && menu_bar_button() != SDL_GAMEPAD_BUTTON_INVALID && e.gbutton.button == menu_bar_button()
         && !s.pad_locked && !controls_capturing()) {
@@ -770,10 +830,15 @@ bool event(const SDL_Event& e) {
     }
     if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
         if (e.key.key == SDLK_F3 && (e.key.mod & SDL_KMOD_CTRL) != 0) {
-            toggle_capture(false);
+            if (!option_off(menu::Id::RecordGameplay)) {
+                toggle_capture(false);
+            }
             return true;
         }
         if (e.key.key == SDLK_F3) {
+            if (option_off(menu::Id::DebugOverlay)) {
+                return true;
+            }
             set_visible(!s.visible);
             s.wanted = false;
             return true;
@@ -782,21 +847,36 @@ bool event(const SDL_Event& e) {
         // and say so in the picture (status_badge).
         switch (e.key.key) {
             case SDLK_F5:
+                if (option_off(menu::Id::KeepPaused)) {
+                    return true;
+                }
                 s.paused = !s.paused;
                 s.held_frames = 0;
                 return true;
             case SDLK_F6:
+                if (option_off(menu::Id::StepTick)) {
+                    return true;
+                }
                 s.paused = true;
                 s.step = true;
                 return true;
             case SDLK_F7:
+                if (option_off(menu::Id::Speed)) {
+                    return true;
+                }
                 s.stretch = std::min(s.stretch * 2.0, 16.0);
                 return true;
             case SDLK_F8:
+                if (option_off(menu::Id::Speed)) {
+                    return true;
+                }
                 s.stretch = std::max(s.stretch / 2.0, 1.0);
                 return true;
             case SDLK_F12:
-                s.shot_path = shot_name(s.tick);
+                if (option_off(menu::Id::Screenshot)) {
+                    return true;
+                }
+                s.shot_tick = s.tick;
                 return true;
             // The menu, open at its Controls tab (debug/menu_controls.cpp).
             case SDLK_F13:
@@ -809,9 +889,7 @@ bool event(const SDL_Event& e) {
                 break;
         }
     }
-    if (!(s.visible || s.enhanced_settings || s.object_viewer.open || picker_enabled()
-          || s.menu_open)
-        || !s.initialised) {
+    if (!(visible() || s.object_viewer.open || picker_enabled() || s.menu_open) || !s.initialised) {
         return false;
     }
     ImGui_ImplSDL3_ProcessEvent(&e);
@@ -839,7 +917,8 @@ bool event(const SDL_Event& e) {
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP:
         case SDL_EVENT_TEXT_INPUT:
-            return io.WantTextInput || (s.object_viewer.open && io.WantCaptureKeyboard);
+            return io.WantTextInput
+                   || ((s.object_viewer.open || s.meat_proxy_review) && io.WantCaptureKeyboard);
         default:
             return false;
     }
@@ -936,7 +1015,7 @@ void before_render(renderer::Renderer* renderer, std::uint64_t frame) {
 void draw(const Shown& shown) {
     using namespace openrac::gl;
     if (s.wireframe_set) {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        run_graphics([] { glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); });
         s.wireframe_set = false;
     }
     stats::lap("present");
@@ -944,8 +1023,8 @@ void draw(const Shown& shown) {
     const bool badge = s.paused || s.stretch != 1.0 || notifications_pending() || capture_busy()
                        || !mods::play_notice().empty();
     const bool menu_out = s.menu_open || s.menu_at > 0.0f || s.shot_when_shut || s.touch_editing;
-    if (!(s.visible || s.enhanced_settings || picker_enabled() || badge || menu_out
-          || !s.shot_path.empty())
+    const bool control_shot_wanted = !program::control::take_shot().empty();
+    if (!(visible() || picker_enabled() || badge || menu_out || s.shot_tick || control_shot_wanted)
         || shown.window == nullptr || !initialise(shown.window)) {
         s.drew_last_frame = false;
         return;
@@ -959,8 +1038,10 @@ void draw(const Shown& shown) {
         s.cpu_seconds = seconds;
         s.cpu_wall = f->start_s;
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, shown.window_width, shown.window_height);
+    run_graphics([&] {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, shown.window_width, shown.window_height);
+    });
     {
         // A gamepad and the keyboard move through the menu's rows while it is open (and on a
         // touch screen through the panel while the game stands still under it); they are the
@@ -976,9 +1057,6 @@ void draw(const Shown& shown) {
                                         : io.ConfigFlags | ImGuiConfigFlags_NoMouseCursorChange;
     }
     follow_scale(shown.window);
-    if (!s.gl_subset) {
-        ImGui_ImplOpenGL3_NewFrame();
-    }
     ImGui_ImplSDL3_NewFrame();
     // After frames it skipped, ImGui's clock holds the whole gap: a menu opening then would end
     // in one frame. It starts again from one frame's time.
@@ -990,7 +1068,8 @@ void draw(const Shown& shown) {
     refresh_scripted_pointer();
     ImGui::NewFrame();
     enhanced_settings_window();
-    material_settings_window();
+    meat_proxy_review_window(shown);
+    material_settings_window(shown);
     controls_frame();
     if (s.visible) {
         panel(shown);
@@ -1010,15 +1089,8 @@ void draw(const Shown& shown) {
     picker_overlay(shown);
     object_viewer_window(shown);
     status_notifications();
-    draw_notifications();
-    ImGui::Render();
-    if (s.gl_subset) {
-        renderer::ui::imgui_gl::render(ImGui::GetDrawData());
-    } else {
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    }
-    renderer::gl_stats::reset_binds();
 
+    std::string scripted_shot;
     const stats::Frame* last = stats::history(0);
     const bool tick_frame = last == nullptr || last->kind != stats::FrameKind::Between;
     if (s.shot_every > 0 && tick_frame && s.tick % s.shot_every == 0 && s.tick >= s.shot_from && s.shots < 10000) {
@@ -1028,21 +1100,67 @@ void draw(const Shown& shown) {
         held = s.paused ? held + 1 : 0;
         if (written != s.tick || held == 5) {
             written = s.tick;
-            write_window(std::format("{}{}{}.png", s.shot_prefix, s.tick, held == 5 ? "_held" : ""), shown.window_width,
-                         shown.window_height);
+            scripted_shot = std::format(
+                "{}{}{}{}.png",
+                s.shot_prefix,
+                s.tick,
+                held == 5 ? "_held" : "",
+                shown.enhanced_graphics ? "_enhanced" : ""
+            );
             s.shots++;
         }
     }
-    if (!s.shot_path.empty()) {
-        const bool saved = write_window(s.shot_path, shown.window_width, shown.window_height);
+    // --control's picture (program/control.h): the window as the player sees it, subtitles and
+    // the mods' drawing included, once.
+    bool control_shot = false;
+    if (scripted_shot.empty() && tick_frame) {
+        scripted_shot = program::control::take_shot();
+        control_shot = !scripted_shot.empty();
+    }
+    if (!s.shot_tick && scripted_shot.empty()) {
+        draw_notifications();
+    }
+    ImGui::Render();
+    run_graphics([] {
+#if defined(OPENRAC_VULKAN)
+        // The panel needs no depth. With the default depth image, Adreno broke it at 2x MSAA.
+        if (gl::is_vulkan()) {
+            vkgl::default_framebuffer_depth(false);
+        }
+#endif
+        renderer::ui::imgui_gl::render(ImGui::GetDrawData());
+#if defined(OPENRAC_VULKAN)
+        if (gl::is_vulkan()) {
+            vkgl::default_framebuffer_depth(true);
+        }
+#endif
+        renderer::gl_stats::reset_binds();
+    });
+
+    if (!scripted_shot.empty()) {
+        s.message = "window written to " + scripted_shot;
+        scene::write_png_later(
+            scripted_shot,
+            shown.window_width,
+            shown.window_height,
+            read_window(shown.window_width, shown.window_height),
+            s.message
+        );
+        if (control_shot) {
+            program::control::shot_taken(shown.window_width > 0 && shown.window_height > 0);
+        }
+    }
+    if (s.shot_tick) {
+        const std::string path = shot_name(*s.shot_tick, shown.enhanced_graphics);
+        const bool saved = write_window(path, shown.window_width, shown.window_height);
         notify({
             .title = saved ? "Screenshot saved" : "The screenshot could not be saved",
-            .text = s.shot_path,
-            .folder = saved ? s.shot_path : std::string(),
+            .text = path,
+            .folder = saved ? path : std::string(),
             .tone = saved ? Tone::Done : Tone::Error,
             .seconds = saved ? 3.0 : 8.0,
         });
-        s.shot_path.clear();
+        s.shot_tick.reset();
     }
 }
 
@@ -1078,12 +1196,11 @@ bool take_settings_changed() {
 
 void release() {
     release_object_viewer();
+    renderer::ui::backdrop_blur::release();
+    release_material_preview();
+    renderer::ui::menu_icons::release();
     if (s.initialised) {
-        if (s.gl_subset) {
-            renderer::ui::imgui_gl::shutdown();
-        } else {
-            ImGui_ImplOpenGL3_Shutdown();
-        }
+        renderer::ui::imgui_gl::shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
         s.initialised = false;

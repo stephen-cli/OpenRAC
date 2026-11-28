@@ -4,8 +4,12 @@
   // script mod goes to the gameplay mods, a texture and model pack to the packs (lib/addMods.ts).
   // A link is read first (core/src/remote.rs): what it holds shows under the field, each mod with
   // whether it fits this computer's game and its Install button, before anything is installed.
+  // The field takes a friend's mod code too, and so does a paste anywhere on the page: the code's
+  // review opens (lib/modCodes), which changes nothing before its Apply.
   // With developer tools on, the preview adds the commit read and each mod's folder, asset and discs.
   import { onMount } from "svelte";
+
+  import { type Added, addMods } from "$lib/addMods";
   import {
     api,
     inTauri,
@@ -17,12 +21,14 @@
     type RemotePreview,
     type VersionView,
   } from "$lib/api";
-  import { addMods, type Added } from "$lib/addMods";
-  import { app, guardShown } from "$lib/app.svelte";
+  import { app } from "$lib/app.svelte";
   import { openLink } from "$lib/deepLink.svelte";
-  import { hubLink, isSiteLink } from "$lib/modBrowse";
-  import { modHint, modKind } from "$lib/plugins";
+  import { looksLikeCode } from "$lib/modCodes";
+  import { openCode } from "$lib/modCodes.svelte";
   import * as T from "$lib/modsText";
+  import { modHint, modKind } from "$lib/plugins";
+  import { hubLink, isSiteLink } from "$lib/siteLinks";
+
   import Icon from "./Icon.svelte";
   import Reason from "./Reason.svelte";
 
@@ -44,9 +50,6 @@
   const developer = $derived(app.config?.developer ?? false);
 
   let link = $state("");
-  /** The links this game's mods were already added from (sources.json): each a button that fills
-   *  the field, so a player checks a repository again without finding the address once more. */
-  let saved = $state<string[]>([]);
   let reading = $state(false);
   let preview = $state<RemotePreview | null>(null);
   let previewError = $state<string | null>(null);
@@ -62,73 +65,58 @@
   const message = (e: unknown) => (typeof e === "string" ? e : String(e));
   const nameOf = (path: string) => path.split(/[\\/]/).at(-1) ?? path;
 
-  /** A link as it reads on the page: the host dropped, so only the repository shows. */
-  const sourceLabel = (url: string) => url.replace(/^https?:\/\/(www\.)?/, "").replace(/\.git$/, "");
-
-  $effect(() => {
-    if (!links || !v.game) {
-      saved = [];
-      return;
-    }
-    const game = v.game;
-    void api
-      .pluginsSources(game)
-      .then((sources) => {
-        if (v.game !== game) return;
-        saved = [...new Set(Object.values(sources.mods).map((s) => s.url))];
-      })
-      .catch(() => (saved = []));
-  });
-
-  /** A saved link, picked: the field is filled and the repository read, as typing it would. */
-  async function readSaved(url: string) {
-    link = url;
-    reading = true;
-    preview = null;
-    previewError = null;
-    said = null;
-    try {
-      preview = await api.pluginsPreview(v.game, v.name, url);
-    } catch (err) {
-      previewError = message(err);
-    }
-    reading = false;
-  }
-
   async function readLink(e: SubmitEvent) {
     e.preventDefault();
     if (!link.trim()) return;
+
+    if (looksLikeCode(link)) {
+      openCode(link, v);
+      link = "";
+
+      return;
+    }
+
     preview = null;
     previewError = null;
     said = null;
     // A mod's page on the website goes to the same change set as its Install button.
     const hub = hubLink(link);
+
     if (hub) {
       link = "";
       void openLink(hub);
+
       return;
     }
+
     if (isSiteLink(link)) {
       previewError = T.ADD.notModPage;
+
       return;
     }
+
     reading = true;
+
     try {
       preview = await api.pluginsPreview(v.game, v.name, link.trim());
     } catch (err) {
       previewError = message(err);
     }
+
     reading = false;
   }
 
   async function installRemote(m: RemoteMod) {
     if (!preview) return;
     installing = m.id;
+
     try {
       const done = await api.pluginsInstallRemote(v.game, v.name, link.trim(), m.id);
+
       if (done.kind === "pack") {
         // A data pack's files, downloaded: the packs take them (overrides-add).
         const added = await addMods(v, [done.path]);
+
         said = { text: added.text, failed: added.failed };
         onadded({ plugin: false, pack: added.pack });
       } else {
@@ -142,10 +130,14 @@
         };
         onadded({ plugin: true, pack: false });
       }
+
       if (preview.mods.length > 1) {
         // A repository of several mods (openrac-mods): the preview stays for the others, this one
         // now installed.
-        preview = { ...preview, mods: preview.mods.map((x) => (x.id === m.id ? { ...x, installed: m.version } : x)) };
+        preview = {
+          ...preview,
+          mods: preview.mods.map((x) => (x.id === m.id ? { ...x, installed: m.version } : x)),
+        };
       } else {
         preview = null;
         link = "";
@@ -153,6 +145,7 @@
     } catch (err) {
       said = { text: T.withName(m.name, message(err)), failed: true };
     }
+
     installing = null;
   }
 
@@ -162,16 +155,22 @@
     adding = true;
     said = null;
     busy = {
-      text: paths.length === 1 ? T.ADD.adding(nameOf(paths[0] ?? "")) : T.ADD.addingSeveral(paths.length),
+      text:
+        paths.length === 1
+          ? T.ADD.adding(nameOf(paths[0] ?? ""))
+          : T.ADD.addingSeveral(paths.length),
       share: null,
     };
+
     try {
       const added = await addMods(target, paths);
+
       said = { text: added.text, failed: added.failed };
       onadded({ plugin: added.plugin, pack: added.pack });
     } catch (err) {
       said = { text: message(err), failed: true };
     }
+
     busy = null;
     adding = false;
   }
@@ -180,14 +179,17 @@
    *  a picker that could not open): never a click that seems to do nothing. */
   async function picked(pick: () => Promise<string | null>) {
     const target = v;
+
     said = null;
     let path: string | null;
+
     try {
       path = await pick();
     } catch (err) {
       path = null;
       said = { text: message(err), failed: true };
     }
+
     if (path) await add([path], target);
     else {
       busy = null;
@@ -200,13 +202,28 @@
     return picked(() =>
       pickZip(T.ADD.pickZip, (copy) => {
         adding = true;
-        busy = { text: T.ADD.copying(copy.name), share: copy.total > 0 ? Math.min(1, copy.copied / copy.total) : null };
+        busy = {
+          text: T.ADD.copying(copy.name),
+          share: copy.total > 0 ? Math.min(1, copy.copied / copy.total) : null,
+        };
       }),
     );
   }
 
   function addFolder() {
-    return picked(async () => (inTauri ? await pickFolder(T.ADD.pickFolder) : "/home/you/Downloads/lock-strafe"));
+    return picked(async () =>
+      inTauri ? await pickFolder(T.ADD.pickFolder) : "/home/you/Downloads/lock-strafe",
+    );
+  }
+
+  /** A code pasted anywhere but in a field: there is only one thing it can mean. */
+  function pasted(e: ClipboardEvent) {
+    const target = e.target as HTMLElement | null;
+
+    if (!links || target?.closest("input, textarea, [contenteditable]")) return;
+    const text = e.clipboardData?.getData("text") ?? "";
+
+    if (looksLikeCode(text)) openCode(text, v);
   }
 
   onMount(() => {
@@ -216,6 +233,7 @@
     // closed: it is then taken away at once, or a file dropped later would start an add for a
     // game the player has left.
     let closed = false;
+
     void onDrop(
       (paths) => {
         dropping = false;
@@ -227,6 +245,7 @@
       if (closed) off();
       else stop = off;
     });
+
     return () => {
       closed = true;
       stop?.();
@@ -234,17 +253,11 @@
   });
 </script>
 
+<svelte:document onpaste={pasted} />
+
 <section class="panel add" class:dropping aria-label={T.ADD.title}>
   <div class="row head">
     <h2 class="grow">{T.ADD.title}</h2>
-    {#if v.game === "rac1"}
-      <button class="small ghost" onclick={() => void guardShown(api.openUrl(T.ADD.modsUrl))}
-        ><Icon name="external" size={14} />{T.ADD.browse}</button
-      >
-      <button class="small ghost" onclick={() => void guardShown(api.openUrl(T.ADD.publishUrl))}
-        ><Icon name="external" size={14} />{T.ADD.publish}</button
-      >
-    {/if}
   </div>
 
   <div class="adds">
@@ -265,24 +278,12 @@
           >{#if reading}<span class="spinner"></span>{/if}{T.ADD.go}</button
         >
       </form>
-      {#if saved.length}
-        <div class="saved">
-          <span class="dim">{T.SAVED_SOURCES.label}</span>
-          {#each saved as url (url)}
-            <button
-              class="small ghost"
-              disabled={reading}
-              title={T.SAVED_SOURCES.hint(sourceLabel(url))}
-              onclick={() => void readSaved(url)}>{sourceLabel(url)}</button
-            >
-          {/each}
-        </div>
-      {/if}
     {/if}
     {#if files}
       <div class="files">
         <button disabled={adding} onclick={() => void addZip()}
-          >{#if adding}<span class="spinner"></span>{:else}<Icon name="library" size={16} />{/if}{T.ADD.file}</button
+          >{#if adding}<span class="spinner"></span>{:else}<Icon name="library" size={16} />{/if}{T
+            .ADD.file}</button
         >
         {#if !onAndroid}
           <!-- Android's picker gives no folder the launcher can read: a .zip only. -->
@@ -293,17 +294,20 @@
       </div>
     {/if}
   </div>
-  {#if files && inTauri && !onAndroid}<p class="dim hint">{dropping ? T.ADD.dropHere : T.ADD.drop}</p>{/if}
+  {#if files && inTauri && !onAndroid}<p class="dim hint">
+      {dropping ? T.ADD.dropHere : T.ADD.drop}
+    </p>{/if}
 
   {#if busy}
     <div class="busy" role="status">
       <p>
-        <span class="spinner"></span><span class="grow">{busy.text}</span>{#if busy.share !== null}<span
-            class="mono dim">{Math.round(busy.share * 100)}%</span
-          >{/if}
+        <span class="spinner"></span><span class="grow">{busy.text}</span
+        >{#if busy.share !== null}<span class="mono dim">{Math.round(busy.share * 100)}%</span>{/if}
       </p>
       <div class="track" aria-hidden="true">
-        {#if busy.share !== null}<i style:width={`${busy.share * 100}%`}></i>{:else}<i class="moving"></i>{/if}
+        {#if busy.share !== null}<i style:width={`${busy.share * 100}%`}></i>{:else}<i
+            class="moving"
+          ></i>{/if}
       </div>
     </div>
   {/if}
@@ -317,11 +321,17 @@
         <p class="grow">
           {from.before}<strong>{from.label}</strong>{from.after}{#if developer}
             <span class="mono dim"
-              >· {preview.reference}{#if preview.commit}&nbsp;({preview.commit.slice(0, 10)}){/if}</span
+              >· {preview.reference}{#if preview.commit}&nbsp;({preview.commit.slice(
+                  0,
+                  10,
+                )}){/if}</span
             >{/if}
         </p>
-        <button class="small ghost" aria-label={T.ADD.close} title={T.ADD.close} onclick={() => (preview = null)}
-          ><Icon name="x" size={14} /></button
+        <button
+          class="small ghost"
+          aria-label={T.ADD.close}
+          title={T.ADD.close}
+          onclick={() => (preview = null)}><Icon name="x" size={14} /></button
         >
       </div>
       {#if preview.note}<p class="dim note">{preview.note}</p>{/if}
@@ -341,8 +351,11 @@
                 </div>
                 {#if m.description}<div class="dim desc">{m.description}</div>{/if}
                 <div class="meta tags">
-                  <span class={`kind ${kind.tone}`} title={modHint(m.kind)}><span class="dot"></span>{kind.text}</span
-                  >{#if m.installed}<span class="dim">&nbsp;· {T.installedAlready(m.installed)}</span>{/if}
+                  <span class={`kind ${kind.tone}`} title={modHint(m.kind)}
+                    ><span class="dot"></span>{kind.text}</span
+                  >{#if m.installed}<span class="dim"
+                      >&nbsp;· {T.installedAlready(m.installed)}</span
+                    >{/if}
                 </div>
               </div>
               {#if m.compatible}
@@ -360,11 +373,16 @@
                 <span class="state err"><span class="dot"></span>{T.COMPATIBLE_LABEL.no.text}</span>
               {/if}
             </div>
-            {#if !m.compatible && m.why}<div class="why"><Reason text={m.why} tone="err" /></div>{/if}
+            {#if !m.compatible && m.why}<div class="why">
+                <Reason text={m.why} tone="err" />
+              </div>{/if}
             {#if developer}
               <div class="dev dim">
-                <code>{m.id}</code>{#if m.path}&nbsp;· <span class="mono">{m.path}/</span>{/if}{#if m.asset}&nbsp;·
-                  <span class="mono">{m.asset}</span> ({m.tag}){/if}{#if m.api}&nbsp;· {T.PANEL.interface} {m.api}{/if}
+                <code>{m.id}</code>{#if m.path}&nbsp;· <span class="mono">{m.path}/</span
+                  >{/if}{#if m.asset}&nbsp;·
+                  <span class="mono">{m.asset}</span> ({m.tag}){/if}{#if m.api}&nbsp;· {T.PANEL
+                    .interface}
+                  {m.api}{/if}
                 · {Object.entries(m.games)
                   .map(([g, d]) => `${g}: ${d.join(", ")}`)
                   .join("; ")}
@@ -387,7 +405,8 @@
 
   /* A file held over the page: the panel it lands in says so. */
   .add.dropping {
-    border-color: var(--amber);
+    background: var(--on-fill);
+    color: var(--amber);
     border-style: dashed;
   }
 
@@ -421,24 +440,6 @@
   .files {
     display: flex;
     gap: 8px;
-  }
-
-  /* The links already used, on their own line under the field: a repository checked again without
-     finding its address a second time. */
-  .saved {
-    flex: 1 0 100%;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.8125rem;
-  }
-
-  .adds .saved button {
-    padding: 3px 10px;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    border-color: var(--line);
   }
 
   .adds button {
@@ -489,7 +490,6 @@
     padding: 12px 16px 4px;
     border-radius: var(--radius-sm);
     background: var(--ink-deep);
-    border: 1px solid var(--line);
     animation: rise var(--medium) var(--ease) both;
   }
 

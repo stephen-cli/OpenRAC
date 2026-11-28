@@ -362,6 +362,138 @@ void test_quick_tap() {
     pump(input);
 }
 
+// What a virtual gamepad's motors were last told.
+struct Felt {
+    Uint16 low = 0;
+    Uint16 high = 0;
+    int calls = 0;
+};
+
+Felt g_felt;
+
+SDL_JoystickID attach_rumble(const char* name) {
+    SDL_VirtualJoystickDesc desc;
+    SDL_INIT_INTERFACE(&desc);
+    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    desc.name = name;
+    desc.Rumble = [](void*, Uint16 low, Uint16 high) {
+        g_felt.low = low;
+        g_felt.high = high;
+        ++g_felt.calls;
+        return true;
+    };
+    return SDL_AttachVirtualJoystick(&desc);
+}
+
+// The game's motor commands reach the player's gamepad, stop when the game stops renewing them,
+// follow the player's strength, and a pad unplugged while it shakes is let go.
+void test_rumble() {
+    Input input;
+    play_in_background(input);
+    const SDL_JoystickID a = attach_rumble("Rumble pad");
+    pump(input);
+    g_felt = {};
+    input.set_motors(0, {true, 255});
+    input.update();
+    CHECK(g_felt.calls >= 1);
+    CHECK(g_felt.low > 0xC000);
+    CHECK(g_felt.high > 0x8000);
+    CHECK(input.motors(0) == (openrac::platform::MotorCommand{true, 255}));
+    // Held: the pad is not told again every frame, only when it changes or to renew it.
+    input.set_motors(0, {true, 255});
+    input.update();
+    input.set_motors(0, {true, 255});
+    input.update();
+    const int steady = g_felt.calls;
+    input.set_motors(0, {true, 255});
+    input.update();
+    CHECK(g_felt.calls <= steady + 1);
+    // The game stops asking: within a few frames past the hold, the motors are at rest.
+    SDL_Delay(250);
+    for (int i = 0; i < 40; ++i) {
+        input.update();
+        SDL_Delay(16);
+    }
+    CHECK(g_felt.low == 0 && g_felt.high == 0);
+    CHECK(input.rumble_output(0).silent());
+    // Off: nothing reaches the pad.
+    Bindings bindings = input.bindings(0);
+    bindings.tuning.rumble.strength = 0;
+    input.set_bindings({bindings, input.bindings(1)});
+    input.set_motors(0, {true, 255});
+    input.update();
+    CHECK(g_felt.low == 0 && g_felt.high == 0);
+    bindings.tuning.rumble.strength = 100;
+    input.set_bindings({bindings, input.bindings(1)});
+    // Unplugged while it shakes: nothing is sent to it, and the port starts afresh.
+    input.set_motors(0, {false, 200});
+    input.update();
+    CHECK(g_felt.low > 0);
+    SDL_DetachVirtualJoystick(a);
+    pump(input);
+    input.set_motors(0, {false, 200});
+    input.update();
+    input.stop_rumble();
+    CHECK(input.rumble_output(0).silent());
+}
+
+// Another source's motors (a mod's, openrac_api.set_motors) play with the game's, each motor the
+// stronger of them, held as long as the game's; an owner dropped stops its own only.
+void test_extra_rumble() {
+    using openrac::platform::MotorCommand;
+    Input input;
+    play_in_background(input);
+    const SDL_JoystickID a = attach_rumble("Rumble pad");
+    pump(input);
+    int mod = 0, other = 0;
+    // A mod's alone reaches the pad.
+    g_felt = {};
+    input.set_extra_motors(&mod, 0, {false, 200});
+    CHECK(input.motors_now(0) == (MotorCommand{false, 200}));
+    input.update();
+    CHECK(g_felt.calls >= 1 && g_felt.low > 0);
+    // With the game's: each motor the stronger, per port; the game's own values are kept as given.
+    input.set_motors(0, {true, 100});
+    CHECK(input.motors_now(0) == (MotorCommand{true, 200}));
+    CHECK(input.motors(0) == (MotorCommand{true, 100}));
+    input.set_extra_motors(&other, 0, {false, 250});
+    input.set_extra_motors(&other, 1, {true, 30});
+    CHECK(input.motors_now(0) == (MotorCommand{true, 250}));
+    CHECK(input.motors_now(1) == (MotorCommand{true, 30}));
+    // An owner sends again: its value is replaced, not added.
+    input.set_extra_motors(&other, 0, {false, 10});
+    CHECK(input.motors_now(0) == (MotorCommand{true, 200}));
+    // Dropped (its unload): its motors stop, the others' and the game's play on.
+    input.drop_extra_motors(&mod);
+    CHECK(input.motors_now(0) == (MotorCommand{true, 100}));
+    CHECK(input.motors_now(1) == (MotorCommand{true, 30}));
+    input.drop_extra_motors(nullptr);
+    CHECK(input.motors_now(1) == MotorCommand{});
+    // Not sent again: past the hold, a mod's stop as the game's do, and the pad comes to rest.
+    input.set_extra_motors(&mod, 0, {true, 255});
+    CHECK(input.motors_now(0) == (MotorCommand{true, 255}));
+    SDL_Delay(250);
+    CHECK(input.motors_now(0) == MotorCommand{});
+    for (int i = 0; i < 40; ++i) {
+        input.update();
+        SDL_Delay(16);
+    }
+    CHECK(g_felt.low == 0 && g_felt.high == 0);
+    // The player's rumble off: a mod's reach the pad no more than the game's.
+    Bindings bindings = input.bindings(0);
+    bindings.tuning.rumble.strength = 0;
+    input.set_bindings({bindings, input.bindings(1)});
+    input.set_extra_motors(&mod, 0, {true, 255});
+    input.update();
+    CHECK(g_felt.low == 0 && g_felt.high == 0);
+    input.stop_rumble();
+    CHECK(input.motors_now(0) == MotorCommand{});
+    SDL_DetachVirtualJoystick(a);
+    pump(input);
+}
+
 }  // namespace
 
 int main() {
@@ -379,6 +511,8 @@ int main() {
     test_hold_back_held();
     test_unfocused();
     test_quick_tap();
+    test_rumble();
+    test_extra_rumble();
     SDL_Quit();
     return openrac::test::result();
 }

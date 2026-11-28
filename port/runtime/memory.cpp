@@ -26,6 +26,10 @@
 #include <unistd.h>
 
 #include <sys/mman.h>
+#if defined(OPENRAC_IOS)
+#include <mach/mach.h>
+#include <mach/vm_map.h>
+#endif
 #if defined(__ANDROID__)
 #include <sys/syscall.h>
 #endif
@@ -44,6 +48,7 @@ constexpr std::uint64_t kReservation = 0x100000000ull;  // 4 GB: every gaddr
 struct Region {
     gaddr address;
     std::uint32_t size;
+    bool saved = true;  // in a snapshot, and cleared with the rest
 };
 
 // Everything but main RAM and its aliases, which are mapped separately.
@@ -53,6 +58,8 @@ constexpr Region kPlainRegions[] = {
     {GUEST_GS_REGS, GUEST_GS_REGS_SIZE},
     {GUEST_SCRATCHPAD, GUEST_SCRATCHPAD_SIZE},
     {GUEST_PORT, GUEST_PORT_SIZE},
+    {GUEST_PORT_LOW, GUEST_PORT_LOW_SIZE},
+    {GUEST_PORT_WORLDS, GUEST_PORT_WORLDS_SIZE, false},
 };
 
 constexpr gaddr kRamViews[] = {GUEST_RAM, GUEST_RAM_UNCACHED, GUEST_RAM_UNCACHED_ACCEL};
@@ -188,6 +195,7 @@ void Memory::map_all() {
 
 namespace {
 
+#if !defined(OPENRAC_IOS)
 int ram_object() {
 #if defined(__ANDROID__) && __ANDROID_API__ < 30
     // bionic declares memfd_create from API 30; the kernel call is older (Linux 3.17).
@@ -204,6 +212,8 @@ int ram_object() {
     return fd;
 #endif
 }
+
+#endif
 
 bool map_fixed(std::uint8_t* at, std::size_t size, int fd) {
     const int flags =
@@ -223,6 +233,42 @@ void Memory::map_all() {
     base_ = static_cast<std::uint8_t*>(reserved);
 
     aliases_ = false;
+#if defined(OPENRAC_IOS)
+    // iOS's sandbox has no POSIX shared-memory namespace. Remap the same anonymous pages
+    // into the console's cached/uncached views without creating a file or copying its RAM.
+    if (!map_fixed(base_ + GUEST_RAM, ram_size_, -1)) {
+        log::fatal("could not map game RAM");
+    }
+
+    aliases_ = true;
+
+    for (gaddr view : kRamViews) {
+        if (view == GUEST_RAM) {
+            continue;
+        }
+
+        vm_address_t destination = reinterpret_cast<vm_address_t>(base_ + view);
+        vm_prot_t current = VM_PROT_NONE;
+        vm_prot_t maximum = VM_PROT_NONE;
+        const kern_return_t result = vm_remap(
+            mach_task_self(),
+            &destination,
+            ram_size_,
+            0,
+            VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+            mach_task_self(),
+            reinterpret_cast<vm_address_t>(base_ + GUEST_RAM),
+            false,
+            &current,
+            &maximum,
+            VM_INHERIT_NONE
+        );
+
+        if (result != KERN_SUCCESS) {
+            log::fatalf("could not alias game RAM: {}", result);
+        }
+    }
+#else
     int fd = ram_object();
     if (fd >= 0 && ftruncate(fd, ram_size_) == 0) {
         aliases_ = true;
@@ -242,6 +288,7 @@ void Memory::map_all() {
         }
         log::warn("main RAM could not be aliased: uncached RAM addresses are not mapped");
     }
+#endif
     const std::uint32_t page = page_size();
     for (const Region& r : kPlainRegions) {
         if (!map_fixed(base_ + r.address, round_up(r.size, page), -1)) {
@@ -309,7 +356,9 @@ std::span<std::uint8_t> Memory::bytes(gaddr address, std::size_t size) {
 void Memory::clear() {
     std::memset(base_ + GUEST_RAM, 0, ram_size_);
     for (const Region& r : kPlainRegions) {
-        std::memset(base_ + r.address, 0, r.size);
+        if (r.saved) {
+            std::memset(base_ + r.address, 0, r.size);
+        }
     }
     openrac_guest_sp = GUEST_STACK_TOP;
 }
@@ -317,7 +366,7 @@ void Memory::clear() {
 std::size_t Memory::snapshot_size() {
     std::size_t size = openrac_guest_ram_size;
     for (const Region& r : kPlainRegions) {
-        size += r.size;
+        size += r.saved ? r.size : 0;
     }
     return size;
 }
@@ -330,8 +379,10 @@ bool Memory::save_snapshot(std::span<std::uint8_t> out) const {
     std::memcpy(out.data() + at, base_ + GUEST_RAM, ram_size_);
     at += ram_size_;
     for (const Region& r : kPlainRegions) {
-        std::memcpy(out.data() + at, base_ + r.address, r.size);
-        at += r.size;
+        if (r.saved) {
+            std::memcpy(out.data() + at, base_ + r.address, r.size);
+            at += r.size;
+        }
     }
     return true;
 }
@@ -404,8 +455,10 @@ bool Memory::restore_snapshot(
         std::memcpy(base_ + GUEST_RAM, in.data() + at, ram_size_);
         at += ram_size_;
         for (const Region& r : kPlainRegions) {
-            std::memcpy(base_ + r.address, in.data() + at, r.size);
-            at += r.size;
+            if (r.saved) {
+                std::memcpy(base_ + r.address, in.data() + at, r.size);
+                at += r.size;
+            }
         }
         if (!strings_tail.empty()) {
             std::memcpy(base_ + allocations.strings_end, strings_tail.data(), strings_tail.size());

@@ -69,6 +69,21 @@ pub struct SaveSlotInfo {
     pub mods: Option<Vec<SaveMod>>,
 }
 
+/// A save of a party's, in the co-op folder beside the game's (`<game's folder>-coop`). The game
+/// writes these while a party plays, never the player's own slots (port/game/common/lib/mc.c); they
+/// are started from the game's Multiplayer pages, so this list only shows them.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CoopSaveInfo {
+    pub slot_index: usize,
+    pub path: String,
+    pub bolts: Option<u32>,
+    pub planet_name: Option<String>,
+    pub timestamp: Option<String>,
+    /// Whose party it was, from the note beside the save (`save0.bin.party`: the multiplayer mod's).
+    pub host: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveBackupInfo {
@@ -91,12 +106,78 @@ pub struct GameSaveStatus {
     pub game_folder_name: Option<String>,
     pub title: Option<String>,
     pub slots: Vec<SaveSlotInfo>,
+    /// The parties' saves; the player's own are `slots`.
+    #[serde(default)]
+    pub coop_saves: Vec<CoopSaveInfo>,
     pub backups: Vec<SaveBackupInfo>,
 }
 
-/// Returns the host directory where OpenRAC stores memory cards for the given serial.
+/// The player's own save folder (Settings, `Config::save_dir`), as the app last set it: what
+/// [`get_memcard_dir`] answers from, for the save manager's every page.
+static CARD_ROOT: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Sets the player's own save folder, or with `None` goes back to the default. The app calls it
+/// when the settings are read and each time they are saved.
+pub fn set_card_root(dir: Option<PathBuf>) {
+    *CARD_ROOT.write().unwrap_or_else(|e| e.into_inner()) = dir.filter(|d| !d.as_os_str().is_empty());
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The save folder `custom_card_root()` answers on this test's thread instead of the app's.
+    static TEST_CARD_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with `custom_card_root()` answering `dir` on the calling thread; tests only.
+#[cfg(test)]
+pub fn with_card_root<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+    TEST_CARD_ROOT.with(|cell| *cell.borrow_mut() = Some(dir.to_path_buf()));
+    let result = f();
+    TEST_CARD_ROOT.with(|cell| *cell.borrow_mut() = None);
+    result
+}
+
+/// The player's own save folder, if one is set.
+pub fn custom_card_root() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = TEST_CARD_ROOT.with(|cell| cell.borrow().clone()) {
+        return Some(dir);
+    }
+    CARD_ROOT.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The folder that holds every game's memory card: the player's own, or `<data_home>/memcard`.
+pub fn card_root_in(data_home: &Path) -> PathBuf {
+    custom_card_root().unwrap_or_else(|| data_home.join("memcard"))
+}
+
+/// A game's memory card folder under the save folder `save_dir` (the settings' own, or `None`
+/// for the default under the data home).
+pub fn card_dir_in(save_dir: Option<&Path>, serial: &str) -> PathBuf {
+    match save_dir.filter(|d| !d.as_os_str().is_empty()) {
+        Some(dir) => dir.join(serial),
+        None => data_home().join("memcard").join(serial),
+    }
+}
+
+/// Returns the host directory where OpenRAC stores memory cards for the given serial: the
+/// player's own save folder if one is set, else the default under the data home.
 pub fn get_memcard_dir(serial: &str) -> PathBuf {
-    data_home().join("memcard").join(serial)
+    card_root_in(&data_home()).join(serial)
+}
+
+/// A new save folder's first use: copies the cards in `from` (the folder used until now) into
+/// `to` that `to` does not have yet, so the player's saves come along; nothing in `to` is
+/// replaced and `from` is left as it was. Returns how many files were copied.
+pub fn copy_cards(from: &Path, to: &Path) -> Result<usize, String> {
+    if !from.is_dir() || from == to {
+        return Ok(0);
+    }
+    // A folder inside the one it copies from would be copied into itself without end.
+    if to.starts_with(from) {
+        return Err(format!("The save folder can't be inside {}, the one your saves are in now.", from.display()));
+    }
+    copy_missing(from, to)
 }
 
 #[cfg(test)]
@@ -123,7 +204,7 @@ pub fn data_home() -> PathBuf {
     if let Some(home) = TEST_DATA_HOME.with(|cell| cell.borrow().clone()) {
         return home;
     }
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
         return dirs_home().join("Library/Application Support/OpenRAC");
     }
     // Windows: %LOCALAPPDATA%\openrac, whatever folder the game was started in (at its start,
@@ -271,7 +352,7 @@ pub const RAC1_LOCATIONS: &[&str] = &[
 ];
 
 /// Going Commando (NTSC-U) planet names by level number, as its level headers number them (the
-/// launcher's labels.ts and editor/games.py name them the same).
+/// launcher's labels.ts and extractor/games.py name them the same).
 pub const RAC2_PLANETS: &[(u32, &str)] = &[
     (0, "Aranos Tutorial"),
     (1, "Oozla"),
@@ -307,18 +388,82 @@ pub fn rac2_planet(level: u32) -> Option<&'static str> {
     RAC2_PLANETS.iter().find(|(id, _)| *id == level).map(|(_, name)| *name)
 }
 
-/// Whether `serial` is Going Commando's NTSC-U disc, whose save records the launcher reads.
-fn is_rac2_ntsc(serial: &str) -> bool {
-    serial.contains("972.68")
+/// Up Your Arsenal's story levels by level number, as its level files number them (the launcher's
+/// labels.ts and port/game/rac3-pal/host/play.c name them the same); a save resumes on one of them.
+pub const RAC3_PLANETS: &[(u32, &str)] = &[
+    (1, "Veldin"),
+    (2, "Florana"),
+    (3, "Starship Phoenix"),
+    (4, "Marcadia"),
+    (5, "Daxx"),
+    (6, "Starship Phoenix (Under Attack)"),
+    (7, "Annihilation Nation"),
+    (8, "Aquatos"),
+    (9, "Tyhrranosis"),
+    (10, "Zeldrin Starport"),
+    (11, "Obani Moons"),
+    (12, "Rilgar"),
+    (13, "Holostar Studios Ratchet"),
+    (14, "Koros"),
+    (16, "Kerwan"),
+    (17, "Crash Site"),
+    (18, "Aridia"),
+    (19, "Thran Asteroid Belt"),
+    (20, "Final Boss"),
+    (21, "Obani Draco"),
+    (22, "Mylon"),
+    (23, "Holostar Studios Clank"),
+    (24, "Insomniac Museum"),
+    (26, "Kerwan Ranger Missions"),
+    (27, "Aquatos Base"),
+    (28, "Aquatos Sewers"),
+    (29, "Tyhrranosis Ranger Missions"),
+    (30, "Vid-Comic Unnamed"),
+    (31, "Vid-Comic 1"),
+    (32, "Vid-Comic 4"),
+    (33, "Vid-Comic 2"),
+    (34, "Vid-Comic 3"),
+    (35, "Vid-Comic 5"),
+    (36, "Vid-Comic 1 Special Edition"),
+];
+
+/// Whether `serial` is an Up Your Arsenal disc: PAL (`SCES_524.56`), whose save tables put the
+/// level in record 0, the bolts first in record 39 and the clock in record 4, as Going Commando's
+/// do (save_edit_rac3.rs), and NTSC-U (`SCUS_973.53`), read the same way.
+fn is_rac3(serial: &str) -> bool {
+    serial.contains("524.56") || serial.contains("973.53")
+}
+
+/// Whether `serial` is a Going Commando disc, whose save records the launcher reads: v1.01 and
+/// v2.00 (`SCUS_972.68`) and the PAL release (`SCES_516.07`), whose save tables are the same
+/// (`save_edit_rac2::edits_serial`).
+fn is_rac2(serial: &str) -> bool {
+    serial.contains("972.68") || serial.contains("516.07")
+}
+
+/// How many save slots the game on `serial` has: Going Commando and Up Your Arsenal have four
+/// (`save0.bin` to `save3.bin`), Ratchet & Clank five. Other games: five, until their saves are
+/// known.
+pub fn slot_count(serial: &str) -> usize {
+    if is_rac2(serial) || is_rac3(serial) {
+        4
+    } else {
+        5
+    }
 }
 
 pub fn get_planet_name(serial: &str, planet_id: u32) -> Option<String> {
-    if serial.contains("509.16") || serial.contains("971.99") {
+    if serial.contains("509.16") || serial.contains("971.99") || serial.contains("150.37") {
         if let Some(&name) = RAC1_PLANETS.get(planet_id as usize) {
             return Some(name.to_string());
         }
     }
-    if is_rac2_ntsc(serial) {
+    if is_rac3(serial) {
+        if let Some((_, name)) = RAC3_PLANETS.iter().find(|(id, _)| *id == planet_id) {
+            return Some(name.to_string());
+        }
+    }
+    if is_rac2(serial) {
         if let Some((_, name)) = RAC2_PLANETS.iter().find(|(id, _)| *id == planet_id) {
             return Some(name.to_string());
         }
@@ -329,7 +474,7 @@ pub fn get_planet_name(serial: &str, planet_id: u32) -> Option<String> {
 /// The save record whose first word is the bolt count: Ratchet & Clank's 1 (gBolts); Going
 /// Commando's 39 (its global save table at 0x00256138 puts g_boltCount, 0x001A79F8, there).
 fn bolts_record(serial: &str) -> i32 {
-    if is_rac2_ntsc(serial) {
+    if is_rac2(serial) || is_rac3(serial) {
         39
     } else {
         1
@@ -452,8 +597,8 @@ fn inspect_card(card_dir: &Path, serial: &str) -> GameSaveStatus {
                 }
             }
 
-            // Inspect slots save0.bin through save4.bin
-            for i in 0..5 {
+            // The game's slots: save0.bin onwards.
+            for i in 0..slot_count(serial) {
                 let fname = format!("save{i}.bin");
                 let save_path = target_dir.join(&fname);
                 let (exists, size, mtime, is_empty, timestamp, bolts, planet_id, planet_name) = if save_path.is_file() {
@@ -496,7 +641,9 @@ fn inspect_card(card_dir: &Path, serial: &str) -> GameSaveStatus {
                     modified_millis: mtime,
                     editable: exists
                         && !is_empty
-                        && (crate::save_edit::edits_serial(serial) || crate::save_edit_rac2::edits_serial(serial)),
+                        && (crate::save_edit::edits_serial(serial)
+                            || crate::save_edit_rac2::edits_serial(serial)
+                            || crate::save_edit_rac3::edits_serial(serial)),
                     mods: if exists && !is_empty { save_mods(&save_path) } else { None },
                 });
             }
@@ -504,6 +651,7 @@ fn inspect_card(card_dir: &Path, serial: &str) -> GameSaveStatus {
     }
 
     backups.sort_by_key(|b| std::cmp::Reverse(b.created_millis));
+    let coop_saves = if exists { coop_saves(card_dir, serial) } else { Vec::new() };
 
     GameSaveStatus {
         serial: serial.to_string(),
@@ -512,8 +660,66 @@ fn inspect_card(card_dir: &Path, serial: &str) -> GameSaveStatus {
         game_folder_name,
         title,
         slots,
+        coop_saves,
         backups,
     }
+}
+
+/// What ends the name of a card's co-op folder.
+const COOP_FOLDER_SUFFIX: &str = "-coop";
+
+/// The host named in the note beside a co-op save: a `host=` line.
+fn coop_host(save_path: &Path) -> Option<String> {
+    let note = fs::read_to_string(format!("{}.party", save_path.to_string_lossy())).ok()?;
+    let host = note.lines().find_map(|line| line.strip_prefix("host="))?.trim();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// The saves in the card's co-op folder. A write stopped between its two renames leaves the save
+/// before it as `<save>.bak` (mc.c), which counts for it.
+fn coop_saves(card_dir: &Path, serial: &str) -> Vec<CoopSaveInfo> {
+    // The game's own folder's: <game>-coop beside it, as mc.c names it, not any folder ending so.
+    // A card with a party's saves and none of the player's has only that folder.
+    let folder = match find_game_folder(card_dir) {
+        Some(game) => {
+            let mut name = game.file_name().unwrap_or_default().to_os_string();
+            name.push(COOP_FOLDER_SUFFIX);
+            card_dir.join(name)
+        }
+        None => {
+            let Ok(entries) = fs::read_dir(card_dir) else { return Vec::new() };
+            let mut folders: Vec<PathBuf> = entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(COOP_FOLDER_SUFFIX))
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
+            folders.sort();
+            let Some(first) = folders.into_iter().next() else { return Vec::new() };
+            first
+        }
+    };
+    if !folder.is_dir() {
+        return Vec::new();
+    }
+    (0..slot_count(serial))
+        .filter_map(|i| {
+            let path = folder.join(format!("save{i}.bin"));
+            let read = if path.is_file() { path.clone() } else { folder.join(format!("save{i}.bin.bak")) };
+            let info = parse_save_gameplay_info(&fs::read(read).ok()?, bolts_record(serial));
+            if info.empty || info.timestamp.is_none() {
+                return None;
+            }
+            Some(CoopSaveInfo {
+                slot_index: i,
+                host: coop_host(&path),
+                path: path.to_string_lossy().to_string(),
+                bolts: info.bolts,
+                planet_name: info.planet_id.and_then(|p| get_planet_name(serial, p)),
+                timestamp: info.timestamp,
+            })
+        })
+        .collect()
 }
 
 /// Creates a snapshot backup of the current save state.
@@ -525,12 +731,16 @@ pub fn backup_saves(serial: &str, note: Option<&str>) -> Result<SaveBackupInfo, 
     backup_card(&card_dir, note)
 }
 
-/// The game's own folder on a card (`BESCES-50916RATCHET`): the first folder that is not a backup.
+/// The game's own folder on a card (`BESCES-50916RATCHET`): the first folder that is not a backup
+/// or the parties' (`coop_saves`).
 pub fn find_game_folder(card_dir: &Path) -> Option<PathBuf> {
     let mut found: Vec<PathBuf> = fs::read_dir(card_dir)
         .ok()?
         .flatten()
-        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            !name.starts_with('.') && !name.ends_with(COOP_FOLDER_SUFFIX)
+        })
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
@@ -633,19 +843,23 @@ pub fn restore_backup(serial: &str, backup_name: &str) -> Result<(), String> {
     // First, automatically backup current state as safety fallback
     let _ = backup_saves(serial, Some("auto_safety_before_restore"));
 
-    // Remove current non-backup directories
+    // Remove current non-backup directories. The parties' folder (<game>-coop) is no part of a
+    // backup's and stays: a restore of the player's own saves never takes a party's.
     for entry in fs::read_dir(&card_dir).map_err(|e| e.to_string())?.flatten() {
         let p = entry.path();
         let fname = entry.file_name().to_string_lossy().to_string();
-        if p.is_dir() && !fname.starts_with(".backup_") {
+        if p.is_dir() && !fname.starts_with(".backup_") && !fname.ends_with(COOP_FOLDER_SUFFIX) {
             fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
         }
     }
 
-    // Copy backup contents into card_dir
+    // Copy backup contents into card_dir; the parties' folder kept above is not written over.
     for entry in fs::read_dir(&backup_path).map_err(|e| e.to_string())?.flatten() {
         let p = entry.path();
         let fname = entry.file_name().to_string_lossy().to_string();
+        if fname.ends_with(COOP_FOLDER_SUFFIX) && card_dir.join(&fname).is_dir() {
+            continue;
+        }
         if p.is_dir() {
             copy_dir_recursive(&p, &card_dir.join(&fname))?;
         }
@@ -777,6 +991,38 @@ mod tests {
         out
     }
 
+    /// A party's saves show as co-op saves, never as the player's own slots, and a card with only
+    /// them has no game folder for the editor and the slots to read.
+    #[test]
+    fn coop_saves_are_listed_apart() {
+        let card = tempfile::tempdir().unwrap();
+        let clock: &[u8] = &[0, 0x30, 0x20, 0x10, 0, 0x09, 0x10, 0x26];
+        let played = save(&[(0, &11u32.to_le_bytes()), (1, &500u32.to_le_bytes()), (4, clock)]);
+        let blank = save(&[(0, &(-1i32).to_le_bytes())]);
+        let coop = card.path().join("BESCES-50916RATCHET-coop");
+        fs::create_dir_all(&coop).unwrap();
+        fs::write(coop.join("save1.bin"), &played).unwrap();
+        fs::write(coop.join("save1.bin.party"), "format=1\nkey=5\nsaved=9\nhost=Kero\n").unwrap();
+        fs::write(coop.join("save2.bin"), &blank).unwrap();
+        // A write stopped between its renames: only the save before it is there.
+        fs::write(coop.join("save3.bin.bak"), &played).unwrap();
+
+        assert_eq!(find_game_folder(card.path()), None);
+        let status = inspect_card(card.path(), "SCES_509.16");
+        assert!(status.slots.is_empty());
+        let listed: Vec<usize> = status.coop_saves.iter().map(|s| s.slot_index).collect();
+        assert_eq!(listed, vec![1, 3]);
+        assert_eq!(status.coop_saves[0].host.as_deref(), Some("Kero"));
+        assert_eq!(status.coop_saves[0].bolts, Some(500));
+        assert_eq!(status.coop_saves[0].planet_name.as_deref(), Some("Pokitaru"));
+        assert_eq!(status.coop_saves[1].host, None);
+
+        // Beside the game's folder, whichever sorts first, the game's is the one read.
+        fs::create_dir_all(card.path().join("BESCES-50916RATCHET")).unwrap();
+        fs::create_dir_all(card.path().join("A-coop")).unwrap();
+        assert_eq!(find_game_folder(card.path()), Some(card.path().join("BESCES-50916RATCHET")));
+    }
+
     /// The install folder's cards and settings go to migrated/, the ones in use and a file already
     /// migrated are left alone, and the install folder keeps only its games.
     #[test]
@@ -806,6 +1052,40 @@ mod tests {
         assert!(!install.join("memcard").exists() && !install.join("settings").exists());
         assert!(install.join("active/rac1/keep").is_file());
         assert_eq!(migrate_install_saves(install, home), Ok(0));
+    }
+
+    /// The player's own save folder: the save manager reads the cards there, a folder per serial,
+    /// and its first use copies the saves over without replacing one it has.
+    #[test]
+    fn a_save_folder_of_the_players_holds_the_cards() {
+        let (home, sync) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (home, sync) = (home.path(), sync.path().join("OpenRAC saves"));
+        with_data_home(home, || {
+            assert_eq!(get_memcard_dir("SCES_509.16"), home.join("memcard/SCES_509.16"));
+            with_card_root(&sync, || {
+                assert_eq!(get_memcard_dir("SCES_509.16"), sync.join("SCES_509.16"));
+                assert_eq!(card_root_in(home), sync);
+            });
+            assert_eq!(card_dir_in(Some(&sync), "SCUS_971.99"), sync.join("SCUS_971.99"));
+            assert_eq!(card_dir_in(None, "SCUS_971.99"), home.join("memcard/SCUS_971.99"));
+        });
+
+        let from = home.join("memcard");
+        for (path, text) in [("SCES_509.16/card/save0.bin", "mine"), ("SCES_509.16/card/save1.bin", "old")] {
+            fs::create_dir_all(from.join(path).parent().unwrap()).unwrap();
+            fs::write(from.join(path), text).unwrap();
+        }
+        fs::create_dir_all(sync.join("SCES_509.16/card")).unwrap();
+        fs::write(sync.join("SCES_509.16/card/save1.bin"), "synced from the other computer").unwrap();
+        assert_eq!(copy_cards(&from, &sync), Ok(1));
+        assert_eq!(fs::read_to_string(sync.join("SCES_509.16/card/save0.bin")).unwrap(), "mine");
+        assert_eq!(
+            fs::read_to_string(sync.join("SCES_509.16/card/save1.bin")).unwrap(),
+            "synced from the other computer"
+        );
+        assert!(from.join("SCES_509.16/card/save0.bin").is_file(), "the old folder stays");
+        assert_eq!(copy_cards(&home.join("none"), &sync), Ok(0));
+        assert!(copy_cards(&from, &from.join("inside")).is_err());
     }
 
     /// Windows keeps the data in %LOCALAPPDATA%\openrac, as the port's data_home does.
@@ -854,8 +1134,29 @@ mod tests {
         assert_eq!(get_planet_name("SCUS_972.68", 1).as_deref(), Some("Oozla"));
         assert_eq!(get_planet_name("SCUS_972.68", 30).as_deref(), Some("Insomniac Museum"));
         assert_eq!(get_planet_name("SCUS_972.68", 21).as_deref(), Some("Planet #21"));
+        assert_eq!(get_planet_name("SCES_516.07", 1).as_deref(), Some("Oozla"));
+        assert_eq!(bolts_record("SCES_516.07"), 39);
         // Ratchet & Clank reads its own record 1, never Going Commando's 39.
         assert_eq!(parse_save_gameplay_info(&data, bolts_record("SCES_509.16")).bolts, None);
+    }
+
+    /// Up Your Arsenal's slot 0 as the PAL game writes it on a fresh card (empty), then a save of
+    /// Veldin, as the slot list reads them.
+    #[test]
+    fn reads_up_your_arsenals_planet_and_bolts() {
+        let empty = include_bytes!("../tests/fixtures/rac3/save-empty.bin");
+        assert!(parse_save_gameplay_info(empty, bolts_record("SCES_524.56")).empty);
+        let mut bolts = [0u8; 128];
+        bolts[..4].copy_from_slice(&12345u32.to_le_bytes());
+        let clock = [0x00, 0x30, 0x15, 0x14, 0x00, 0x19, 0x11, 0x26];
+        let data = save(&[(0, &1u32.to_le_bytes()), (39, &bolts), (3, &223380u32.to_le_bytes()), (4, &clock)]);
+        let g = parse_save_gameplay_info(&data, bolts_record("SCES_524.56"));
+        assert!(!g.empty);
+        assert_eq!((g.planet_id, g.bolts), (Some(1), Some(12345)));
+        assert_eq!(g.timestamp.as_deref(), Some("2026-11-19 14:15:30"));
+        assert_eq!(get_planet_name("SCES_524.56", 1).as_deref(), Some("Veldin"));
+        assert_eq!(get_planet_name("SCES_524.56", 24).as_deref(), Some("Insomniac Museum"));
+        assert_eq!(get_planet_name("SCES_524.56", 15).as_deref(), Some("Planet #15"));
     }
 
     #[test]
@@ -943,6 +1244,35 @@ mod tests {
     }
 
     #[test]
+    fn a_restore_keeps_the_parties_saves() {
+        let home = tempfile::tempdir().unwrap();
+        with_data_home(home.path(), || {
+            let card = get_memcard_dir("SCES_509.16");
+            std::fs::create_dir_all(card.join("BESCES-50916RATCHET")).unwrap();
+            std::fs::write(card.join("BESCES-50916RATCHET/save0.bin"), "old").unwrap();
+            std::fs::create_dir_all(card.join("BESCES-50916RATCHET-coop")).unwrap();
+            std::fs::write(card.join("BESCES-50916RATCHET-coop/save0.bin"), "party, old").unwrap();
+            let backup = backup_card(&card, Some("test")).unwrap();
+            std::fs::write(card.join("BESCES-50916RATCHET/save0.bin"), "new").unwrap();
+            std::fs::write(card.join("BESCES-50916RATCHET-coop/save0.bin"), "party, new").unwrap();
+            restore_backup("SCES_509.16", &backup.name).unwrap();
+            let read = |p: &str| std::fs::read_to_string(card.join(p)).unwrap();
+            assert_eq!(read("BESCES-50916RATCHET/save0.bin"), "old");
+            assert_eq!(read("BESCES-50916RATCHET-coop/save0.bin"), "party, new");
+        });
+    }
+
+    #[test]
+    fn the_coop_saves_are_the_game_folders() {
+        let card = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(card.path().join("BESCES-50916RATCHET")).unwrap();
+        // Another folder ending the same way is not the game's parties' folder.
+        std::fs::create_dir_all(card.path().join("AAA-coop")).unwrap();
+        std::fs::write(card.path().join("AAA-coop/save0.bin"), "x").unwrap();
+        assert!(coop_saves(card.path(), "SCES_509.16").is_empty());
+    }
+
+    #[test]
     fn a_restore_from_outside_the_card_is_refused() {
         // A name that is not a backup of the card: refused before anything is read or
         // removed, so a path somewhere else cannot replace the card's own folders. In an empty
@@ -973,6 +1303,22 @@ mod tests {
             find_game_folder(card.path()).and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         );
         assert_eq!(status.slots[0].path, card.path().join(&folder).join("save0.bin").to_string_lossy());
+    }
+
+    #[test]
+    fn each_game_shows_its_own_number_of_slots() {
+        // Going Commando and Up Your Arsenal have four slots, Ratchet & Clank five.
+        for (serial, folder, slots) in [
+            ("SCES_509.16", "BESCES-50916RATCHET", 5),
+            ("SCUS_972.68", "BASCUS-97268RATCHET", 4),
+            ("SCES_516.07", "BESCES-51607RATCHET", 4),
+            ("SCES_524.56", "BESCES-52456RATCHET", 4),
+            ("SCUS_973.53", "BASCUS-97353RATCHET", 4),
+        ] {
+            let card = tempfile::tempdir().unwrap();
+            fs::create_dir_all(card.path().join(folder)).unwrap();
+            assert_eq!(inspect_card(card.path(), serial).slots.len(), slots, "{serial}");
+        }
     }
 
     #[test]

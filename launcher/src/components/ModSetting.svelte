@@ -11,6 +11,7 @@
   import * as T from "$lib/modsText";
   import { settingControl } from "$lib/plugins";
   import { formatValue, parseTyped, percentOf, snapValue, stepOf } from "$lib/settingValues";
+
   import Icon from "./Icon.svelte";
   import KeyBindSetting from "./KeyBindSetting.svelte";
 
@@ -48,7 +49,9 @@
 
   const control = $derived(settingControl(s));
   const atDefault = $derived(
-    s.type === "keybind" ? parseBinds(s.value).join(",") === parseBinds(s.default).join(",") : s.value === s.default,
+    s.type === "keybind"
+      ? parseBinds(s.value).join(",") === parseBinds(s.default).join(",")
+      : s.value === s.default,
   );
 
   /** The default as the reset button names it. */
@@ -61,12 +64,17 @@
       case "int":
       case "float":
         return formatValue(s, s.default);
+
       case "keybind": {
         const binds = parseBinds(s.default);
+
         return binds.length ? binds.map(bindLabel).join(", ") : T.KEYBIND.none;
       }
+
       default:
-        return typeof s.default === "string" && s.default !== "" ? `"${s.default}"` : T.SETTING.empty;
+        return typeof s.default === "string" && s.default !== ""
+          ? `"${s.default}"`
+          : T.SETTING.empty;
     }
   });
 
@@ -78,8 +86,10 @@
       clamps = unfolded || node.scrollHeight > node.clientHeight + 1;
     };
     const watch = new ResizeObserver(check);
+
     watch.observe(node);
     check();
+
     return {
       destroy: () => {
         watch.disconnect();
@@ -95,6 +105,7 @@
   function typed(text: string) {
     typing = text;
     const n = parseTyped(s, text);
+
     if (n !== null && n !== s.value) onchange(n, TYPED);
   }
 
@@ -103,6 +114,7 @@
       e.preventDefault();
       const by = stepOf(s) * (e.shiftKey ? 10 : 1) * (e.key === "ArrowUp" ? 1 : -1);
       const n = snapValue(s, (typeof s.value === "number" ? s.value : 0) + by);
+
       typing = null;
       if (n !== s.value) onchange(n, SETTLE);
     } else if (e.key === "Enter") {
@@ -148,7 +160,8 @@
             aria-controls={`${id}-about`}
             aria-label={unfolded ? T.SETTING.less(s.name) : T.SETTING.more(s.name)}
             title={unfolded ? T.SETTING.less(s.name) : T.SETTING.more(s.name)}
-            onclick={() => (unfolded = !unfolded)}><Icon name={unfolded ? "up" : "info"} size={15} /></button
+            onclick={() => (unfolded = !unfolded)}
+            ><Icon name={unfolded ? "up" : "info"} size={15} /></button
           >
         {/if}
       </div>
@@ -175,7 +188,11 @@
             onchange(snapValue(s, Number(e.currentTarget.value)), SETTLE);
           }}
         />
-        <span class="mark" class:hidden={atDefault} aria-hidden="true" title={T.SETTING.defaultMark(defaultText)}
+        <span
+          class="mark"
+          class:hidden={atDefault}
+          aria-hidden="true"
+          title={T.SETTING.defaultMark(defaultText)}
         ></span>
       </div>
       <input
@@ -400,9 +417,11 @@
     width: 24px;
     height: 20px;
     padding: 0;
+    min-height: 0;
     border: 0;
     border-radius: 6px;
     background: none;
+    box-shadow: none;
     color: var(--dim);
   }
 
@@ -417,9 +436,11 @@
 
   .cancel {
     padding: 0;
+    min-height: 0;
     margin-left: 4px;
     border: 0;
     background: none;
+    box-shadow: none;
     font: inherit;
     color: var(--lav);
     text-decoration: underline;
@@ -457,6 +478,7 @@
     height: 36px;
     margin: 0;
     background: transparent;
+    box-shadow: none;
     cursor: pointer;
     position: relative;
     z-index: 1;
@@ -464,21 +486,19 @@
 
   .slider input::-webkit-slider-runnable-track {
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     background: linear-gradient(to right, var(--brand) var(--at), var(--ink-deep) var(--at));
-    box-shadow: inset 0 0 0 1px var(--line-strong);
   }
 
   .slider input::-moz-range-track {
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     background: var(--ink-deep);
-    box-shadow: inset 0 0 0 1px var(--line-strong);
   }
 
   .slider input::-moz-range-progress {
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     background: var(--brand);
   }
 
@@ -489,7 +509,6 @@
     margin-top: -7px;
     border-radius: 50%;
     background: var(--text);
-    border: 2px solid var(--brand);
     box-shadow: 0 2px 6px rgb(0 0 0 / 0.45);
     transition: transform var(--fast) var(--ease);
   }
@@ -499,7 +518,6 @@
     height: 16px;
     border-radius: 50%;
     background: var(--text);
-    border: 2px solid var(--brand);
     box-shadow: 0 2px 6px rgb(0 0 0 / 0.45);
   }
 
@@ -568,7 +586,7 @@
   }
 
   .num[aria-invalid="true"] {
-    border-color: var(--err);
+    box-shadow: inset 0 0 0 2px var(--err);
   }
 
   .field {
@@ -610,9 +628,8 @@
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--gold);
-    background: var(--ink-deep);
-    border: 1px solid var(--line-strong);
-    border-radius: 999px;
+    background: var(--control);
+    border-radius: var(--radius-sm);
     padding: 6px 44px 6px 18px;
     appearance: none;
     cursor: pointer;
@@ -620,7 +637,9 @@
 
   select option {
     color: var(--text);
-    background: var(--ink-deep);
+    background: var(--card);
+    --control: var(--control-card);
+    --control-hi: var(--control-card-hi);
   }
 
   :global(html[data-platform="android"]) select {
@@ -642,8 +661,9 @@
     width: 36px;
     height: 36px;
     padding: 0;
-    border-color: transparent;
+    min-height: 0;
     background: transparent;
+    box-shadow: none;
     color: var(--soft);
   }
 

@@ -14,16 +14,22 @@ pub struct Config {
     pub root: Option<PathBuf>,
     /// Python 3.10+, for tools/openrac.py, the editor and the games' Python tools.
     pub python: Option<PathBuf>,
-    /// Godot 4 (4.7+), for the level editor.
-    pub godot: Option<PathBuf>,
     /// Docker, which rac1/pal's and rac4's builds run in.
     pub docker: Option<PathBuf>,
     /// Show what contributors use: builds, checks, toolchains, progress.
     /// Off, the launcher shows a player's three steps: set up from your disc, play, edit levels.
     pub developer: bool,
+    /// Up Your Arsenal (rac3) is still in development: its build, set-up and Play stay blocked
+    /// until a developer turns this on, after the launcher's three confirmations (Settings,
+    /// Developer). Default off.
+    pub rac3_dev: bool,
     /// The save editor shows every field of a save, raw bytes included (for debugging). Off, the
     /// player's safe set only.
     pub save_editor_advanced: bool,
+    /// For developers: after a change to OpenRAC, build the game again incrementally (`port-build`)
+    /// instead of from scratch (`port-rebuild`). A build folder that is unusable (no stamp from
+    /// OpenRAC's build, another OpenRAC version) is still built from scratch. Default off.
+    pub incremental_builds: bool,
     /// Where games are set up from the player's discs (OpenGOAL's install
     /// directory); unset: the launcher's per-user data folder.
     pub install_dir: Option<PathBuf>,
@@ -31,6 +37,11 @@ pub struct Config {
     /// knows (discs.rs): with it nobody picks an image by hand.
     #[serde(default)]
     pub discs_dir: Option<PathBuf>,
+    /// The player's own folder for the games' memory cards (their saves): a folder per disc
+    /// serial in it, as in the default `<data home>/memcard`, so one folder can be synced
+    /// (Syncthing, a cloud drive). Unset: the default. Given to each game's start as `--cards`
+    /// (saves.rs `card_dir_in`); not on Android, which keeps its files in its own place.
+    pub save_dir: Option<PathBuf>,
     /// The first-run setup was finished (or skipped).
     pub setup_complete: bool,
     /// The version the launcher showed last (`rac1/pal`).
@@ -52,27 +63,22 @@ pub struct Config {
     pub update_branch: Option<String>,
     /// Custom Discord application ID (optional).
     pub discord_client_id: Option<String>,
-    /// The page layout: "compact" (default) or "classic", the original design (src/layouts/).
-    #[ts(type = "\"compact\" | \"classic\"")]
-    pub layout: String,
-    /// The launcher's theme (src/lib/palettes.json): "openrac" (default), "gruvbox", "oled", "nord"
+    /// The launcher's theme (src/lib/palettes.json): "openrac" (default), "oled", "nord"
     /// or "mocha". The accent is not a theme's: it is the picked game's.
     pub theme: String,
+    /// The picked game's own bar, gold and coal (palettes.json game_colors) instead of the
+    /// launcher's, in the launcher and the game's menu. On by default; off, every game wears the gold.
+    pub game_colors: bool,
     /// The game writes a detailed log (OPENRAC_LOG=verbose): level loads, controller changes,
     /// what the port is missing. Off by default, so a log stays small.
     pub detailed_game_log: bool,
     /// What the game draws with on Windows, Linux and macOS: "vulkan" (the default), the port's
-    /// Vulkan renderer (OPENRAC_GL_API=vulkan; on macOS the MoltenVK its bundle carries), or
-    /// "opengl" (OpenGL 4.1). Where Vulkan cannot start, the game draws with OpenGL
-    /// (port/platform/window.cpp). Not used on Android, which keeps its own choice
-    /// (src-tauri/src/android.rs).
+    /// Vulkan renderer, shown as Metal on macOS because the game runs it through MoltenVK,
+    /// or "opengl" (OpenGL 4.1). Android keeps its own renderer setting. iOS uses Metal
+    /// through MoltenVK.
+    #[serde(deserialize_with = "deserialize_renderer")]
     #[ts(type = "\"opengl\" | \"vulkan\"")]
     pub renderer: String,
-    /// HDR output (port docs/port/HDR.md): "" (default) leaves it to the game's own setting (its
-    /// drawer, the settings file's `hdr`); "off", "auto" or "on" is given to each game's start
-    /// (OPENRAC_HDR), over that. On every system; it needs the Vulkan renderer.
-    #[ts(type = "\"\" | \"off\" | \"auto\" | \"on\"")]
-    pub hdr: String,
     /// Linux: the launcher's own window draws without WebKitGTK's accelerated compositing mode
     /// (webkit.rs), for a graphics driver that crashes it. Turned on by the launcher itself after
     /// a start whose window crashed before it drew a click; the player may turn it off again.
@@ -84,14 +90,31 @@ pub struct Config {
     /// For each game, the time (seconds since 1970) of the newest crash report the player has
     /// dismissed: crashes up to then are seen, and no notice, button or mark is shown for them.
     pub crashes_seen: BTreeMap<String, u64>,
-    /// For developers with more than one disc of a game in the games folder: the version each
+    /// For developers whose launcher knows more than one disc of a game: the version each
     /// game's page plays (`rac1` -> `rac1/ntsc`). Used only with developer tools on
     /// (disc_choice.rs); without one, the disc set up, as for a player.
     pub disc_choice: BTreeMap<String, String>,
+    /// For developers: the image each version was last set up from (`rac1/ntsc` -> the .iso), so
+    /// the disc switch offers that version without a games folder (disc_choice.rs). An image
+    /// moved, deleted or now another disc is not offered.
+    pub disc_images: BTreeMap<String, PathBuf>,
     /// The name online mods show the other players (multiplayer.rs): 3 to 16 letters, digits and
     /// underscores, made up at the first start and changed in Settings. Given to the game as
     /// `OPENRAC_PLAYER_NAME`.
     pub multiplayer_name: String,
+    /// This installation's key (multiplayer.rs): random, made at the first start and never shown.
+    /// What a host's ban holds on to, so a new name gets round none. Given to the game as
+    /// `OPENRAC_IDENTITY_KEY`.
+    #[serde(default)]
+    pub multiplayer_key: String,
+    /// The multiplayer hub every game's online play starts at (multiplayer.rs): a host name or an
+    /// IP address, and a port. The hub logs players in and lists the game servers to pick from.
+    /// The official hub (`hub.openrac.dev:7177`) unless changed in Settings; anyone can host one
+    /// (the OpenRAC/Server repository). Given to the game as `OPENRAC_SERVER=host:port`.
+    pub multiplayer_server_host: String,
+    /// The server's port, 1 to 65535; a saved value out of range reads as the official port.
+    #[serde(deserialize_with = "deserialize_port")]
+    pub multiplayer_server_port: u16,
     /// Where the launcher keeps its own copy of the figures it fetched from bytematch.dev: in
     /// the per-user folder beside its settings, which the launcher can always write (a
     /// checkout it does not own, as an installed launcher carries one, is read-only).
@@ -118,12 +141,14 @@ impl Default for Config {
         Self {
             root: None,
             python: None,
-            godot: None,
             docker: None,
             install_dir: None,
             discs_dir: None,
+            save_dir: None,
             developer: false,
+            rac3_dev: false,
             save_editor_advanced: false,
+            incremental_builds: false,
             setup_complete: false,
             last_version: None,
             discord_rpc: true,
@@ -132,16 +157,19 @@ impl Default for Config {
             update_channel: None,
             update_branch: None,
             discord_client_id: None,
-            layout: "compact".into(),
             theme: "openrac".into(),
+            game_colors: true,
             detailed_game_log: false,
             renderer: "vulkan".into(),
-            hdr: String::new(),
             safe_rendering: false,
             play_with_mods: false,
             crashes_seen: BTreeMap::new(),
             disc_choice: BTreeMap::new(),
+            disc_images: BTreeMap::new(),
             multiplayer_name: String::new(),
+            multiplayer_key: String::new(),
+            multiplayer_server_host: crate::multiplayer::OFFICIAL_HOST.into(),
+            multiplayer_server_port: crate::multiplayer::OFFICIAL_PORT,
             progress_cache: None,
             mod_indexes: Vec::new(),
             prerelease_mods: None,
@@ -159,9 +187,42 @@ impl Config {
 }
 
 /// Reads `path`; a missing or unreadable file gives the defaults, so a
-/// broken settings file never stops the launcher from starting.
+/// broken settings file never stops the launcher from starting. A multiplayer server saved as the
+/// official game server from before the hub (every launcher saved its default) reads as the
+/// official hub.
 pub fn load(path: &Path) -> Config {
-    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    let mut config: Config =
+        std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    if config.multiplayer_server_host.trim().eq_ignore_ascii_case(crate::multiplayer::FORMER_OFFICIAL_HOST)
+        && config.multiplayer_server_port == crate::multiplayer::FORMER_OFFICIAL_PORT
+    {
+        config.multiplayer_server_host = crate::multiplayer::OFFICIAL_HOST.into();
+        config.multiplayer_server_port = crate::multiplayer::OFFICIAL_PORT;
+    }
+    config
+}
+
+/// Normalizes saved renderer names and names passed to Play.
+pub fn renderer_for(renderer: &str) -> &'static str {
+    match renderer {
+        "vulkan" | "metal" => "vulkan",
+        _ => "opengl",
+    }
+}
+
+fn deserialize_renderer<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(renderer_for(&String::deserialize(deserializer)?).to_owned())
+}
+
+/// A port as saved: 1 to 65535, anything else (a hand edit, a string) the official port, so that
+/// a bad value never costs the player the rest of the settings.
+fn deserialize_port<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_u64()
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|&n| n != 0)
+        .unwrap_or(crate::multiplayer::OFFICIAL_PORT))
 }
 
 /// Writes `config` to `path` through a temporary file, so a crash never
@@ -206,6 +267,52 @@ mod tests {
         assert_eq!(load(&path), Config::default());
     }
 
+    /// A settings file from before the multiplayer server has the official hub, as has one that
+    /// names the official game server from before the hub; another is kept, and a port out of
+    /// range reads as the official port without losing the rest.
+    #[test]
+    fn the_multiplayer_server_defaults_to_the_official_one_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("launcher.json");
+        std::fs::write(&path, r#"{"setupComplete": true, "multiplayerName": "SwiftRobot42"}"#).unwrap();
+        let old = load(&path);
+        assert_eq!((old.multiplayer_server_host.as_str(), old.multiplayer_server_port), ("hub.openrac.dev", 7177));
+        assert_eq!(old.multiplayer_name, "SwiftRobot42");
+        std::fs::write(
+            &path,
+            r#"{"setupComplete": true, "multiplayerServerHost": "game.openrac.dev", "multiplayerServerPort": 7770}"#,
+        )
+        .unwrap();
+        let before_hub = load(&path);
+        assert_eq!(
+            (before_hub.multiplayer_server_host.as_str(), before_hub.multiplayer_server_port),
+            ("hub.openrac.dev", 7177)
+        );
+        std::fs::write(
+            &path,
+            r#"{"setupComplete": true, "multiplayerServerHost": "game.openrac.dev", "multiplayerServerPort": 7000}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path).multiplayer_server_port, 7000);
+        let mine = Config {
+            multiplayer_server_host: "192.168.1.20".into(),
+            multiplayer_server_port: 7000,
+            ..Config::default()
+        };
+        save(&path, &mine).unwrap();
+        assert_eq!(load(&path), mine);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"multiplayerServerHost\": \"192.168.1.20\""), "{text}");
+        assert!(text.contains("\"multiplayerServerPort\": 7000"), "{text}");
+        for bad in ["0", "70000", "-1", "\"7177\"", "null"] {
+            let json = format!(r#"{{"setupComplete": true, "multiplayerServerPort": {bad}}}"#);
+            std::fs::write(&path, json).unwrap();
+            let read = load(&path);
+            assert!(read.setup_complete, "{bad}");
+            assert_eq!(read.multiplayer_server_port, 7177, "{bad}");
+        }
+    }
+
     /// A settings file from before the option looks for updates, and turning it off is kept.
     #[test]
     fn checks_for_updates_unless_turned_off() {
@@ -216,6 +323,17 @@ mod tests {
         save(&path, &Config { check_updates: false, ..Config::default() }).unwrap();
         assert!(!load(&path).check_updates);
         assert!(std::fs::read_to_string(&path).unwrap().contains("\"checkUpdates\": false"));
+    }
+
+    /// A settings file without the option wears the game's colours; turning them off is kept.
+    #[test]
+    fn wears_game_colours_unless_turned_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("launcher.json");
+        std::fs::write(&path, r#"{"setupComplete": true}"#).unwrap();
+        assert!(load(&path).game_colors);
+        save(&path, &Config { game_colors: false, ..Config::default() }).unwrap();
+        assert!(!load(&path).game_colors);
     }
 
     /// A settings file from before the mod check offers mod updates; turning it off is kept.
@@ -240,7 +358,7 @@ mod tests {
         assert!(c.auto_update_mods && c.cleanup_unused_deps);
     }
 
-    /// A settings file from before the renderer choice draws with OpenGL; Vulkan, chosen, is kept.
+    /// Files without a renderer use the default. Old Metal selections migrate to Vulkan.
     #[test]
     fn renderer_defaults_to_vulkan() {
         let dir = tempfile::tempdir().unwrap();
@@ -249,5 +367,27 @@ mod tests {
         assert_eq!(load(&path).renderer, "vulkan");
         save(&path, &Config { renderer: "opengl".into(), ..Config::default() }).unwrap();
         assert_eq!(load(&path).renderer, "opengl");
+        std::fs::write(&path, r#"{"renderer": "metal"}"#).unwrap();
+        let migrated = load(&path);
+        assert_eq!(migrated.renderer, "vulkan");
+        save(&path, &migrated).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"renderer\": \"vulkan\""));
+    }
+
+    #[test]
+    fn renderer_names_are_normalized() {
+        assert_eq!(renderer_for("metal"), "vulkan");
+        assert_eq!(renderer_for("vulkan"), "vulkan");
+        assert_eq!(renderer_for("opengl"), "opengl");
+        assert_eq!(renderer_for("glide"), "opengl");
+    }
+
+    /// An old file with the removed "hdr" key still loads; HDR is the game's own setting now.
+    #[test]
+    fn old_hdr_key_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("launcher.json");
+        std::fs::write(&path, r#"{"setupComplete": true, "hdr": "on"}"#).unwrap();
+        assert!(load(&path).setup_complete);
     }
 }

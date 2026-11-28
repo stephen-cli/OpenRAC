@@ -52,7 +52,45 @@ struct Setting {
     std::vector<std::string> choices;  // the values of a choice
     std::size_t max_length = 0;        // a string's (0: no limit)
     int binds = 2;                     // a keybind's most binds
+    std::vector<std::string> choice_names;  // the names of a choice's values, in their order
+    int party = 0;                          // "multiplayer": an OPENRAC_PARTY_SETTING_* value
+    // "games": the games it is for, of the manifest's (MODS.md, section 3); empty: every one. In
+    // another game it is its default, and the launcher does not show it.
+    std::vector<std::string> games;
+    std::string description;  // the line under its name (optional)
+    // "section": the heading it is shown under, in the launcher and the port's menu alike; a
+    // section's settings together, the sections in the order each first appears. Empty: none.
+    std::string section;
+    // "step": how far a number moves a notch (optional; the port's menu picks one without it).
+    std::optional<double> step;
+    // "group": a keybind's group; two keybinds of one group may not share an input (the menus warn).
+    std::string group;
 };
+
+// "presets" (interface 1.2): buttons that set several settings at once (sdk/docs/settings.md).
+struct Preset {
+    std::string id, name;
+    std::vector<std::pair<std::string, SettingValue>> values;  // by key
+};
+
+// Whether a setting is for this game (its "games" empty or naming it).
+bool setting_for_game(const Setting& s, std::string_view game);
+
+// The presets, as the launcher has them (launcher/src/lib/presets.ts): they cover every keybind and
+// each setting one of them names; a preset gives those it names its value and the others it covers
+// their defaults. `preset` null is the defaults (the Default button).
+bool preset_covers(const Setting& s, const std::vector<Preset>& presets);
+const SettingValue& preset_value(const Setting& s, const Preset* preset);
+
+// Whether two values of a setting are the same (a keybind's by its binds, in order).
+bool same_value(const Setting& s, const SettingValue& a, const SettingValue& b);
+
+// A value as JSON, as a mod's setting_set_* and the port's menu take it: true, 3, 0.5, "KeyW".
+std::string setting_literal(const Setting& s, const SettingValue& v);
+
+// A value of the setting's type from JSON, within its limits, as the list's are checked (a
+// keybind's names normalized): false when it is not one.
+bool setting_value(const Setting& s, const json::Value& v, SettingValue& out);
 
 // A keybind's text as names of openrac/keys.h, split at commas or spaces: false when one is no
 // name, one is there twice or there are more than `most`; else `normalized` is them comma-joined.
@@ -82,8 +120,15 @@ struct Manifest {
     // "assets": a folder inside the mod (MODS.md, section 3): its level_NN folders are searched
     // before the extracted levels' files, and their classes.json adds render classes.
     std::string assets;
+    // "touch" (interface 1.13): a JSON file inside the mod with the on-screen pad's sets of actions
+    // ("contexts") and the icons they use ("icons": name -> an .svg inside the mod).
+    std::string touch;
     std::vector<std::string> hooks;
+    // "reads_games" (interface 1.33): the games whose data folders the mod reads (openrac_api.game_data_dir).
+    // The running game is always read without declaring it.
+    std::vector<std::string> reads_games;
     std::vector<Setting> settings;
+    std::vector<Preset> presets;
     std::vector<Requirement> requirements;  // the manifest's "requires"
     std::vector<Conflict> conflicts;
     std::vector<std::string> load_after, load_before;
@@ -91,12 +136,19 @@ struct Manifest {
     // (openrac_api.setup_vulkan), so the mods load before the window opens. Ignored on a script
     // mod or one of an older interface.
     bool vulkan_device = false;
+    bool vulkan_queue = false;  // Native Vulkan access requires game-thread rendering (1.20).
+    // "multiplayer" (interface 1.14): an OPENRAC_PARTY_MOD_* value, gameplay when it says nothing.
+    int party = 0;
 };
 
 // A manifest's text checked by the rules of MODS.md section 3. False, and why, when one is broken.
 bool parse_manifest(std::string_view text, Manifest& out, std::string& error);
 
 bool valid_id(std::string_view id);
+
+// A game's id as the launcher names it (games/<game>/game.json: "rac1"): letters, digits and dashes,
+// at most 32 (interface 1.33, the manifest's "reads_games" and openrac_api.game_data_dir).
+bool valid_game_id(std::string_view game);
 
 // A path inside a mod to one of its .luau files: relative, with /, no empty, "." or ".." part.
 bool script_path(std::string_view path);
@@ -114,11 +166,13 @@ struct ListEntry {
 bool parse_list(std::string_view text, std::vector<ListEntry>& out, std::string& error);
 
 // The values a mod gets: each declared setting's from the list where it is of the right type and
-// in range, its default otherwise (a line in `notes` says so).
+// in range, its default otherwise (a line in `notes` says so). With `game`, a setting that is not
+// for that game ("games") is its default, whatever the list says.
 std::map<std::string, SettingValue> resolve_settings(
     const Manifest& manifest,
     const std::map<std::string, json::Value>& written,
-    std::vector<std::string>& notes
+    std::vector<std::string>& notes,
+    std::string_view game = {}
 );
 
 // This build's platform key: "macos-arm64", "linux-x86_64", "windows-x86_64", "android-arm64", ...

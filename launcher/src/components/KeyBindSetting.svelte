@@ -20,6 +20,7 @@
     withoutBind,
   } from "$lib/keybinds";
   import * as T from "$lib/modsText";
+
   import Icon from "./Icon.svelte";
 
   let {
@@ -54,11 +55,14 @@
 
   function take(name: string) {
     const slot = capturing;
+
     if (slot === null) return;
     capturing = null;
     const next = withBind(binds, slot, name);
+
     onnote(binds.includes(name) && binds.indexOf(name) !== slot ? T.KEYBIND.swapped : null);
     const value = formatBinds(next);
+
     if (value !== formatBinds(binds)) onchange(value);
     caps[Math.min(slot, next.length - 1)]?.focus();
   }
@@ -77,6 +81,7 @@
       e.preventDefault();
       e.stopPropagation();
       const name = bindOfKey(e);
+
       if (name) take(name);
     };
     const down = (e: MouseEvent) => {
@@ -84,6 +89,7 @@
         e.preventDefault();
         e.stopPropagation();
         const name = bindOfMouse(e);
+
         if (name) {
           boundAt = Date.now();
           take(name);
@@ -98,14 +104,17 @@
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
       const name = bindOfWheel(e);
+
       if (name) take(name);
     };
     const away = () => (capturing = null);
+
     window.addEventListener("keydown", key, true);
     window.addEventListener("mousedown", down, true);
     window.addEventListener("contextmenu", menu, true);
     window.addEventListener("blur", away);
     cap?.addEventListener("wheel", wheel, { passive: false });
+
     return () => {
       window.removeEventListener("keydown", key, true);
       window.removeEventListener("mousedown", down, true);
@@ -135,8 +144,8 @@
           onclick={() => {
             start(slot);
           }}
-          >{#if capturing === slot}{T.KEYBIND.press}{:else if name}{bindLabel(name)}{:else}<span class="add"
-              >{slot === 0 ? T.KEYBIND.none : T.KEYBIND.add}</span
+          >{#if capturing === slot}{T.KEYBIND.press}{:else if name}{bindLabel(name)}{:else}<span
+              class="add">{slot === 0 ? T.KEYBIND.none : T.KEYBIND.add}</span
             >{/if}</button
         >{#if name && capturing !== slot}<button
             class="clear"
@@ -180,9 +189,7 @@
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--text);
-    background: var(--panel-hi);
-    border: 1px solid var(--line-strong);
-    border-bottom-width: 3px;
+    background: var(--control);
     border-radius: var(--radius-sm);
     cursor: pointer;
   }
@@ -194,7 +201,8 @@
 
   @media (hover: hover) {
     :global(html:where(:not([data-input="pad"]))) .cap:hover {
-      border-color: var(--amber);
+      background: var(--on-fill);
+      color: var(--amber);
     }
 
     :global(html:where(:not([data-input="pad"]))) .clear:hover {
@@ -202,10 +210,11 @@
     }
   }
 
+  /* An empty cap: a dashed edge all round. Buttons have no border (app.css), so it is set whole. */
   .cap.empty {
     background: transparent;
-    border-style: dashed;
-    border-bottom-width: 1px;
+    box-shadow: none;
+    border: 1px dashed var(--line-field);
   }
 
   .cap.waiting {
@@ -213,12 +222,13 @@
     font-weight: 500;
     color: var(--bar-ink);
     background: var(--amber);
-    border-color: var(--amber);
+    box-shadow: none;
+    background: var(--on-fill);
     animation: pulse 1.2s ease-in-out infinite;
   }
 
   .cap.clash {
-    border-color: var(--amber);
+    background: var(--on-fill);
     color: var(--amber);
   }
 
@@ -236,10 +246,7 @@
     font-size: 0.9375rem;
     line-height: 1;
     color: var(--soft);
-    background: var(--panel-hi);
-    border: 1px solid var(--line-strong);
-    border-left: none;
-    border-bottom-width: 3px;
+    background: var(--control);
     border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     cursor: pointer;
   }

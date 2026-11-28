@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 the OpenRAC contributors
 //
-// The native mod loader (mods.h, docs/port/MODS.md).
+// The native mod loader (mods.h, docs/port/MODS.md). The table's calls are in mod_api/<area>.cpp.
 
 #include "mods.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -22,11 +28,15 @@
 #include "common/build_info.h"
 #include "common/c_boundary.h"
 #include "common/crash.h"
+#include "common/env.h"
+#include "common/json.h"
 #include "common/log.h"
+#include "mod_api/internal.h"
 #include "mod_library.h"
 #include "mod_manifest.h"
 #include "mod_play.h"
 #include "mod_scripts.h"
+#include "mod_touch.h"
 #include "openrac/game_host.h"
 #include "openrac/guest.h"
 #include "openrac/memory.h"
@@ -35,26 +45,22 @@ namespace fs = std::filesystem;
 
 /* The mods loaded for this run, for lib/mc.c's save mark (game_host.h): set by load() below. */
 extern "C" const char* openrac_game_loaded_mods = "[]";
+/* The mods' data kept with the saves (game_host.h): set by load() below, called by lib/mc.c. */
+extern "C" void (*openrac_game_save_written)(const char* path, int players) = nullptr;
+extern "C" void (*openrac_game_save_read)(const char* path, int slot) = nullptr;
+extern "C" void (*openrac_game_new_game)(void) = nullptr;
 using namespace openrac;
 
-// One loaded mod: the handle openrac_mod.h's functions are given.
-struct openrac_mod {
-    std::string id;
-    std::string version;
-    std::string file;  // the library's file name (a script mod's: its first script)
-    bool script = false;  // a script mod (mod_scripts.h): no library
-    void* library = nullptr;
-    const void* base = nullptr;
-    mods::Manifest manifest;
-    std::map<std::string, mods::SettingValue> settings;
-    std::string failure;  // fail()'s reason, or a hook point refused
-    bool hook_refused = false;
-    std::vector<std::pair<void**, void*>> taken;  // each slot it filled, and what was there before
-    std::vector<std::string> hooks;               // the hook points it took
-    std::string data_dir;                         // data_dir's answer, once made (1.11)
-    fs::path dir;                                 // its folder (1.12: props' meshes, sounds)
-    openrac_mod_unload_fn unload = nullptr;
-};
+std::uint32_t overlay_bit(int phase) {
+    switch (phase) {
+        case OPENRAC_PLAY_PLAYING:
+            return OPENRAC_OVERLAY_PLAYING;
+        case OPENRAC_PLAY_MENU:
+            return OPENRAC_OVERLAY_MENU;
+        default:
+            return 0;
+    }
+}
 
 namespace {
 
@@ -95,49 +101,11 @@ extern "C" const char* openrac_script_hook_id(
 
 namespace openrac::mods {
 
+using namespace detail;
+
 bool g_frame_callbacks = false;
 
-namespace {
-
-struct FrameCallback {
-    openrac_frame_fn fn;
-    void* user;
-    openrac_mod* mod;
-};
-struct PadCallback {
-    openrac_pad_fn fn;
-    void* user;
-    openrac_mod* mod;
-};
-
-struct TickBoundaryCallback {
-    openrac_tick_boundary_fn fn;
-    void* user;
-    openrac_mod* mod;
-};
-
-// A front-end menu entry and the page it opens (interface 1.5).
-struct MenuCallback {
-    std::string label;
-    openrac_menu_fn fn;
-    void* user;
-    openrac_mod* mod;
-};
-
-// The longest label an entry keeps, in characters (openrac_api.menu_entry).
-constexpr std::size_t kMenuLabelMax = 31;
-
-// A page of the game's own menus (interface 1.7): what is on it, and whose it is.
-struct UiPageCallback {
-    UiPage page;
-    openrac_ui_fn fn;
-    void* user;
-    openrac_mod* mod;
-};
-
-// The main menu's own items a mod's may go after (openrac_api.ui_main_item).
-constexpr std::array<const char*, 3> kUiMainItems =
-    {OPENRAC_UI_NEW_GAME, OPENRAC_UI_LOAD_GAME, OPENRAC_UI_OPTIONS};
+namespace detail {
 
 const Host* g_host = nullptr;
 
@@ -145,11 +113,26 @@ const Host* g_host = nullptr;
 const char* hook_id(const Host& host, const char* name) {
     return openrac_script_hook_id(host.scripts, name);
 }
+
+std::vector<OverlayCallback> g_overlays;
+
 openrac_mod* g_loading = nullptr;  // the mod whose openrac_mod_load runs: hooks are taken then only
+// RAC1 has 38 native weapon ammo counters (152 bytes in weapon_ammo_counts).
+std::array<const openrac_mod*, 38> g_rac1_item_owners{};
+
+struct WeaponUiEntry {
+    const openrac_mod* mod;
+    std::uint32_t id;
+};
+
+std::vector<WeaponUiEntry> g_weapon_ui;
+// The mod whose overlay callback runs (the window thread), null between them.
+const openrac_mod* g_overlay_mod = nullptr;
 std::vector<std::unique_ptr<openrac_mod>> g_loaded;
 std::vector<fs::path> g_asset_roots;  // the loaded mods' assets folders, the last loaded first
 std::vector<FrameCallback> g_frames;
 std::vector<PadCallback> g_pads;
+PlayQueries g_play_queries;
 std::vector<MenuCallback> g_menus;
 std::vector<DeveloperMenu> g_developer_menus;
 // The pages of the game's own menus and the main-menu items (interface 1.7); the page on the
@@ -173,8 +156,10 @@ openrac_view_source g_views{};
 openrac_mod* g_views_mod = nullptr;
 openrac_vulkan_setup g_vulkan{};
 openrac_mod* g_vulkan_mod = nullptr;
+bool g_vulkan_queue_declared = false;
 std::vector<crash::ModImage> g_images;
 openrac_api g_api;
+openrac_api g_api_without_native_vulkan;
 const std::uint64_t g_snapshot_session = [] {
     const auto clock =
         static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -339,31 +324,6 @@ int snapshot_load(const void* input, std::size_t size) {
 
 // ---- The interface's functions ----
 
-void api_log(openrac_mod* mod, int level, const char* text) {
-    const std::string_view id = mod != nullptr ? std::string_view(mod->id) : std::string_view("?");
-    const char* t = text != nullptr ? text : "";
-    switch (level) {
-        case OPENRAC_LOG_DEBUG:
-            log::debug("[mod {}] {}", id, t);
-            break;
-        case OPENRAC_LOG_WARN:
-            log::warn("[mod {}] {}", id, t);
-            break;
-        case OPENRAC_LOG_ERROR:
-            log::error("[mod {}] {}", id, t);
-            break;
-        default:
-            log::info("[mod {}] {}", id, t);
-            break;
-    }
-}
-
-void api_fail(openrac_mod* mod, const char* reason) {
-    if (mod != nullptr && reason != nullptr) {
-        mod->failure = reason;
-    }
-}
-
 const SettingValue* setting(openrac_mod* mod, const char* key, SettingType a, SettingType b) {
     if (mod == nullptr || key == nullptr) {
         return nullptr;
@@ -375,196 +335,17 @@ const SettingValue* setting(openrac_mod* mod, const char* key, SettingType a, Se
     return &it->second;
 }
 
-int api_setting_bool(openrac_mod* mod, const char* key) {
-    const SettingValue* v = setting(mod, key, SettingType::Bool, SettingType::Bool);
-    return v != nullptr && v->b ? 1 : 0;
-}
-
-int64_t api_setting_int(openrac_mod* mod, const char* key) {
-    const SettingValue* v = setting(mod, key, SettingType::Int, SettingType::Int);
-    return v != nullptr ? v->i : 0;
-}
-
-double api_setting_float(openrac_mod* mod, const char* key) {
-    const SettingValue* v = setting(mod, key, SettingType::Float, SettingType::Int);
-    if (v == nullptr) {
-        return 0.0;
-    }
-    return v->type == SettingType::Int ? static_cast<double>(v->i) : v->f;
-}
-
-const char* api_setting_string(openrac_mod* mod, const char* key) {
-    const SettingValue* v = setting(mod, key, SettingType::String, SettingType::Choice);
-    if (v == nullptr) {
-        v = setting(mod, key, SettingType::Keybind, SettingType::Keybind);
-    }
-    return v != nullptr ? v->s.c_str() : "";
-}
-
-int api_hook(openrac_mod* mod, const char* name, const char* signature, void* replacement, void** original) {
-    if (mod == nullptr || mod != g_loading || g_host == nullptr) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    if (name == nullptr || replacement == nullptr || original == nullptr) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    // Asked for by its id or any alias (an earlier name, a symbol): the hook point's id decides.
-    const char* id = hook_id(*g_host, name);
-    for (int i = 0; i < g_host->hook_count; ++i) {
-        const HookPoint& p = g_host->hooks[i];
-        if (p.name == nullptr || std::strcmp(hook_id(*g_host, p.name), id) != 0) {
-            continue;
-        }
-        if (signature == nullptr || std::strcmp(p.signature, signature) != 0) {
-            mod->hook_refused = true;
-            mod->failure = std::format("hook point {} is {} here, not {}", name, p.signature,
-                                       signature != nullptr ? signature : "(none)");
-            return OPENRAC_HOOK_SIGNATURE;
-        }
-        // Detours' way: the replacement gets what was there (an earlier mod's, or the game's C).
-        void* before = *p.slot;
-        *original = before != nullptr ? before : p.original;
-        mod->taken.emplace_back(p.slot, before);
-        *p.slot = replacement;
-        mod->hooks.emplace_back(id);
-        const auto listed = [&](const std::string& h) { return std::strcmp(hook_id(*g_host, h.c_str()), id) == 0; };
-        if (std::none_of(mod->manifest.hooks.begin(), mod->manifest.hooks.end(), listed)) {
-            log::warn("mod {} takes hook point {}, which its manifest's \"hooks\" does not list", mod->id, name);
-        }
-        return OPENRAC_HOOK_OK;
-    }
-    mod->hook_refused = true;
-    mod->failure = std::format("this OpenRAC has no hook point {} for {}/{}", name, g_host->game, g_host->version);
-    return OPENRAC_HOOK_UNKNOWN;
-}
+void native_weapon_pad(int port, unsigned char* report, int size);
 
 void run_pads(int port, unsigned char* report, int size) {
     for (const PadCallback& c : g_pads) {
         c.fn(c.user, port, report, size);
     }
+    native_weapon_pad(port, report, size);
 }
 
-int api_on_frame(openrac_mod* mod, openrac_frame_fn fn, void* user) {
-    if (mod == nullptr || mod != g_loading || fn == nullptr) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    g_frames.push_back({fn, user, mod});
-    return OPENRAC_HOOK_OK;
-}
-
-int api_on_tick_boundary(openrac_mod* mod, openrac_tick_boundary_fn fn, void* user) {
-    if (mod == nullptr || mod != g_loading || fn == nullptr) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    g_tick_boundaries.push_back({fn, user, mod});
-    return OPENRAC_HOOK_OK;
-}
-
-int api_developer_menu(
-    openrac_mod* mod,
-    const char* title,
-    const openrac_developer_menu_item* items,
-    std::uint32_t count
-) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    if (title == nullptr || title[0] == '\0' || (count != 0 && items == nullptr)) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    constexpr std::array<const char*, 5> built_in_titles =
-        {"Game", "View", "Graphics", "Sound", "Developer"};
-    if (std::find(built_in_titles.begin(), built_in_titles.end(), std::string_view(title))
-        != built_in_titles.end()) {
-        return OPENRAC_HOOK_TAKEN;
-    }
-    if (std::any_of(
-            g_developer_menus.begin(), g_developer_menus.end(), [title](const DeveloperMenu& menu) {
-                return menu.title == title;
-            }
-        )) {
-        return OPENRAC_HOOK_TAKEN;
-    }
-    DeveloperMenu menu;
-    menu.mod = mod;
-    menu.title = title;
-    for (std::uint32_t i = 0; i < count; ++i) {
-        if (items[i].label == nullptr || items[i].action == 0) {
-            return OPENRAC_HOOK_UNKNOWN;
-        }
-        if (std::any_of(menu.items.begin(), menu.items.end(), [&](const DeveloperMenuItem& item) {
-                return item.action == items[i].action;
-            })) {
-            return OPENRAC_HOOK_TAKEN;
-        }
-        const bool action_taken = std::any_of(
-            g_developer_menus.begin(), g_developer_menus.end(), [&](const DeveloperMenu& entry) {
-                return entry.mod == mod
-                       && std::any_of(
-                           entry.items.begin(),
-                           entry.items.end(),
-                           [&](const DeveloperMenuItem& item) {
-                               return item.action == items[i].action;
-                           }
-                       );
-            }
-        );
-        if (action_taken) {
-            return OPENRAC_HOOK_TAKEN;
-        }
-        menu.items.push_back(
-            {items[i].label,
-             items[i].shortcut != nullptr ? items[i].shortcut : "",
-             items[i].group != nullptr ? items[i].group : "",
-             items[i].action}
-        );
-    }
-    g_developer_menus.push_back(std::move(menu));
-    return OPENRAC_HOOK_OK;
-}
-
-std::uint32_t api_take_developer_menu_action(openrac_mod* mod) {
-    if (mod == nullptr || mod != g_tick_mod || !g_in_tick_boundary) {
-        return 0;
-    }
-    const auto menu = std::find_if(
-        g_developer_menus.begin(), g_developer_menus.end(), [mod](const DeveloperMenu& entry) {
-            return entry.mod == mod;
-        }
-    );
-    if (menu == g_developer_menus.end() || menu->actions.empty()) {
-        return 0;
-    }
-    const std::uint32_t action = menu->actions.front();
-    menu->actions.pop_front();
-    return action;
-}
-
-// The mod's own folder (1.11): <mod data>/<its id>, made on the first ask. An id that is not a plain
-// name (a separator, "." or "..") has none.
-const char* api_data_dir(openrac_mod* mod) {
-    if (mod == nullptr || g_host == nullptr || g_host->mod_data.empty() || mod->id.empty()
-        || mod->id == "." || mod->id == ".."
-        || mod->id.find_first_of("/\\:") != std::string::npos) {
-        return nullptr;
-    }
-    if (mod->data_dir.empty()) {
-        const std::filesystem::path dir = g_host->mod_data / mod->id;
-        std::error_code e;
-        std::filesystem::create_directories(dir, e);
-        if (e || !std::filesystem::is_directory(dir, e)) {
-            return nullptr;
-        }
-        const std::u8string path = dir.u8string();
-        mod->data_dir.assign(path.begin(), path.end());
-    }
-    return mod->data_dir.c_str();
-}
-
-int api_developer_menu_set_label(openrac_mod* mod, std::uint32_t action, const char* label) {
-    if (mod == nullptr || mod != g_tick_mod || !g_in_tick_boundary || label == nullptr) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
+// The mod's developer menu item of `action`, or null.
+DeveloperMenuItem* developer_menu_item(openrac_mod* mod, std::uint32_t action) {
     for (DeveloperMenu& menu : g_developer_menus) {
         if (menu.mod != mod) {
             continue;
@@ -575,184 +356,25 @@ int api_developer_menu_set_label(openrac_mod* mod, std::uint32_t action, const c
             }
         );
         if (item != menu.items.end()) {
-            item->label = label;
-            return OPENRAC_HOOK_OK;
+            return &*item;
         }
     }
-    return OPENRAC_HOOK_UNKNOWN;
+    return nullptr;
 }
 
-int api_on_pad(openrac_mod* mod, openrac_pad_fn fn, void* user) {
-    if (mod == nullptr || mod != g_loading || fn == nullptr) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    g_pads.push_back({fn, user, mod});
-    return OPENRAC_HOOK_OK;
+bool native_vulkan_allowed(const mods::Manifest& manifest) {
+    return manifest.api_minor < 20 || manifest.vulkan_queue;
 }
 
-void* api_function(const char* name) {
-    return reinterpret_cast<void*>(openrac_guest_function_named(name));
-}
-
-void* api_function_at(openrac_gaddr address) {
-    return reinterpret_cast<void*>(openrac_guest_function(address));
-}
-
-openrac_gaddr api_relocate_data(openrac_gaddr address) {
-    return OPENRAC_DATA(address);
-}
-
-openrac_gaddr api_relocate_level_data(int level, openrac_gaddr address) {
-    return openrac_relocate_level_data(level, address);
-}
-
-int api_loaded_level(void) {
-    return g_host != nullptr && g_host->loaded_level != nullptr ? g_host->loaded_level() : -1;
-}
-
-openrac_gaddr api_stack_push(uint32_t size, openrac_gaddr* saved) {
-    if (saved != nullptr) {
-        *saved = openrac_guest_sp;
-    }
-    return openrac_guest_frame(size);
-}
-
-void api_stack_pop(openrac_gaddr saved) {
-    openrac_guest_sp = saved;
-}
-
-const openrac_input* api_input(void) {
-    static openrac_input none = [] {
-        openrac_input i{};
-        i.size = sizeof(openrac_input);
-        return i;
+const openrac_graphics* api_graphics_without_native_vulkan() {
+    static const openrac_graphics vulkan = [] {
+        openrac_graphics info{};
+        info.size = sizeof(openrac_graphics);
+        info.backend = OPENRAC_GRAPHICS_VULKAN;
+        return info;
     }();
-    const openrac_input* in = g_host != nullptr && g_host->input != nullptr ? g_host->input() : nullptr;
-    return in != nullptr ? in : &none;
-}
-
-int api_take_input(openrac_mod* mod, uint32_t devices) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    devices &= OPENRAC_INPUT_KEYBOARD | OPENRAC_INPUT_MOUSE;
-    if (devices != 0 && g_host != nullptr && g_host->take_input != nullptr) {
-        g_host->take_input(devices);
-    }
-    if ((devices & OPENRAC_INPUT_KEYBOARD) != 0) {
-        log::info("mod {} takes the keyboard: the port's own keys no longer press pad 0's buttons", mod->id);
-    }
-    return OPENRAC_HOOK_OK;
-}
-
-void api_capture_mouse(openrac_mod* mod, int capture) {
-    (void)mod;
-    if (g_host != nullptr && g_host->capture_mouse != nullptr) {
-        g_host->capture_mouse(capture != 0);
-    }
-}
-
-const openrac_graphics* api_graphics(void) {
-    static openrac_graphics none = [] {
-        openrac_graphics n{};
-        n.size = sizeof(openrac_graphics);
-        return n;
-    }();
-    const openrac_graphics* graphics =
-        g_host != nullptr && g_host->graphics != nullptr ? g_host->graphics() : nullptr;
-    return graphics != nullptr ? graphics : &none;
-}
-
-// A structure the mod gives with its own size first, copied into `out`: what a mod built against
-// a smaller one does not have stays zero. False when it is not even the size and the user pointer.
-template <class T>
-bool copy_sized(const T* from, T& out) {
-    if (from == nullptr || from->size < offsetof(T, user) + sizeof(void*)) {
-        return false;
-    }
-    out = T{};
-    std::memcpy(&out, from, std::min<std::size_t>(from->size, sizeof(T)));
-    out.size = sizeof(T);
-    return true;
-}
-
-int api_on_views(openrac_mod* mod, const openrac_view_source* source) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    if (g_views_mod != nullptr) {
-        log::warn("mod {} asks for views, which mod {} has", mod->id, g_views_mod->id);
-        return OPENRAC_HOOK_TAKEN;
-    }
-    openrac_view_source s;
-    if (!copy_sized(source, s) || s.begin == nullptr || s.end == nullptr) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    g_views = s;
-    g_views_mod = mod;
-    return OPENRAC_HOOK_OK;
-}
-
-int api_setup_vulkan(openrac_mod* mod, const openrac_vulkan_setup* setup) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    if (g_vulkan_mod != nullptr) {
-        log::warn(
-            "mod {} asks to make the Vulkan device, which mod {} makes", mod->id, g_vulkan_mod->id
-        );
-        return OPENRAC_HOOK_TAKEN;
-    }
-    openrac_vulkan_setup s;
-    if (!copy_sized(setup, s)) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    if (!mod->manifest.vulkan_device) {
-        log::warn(
-            "mod {} makes the Vulkan device, but its manifest has no \"vulkan_device\": true; "
-            "the window may open before it loads",
-            mod->id
-        );
-    }
-    g_vulkan = s;
-    g_vulkan_mod = mod;
-    return OPENRAC_HOOK_OK;
-}
-
-int api_menu_entry(openrac_mod* mod, const char* label, openrac_menu_fn fn, void* user) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
-    }
-    // An entry needs a name to show and a page to open, and the menu has room for so many.
-    if (label == nullptr || label[0] == '\0' || fn == nullptr
-        || g_menus.size() >= OPENRAC_MENU_ENTRIES_MAX) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    std::string text(label, std::min(std::strlen(label), kMenuLabelMax));
-    g_menus.push_back({std::move(text), fn, user, mod});
-    return OPENRAC_HOOK_OK;
-}
-
-void api_menu_rect(openrac_mod* mod, int x, int y, int width, int height, uint32_t rgba) {
-    // Only the open page's own mod draws, and only while its callback runs.
-    if (mod == nullptr || mod != g_drawing || g_host == nullptr || g_host->menu_rect == nullptr) {
-        return;
-    }
-    g_host->menu_rect(x, y, width, height, rgba);
-}
-
-void api_menu_text(openrac_mod* mod, int x, int y, int size, uint32_t rgba, const char* text) {
-    // As menu_rect: the open page's mod, during its callback.
-    if (mod == nullptr || mod != g_drawing || text == nullptr || g_host == nullptr
-        || g_host->menu_text == nullptr) {
-        return;
-    }
-    g_host->menu_text(x, y, size, rgba, text);
-}
-
-// A text of a mod's page: at most OPENRAC_UI_TEXT_MAX bytes, none for null.
-std::string ui_text(const char* text) {
-    return text == nullptr ? std::string() : std::string(text, strnlen(text, OPENRAC_UI_TEXT_MAX));
+    const openrac_graphics* graphics = api_graphics();
+    return graphics->backend == OPENRAC_GRAPHICS_VULKAN ? &vulkan : graphics;
 }
 
 // `mod`'s page `page`, or null.
@@ -762,21 +384,6 @@ UiPageCallback* mod_page(openrac_mod* mod, int page) {
     }
     UiPageCallback& p = g_ui_pages[static_cast<std::size_t>(page)];
     return p.mod == mod ? &p : nullptr;
-}
-
-// Whether the page on the screen is `mod`'s.
-bool shows_mod(openrac_mod* mod) {
-    return g_ui_shown >= 0 && mod_page(mod, g_ui_shown) != nullptr;
-}
-
-// Whether the title's main menu is on the screen and `page` is one of `mod`'s main-menu items'.
-bool main_item_opens(openrac_mod* mod, int page) {
-    return g_ui_main_menu && g_ui_shown < 0 && mod_page(mod, page) != nullptr
-           && std::any_of(
-               g_ui_main.begin(),
-               g_ui_main.end(),
-               [&](const UiMainItem& item) { return item.page == page; }
-           );
 }
 
 // A cursor kept on an item it takes: the last when past the end, else the nearest below, else
@@ -797,144 +404,602 @@ int settle_cursor(const UiPage& page, int cursor) {
     return 0;
 }
 
-int api_ui_page(openrac_mod* mod, uint32_t flags, openrac_ui_fn fn, void* user) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
+// ---- The mods a party has to agree on (interface 1.14) ----
+
+// While on, what the mods make the game do is another player's doing passed on.
+bool g_party_replay = false;
+
+// A setting's value as text: the same value, the same text in every game. A float by the shortest
+// text that reads back as it, so nothing of a machine's formatting comes into it.
+std::string setting_text(const SettingValue& v) {
+    switch (v.type) {
+        case SettingType::Bool:
+            return v.b ? "true" : "false";
+        case SettingType::Int:
+            return std::to_string(v.i);
+        case SettingType::Float:
+            return std::format("{}", v.f);
+        default:
+            return v.s;
     }
-    // A page needs a callback for its events, and the pages have room.
-    if (fn == nullptr || g_ui_pages.size() >= OPENRAC_UI_PAGES_MAX) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    UiPageCallback page{UiPage{}, fn, user, mod};
-    page.page.flags = flags & OPENRAC_UI_OWN_BACK;
-    g_ui_pages.push_back(std::move(page));
-    return static_cast<int>(g_ui_pages.size()) - 1;
 }
 
-int api_ui_main_item(openrac_mod* mod, const char* after, const char* label, int page) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
+// ---- Interface 1.14: calls of the port as a whole that a shared game needs. Each answers
+// "unknown" until its package fills it in. ----
+
+// ---- A mod's settings set from the game, and the launcher's changes (interface 1.15) ----
+
+std::vector<SettingsCallback> g_settings_callbacks;
+// The list's time when the port last read or wrote it, and the ticks until it looks again (about a
+// second at 60 ticks a second).
+std::optional<fs::file_time_type> g_list_seen;
+int g_list_wait = 0;
+constexpr int kListTicks = 60;
+bool g_list_unwritten_said = false;
+
+std::string quoted(std::string_view s);
+bool read_text(const fs::path& path, std::string& out);
+
+// A JSON number as text: an integer without a fraction, else the shortest text that reads back.
+std::string number_text(double d) {
+    if (std::isfinite(d) && std::floor(d) == d && std::fabs(d) < 1e15) {
+        return std::format("{}", static_cast<std::int64_t>(d));
     }
-    const bool known = after != nullptr
-                       && std::any_of(kUiMainItems.begin(), kUiMainItems.end(), [&](const char* n) {
-                              return std::strcmp(n, after) == 0;
-                          });
-    // A known item to go after, a name, a page of the mod's own, and room in the menu.
-    if (!known || label == nullptr || label[0] == '\0' || mod_page(mod, page) == nullptr
-        || g_ui_main.size() >= OPENRAC_UI_MAIN_ITEMS_MAX) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    g_ui_main.push_back({after, ui_text(label), page});
-    return OPENRAC_HOOK_OK;
+    return std::format("{}", d);
 }
 
-int api_ui_pause_item(openrac_mod* mod, const char* label, int page) {
-    if (mod == nullptr || mod != g_loading) {
-        return OPENRAC_HOOK_TOO_LATE;
+// `v` as JSON text, two spaces a level from `depth`; `replace` (a value inside `v`) written as
+// `replacement` instead.
+void write_json(
+    std::string& out,
+    const json::Value& v,
+    int depth,
+    const json::Value* replace,
+    const std::string& replacement
+) {
+    if (&v == replace) {
+        out += replacement;
+        return;
     }
-    // A name, a page of the mod's own, and room on the page.
-    if (label == nullptr || label[0] == '\0' || mod_page(mod, page) == nullptr
-        || g_ui_pause.size() >= OPENRAC_UI_PAUSE_ITEMS_MAX) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    g_ui_pause.push_back({ui_text(label), page});
-    return OPENRAC_HOOK_OK;
-}
-
-int api_ui_set(openrac_mod* mod, int page, const openrac_ui_content* content) {
-    UiPageCallback* p = mod_page(mod, page);
-    // The mod's own page, and content at least as large as its first version.
-    if (p == nullptr || content == nullptr
-        || content->size < offsetof(openrac_ui_content, footer_count) + sizeof(uint32_t)) {
-        return OPENRAC_HOOK_UNKNOWN;
-    }
-    UiPage& to = p->page;
-    to.title = ui_text(content->title);
-    to.items.clear();
-    const std::uint32_t items =
-        content->items != nullptr
-            ? std::min<std::uint32_t>(content->item_count, OPENRAC_UI_ITEMS_MAX)
-            : 0;
-    for (std::uint32_t i = 0; i < items; ++i) {
-        const openrac_ui_item& from = content->items[i];
-        UiItem item;
-        item.kind = from.kind <= OPENRAC_UI_TEXT ? from.kind : OPENRAC_UI_TEXT;
-        item.flags = from.flags & OPENRAC_UI_DISABLED;
-        item.label = ui_text(from.label);
-        // A choice with none to choose from is a line of text.
-        const std::uint32_t choices =
-            from.choices != nullptr
-                ? std::min<std::uint32_t>(from.choice_count, OPENRAC_UI_CHOICES_MAX)
-                : 0;
-        if (item.kind == OPENRAC_UI_CHOICE && choices == 0) {
-            item.kind = OPENRAC_UI_TEXT;
+    const std::string in(static_cast<std::size_t>(2 * (depth + 1)), ' ');
+    const std::string at(static_cast<std::size_t>(2 * depth), ' ');
+    switch (v.type()) {
+        case json::Value::Type::Null:
+            out += "null";
+            break;
+        case json::Value::Type::Bool:
+            out += v.boolean() ? "true" : "false";
+            break;
+        case json::Value::Type::Number:
+            out += number_text(v.number());
+            break;
+        case json::Value::Type::String:
+            out += mods::quoted(v.string());
+            break;
+        case json::Value::Type::Array: {
+            if (v.items().empty()) {
+                out += "[]";
+                break;
+            }
+            out += "[\n";
+            for (std::size_t i = 0; i < v.items().size(); ++i) {
+                out += in;
+                write_json(out, v.items()[i], depth + 1, replace, replacement);
+                out += i + 1 < v.items().size() ? ",\n" : "\n";
+            }
+            out += at + "]";
+            break;
         }
-        for (std::uint32_t c = 0; item.kind == OPENRAC_UI_CHOICE && c < choices; ++c) {
-            item.choices.push_back(ui_text(from.choices[c]));
+        case json::Value::Type::Object: {
+            if (v.members().empty()) {
+                out += "{}";
+                break;
+            }
+            out += "{\n";
+            std::size_t i = 0;
+            for (const auto& [key, member] : v.members()) {
+                out += in + mods::quoted(key) + ": ";
+                write_json(out, member, depth + 1, replace, replacement);
+                out += ++i < v.members().size() ? ",\n" : "\n";
+            }
+            out += at + "}";
+            break;
         }
-        item.choice = item.choices.empty() ? 0 : std::min<std::uint32_t>(from.choice, choices - 1);
-        to.items.push_back(std::move(item));
     }
-    to.footer.clear();
-    const std::uint32_t footer =
-        content->footer != nullptr
-            ? std::min<std::uint32_t>(content->footer_count, OPENRAC_UI_FOOTER_MAX)
-            : 0;
-    for (std::uint32_t i = 0; i < footer; ++i) {
-        to.footer.push_back(ui_text(content->footer[i]));
-    }
-    to.cursor = settle_cursor(to, to.cursor);
-    ++to.revision;
-    return OPENRAC_HOOK_OK;
 }
 
-int api_ui_open(openrac_mod* mod, int page) {
-    // From one of the mod's pages on the screen, to one of its pages or back; or from the title's
-    // main menu, to one of its main-menu items' pages.
-    if ((!shows_mod(mod) || (page != OPENRAC_UI_GO_BACK && mod_page(mod, page) == nullptr))
-        && !main_item_opens(mod, page)) {
+// The list's text with mod `id`'s setting `key` set to `literal` (JSON text), every other mod,
+// setting and member as it was (an object's members in the order the reader keeps them); empty
+// when the list has no entry for the mod.
+std::string list_with(
+    const json::Value& list, std::string_view id, const std::string& key, const std::string& literal
+) {
+    const json::Value* entry = nullptr;
+    for (const json::Value& m : list["mods"].items()) {
+        if (m["id"].is_string() && m["id"].string() == id) {
+            entry = &m;  // the first place counts, as parse_list has it
+            break;
+        }
+    }
+    if (entry == nullptr || !entry->is_object()) {
+        return {};
+    }
+    // The entry written again at its place (two levels down: the list, "mods"), its settings with
+    // the key set, added when it has none.
+    std::map<std::string, std::string, std::less<>> settings;
+    if (const json::Value& had = (*entry)["settings"]; had.is_object()) {
+        for (const auto& [name, member] : had.members()) {
+            std::string value;
+            write_json(value, member, 4, nullptr, {});
+            settings[name] = value;
+        }
+    }
+    settings[key] = literal;
+    std::map<std::string, std::string, std::less<>> members;
+    for (const auto& [name, member] : entry->members()) {
+        std::string value;
+        write_json(value, member, 3, nullptr, {});
+        members[name] = value;
+    }
+    std::string settings_text = "{\n";
+    std::size_t i = 0;
+    for (const auto& [name, value] : settings) {
+        settings_text +=
+            "        " + mods::quoted(name) + ": " + value + (++i < settings.size() ? ",\n" : "\n");
+    }
+    members["settings"] = settings_text + "      }";
+    std::string entry_text = "{\n";
+    i = 0;
+    for (const auto& [name, value] : members) {
+        entry_text +=
+            "      " + mods::quoted(name) + ": " + value + (++i < members.size() ? ",\n" : "\n");
+    }
+    entry_text += "    }";
+    std::string out;
+    write_json(out, list, 0, entry, entry_text);
+    return out + "\n";
+}
+
+// Writes the mod's setting into the launcher's list; false, and why, when it cannot.
+bool write_setting(
+    const openrac_mod& mod, const std::string& key, const std::string& literal, std::string& why
+) {
+    if (g_host == nullptr || g_host->purist || g_host->list.empty()) {
+        why = "no list of mods in this run";
+        return false;
+    }
+    const fs::path& path = g_host->list;
+    std::string text;
+    json::Value list;
+    std::string error;
+    if (!read_text(path, text) || !json::parse(text, list, error) || !list["mods"].is_array()) {
+        why = log::tidy(path.string()) + " cannot be read";
+        return false;
+    }
+    const std::string next = list_with(list, mod.id, key, literal);
+    if (next.empty()) {
+        why = log::tidy(path.string()) + " has no entry for it";
+        return false;
+    }
+    // Written beside and moved into place, as the launcher writes it, so neither reads half.
+    fs::path temporary = path;
+    temporary += ".port.tmp";
+    {
+        std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
+        f << next;
+        if (!f) {
+            why = log::tidy(temporary.string()) + " cannot be written";
+            return false;
+        }
+    }
+    std::error_code e;
+    fs::rename(temporary, path, e);
+    if (e) {
+        fs::remove(temporary, e);
+        why = log::tidy(path.string()) + " cannot be replaced";
+        return false;
+    }
+    // The port's own write is not a change of the launcher's to tell.
+    g_list_seen = fs::last_write_time(path, e);
+    if (e) {
+        g_list_seen.reset();
+    }
+    return true;
+}
+
+// Sets setting `key`, of type `a` or `b`, from `literal` (JSON text) for this run and in the list.
+int set_setting(
+    openrac_mod* mod, const char* key, SettingType a, SettingType b, const std::string& literal
+) {
+    if (mod == nullptr || key == nullptr) {
         return OPENRAC_HOOK_UNKNOWN;
     }
-    g_ui_requests.open = true;
-    g_ui_requests.page = page;
-    return OPENRAC_HOOK_OK;
-}
-
-int api_ui_confirm(openrac_mod* mod, int page, const char* question, uint32_t tag) {
-    // The mod's page on the screen, without a question open or asked already.
-    if (mod_page(mod, page) == nullptr || g_ui_shown != page || g_ui_question
-        || g_ui_requests.confirm) {
+    const std::vector<Setting>& declared = mod->manifest.settings;
+    const auto it = std::find_if(declared.begin(), declared.end(), [&](const Setting& d) {
+        return d.key == key;
+    });
+    if (it == declared.end() || (it->type != a && it->type != b)
+        || (g_host != nullptr && !setting_for_game(*it, g_host->game))) {
         return OPENRAC_HOOK_UNKNOWN;
     }
-    g_ui_requests.confirm = true;
-    g_ui_requests.confirm_page = page;
-    g_ui_requests.question = ui_text(question);
-    g_ui_requests.tag = tag;
-    return OPENRAC_HOOK_OK;
-}
-
-int api_ui_cursor(openrac_mod* mod, int page, int item) {
-    UiPageCallback* p = mod_page(mod, page);
-    if (p == nullptr) {
-        return -1;
-    }
-    UiPage& to = p->page;
-    // Moved only onto an item the cursor takes.
-    if (item >= 0 && item < static_cast<int>(to.items.size())
-        && takes_cursor(to.items[static_cast<std::size_t>(item)])) {
-        to.cursor = item;
-    }
-    return to.cursor;
-}
-
-int api_ui_sound(openrac_mod* mod, int sound) {
-    // The game's five, while one of the mod's pages is on the screen.
-    if (!shows_mod(mod) || sound < OPENRAC_UI_SOUND_SELECT || sound > OPENRAC_UI_SOUND_PAGE) {
+    json::Value v;
+    std::string error;
+    SettingValue value;
+    if (!json::parse(literal, v, error) || !setting_value(*it, v, value)) {
         return OPENRAC_HOOK_UNKNOWN;
     }
-    g_ui_requests.sounds.push_back(sound);
+    mod->settings[key] = value;
+    if (mod->built_in) {
+        if (g_host != nullptr && g_host->built_in_write != nullptr) {
+            g_host->built_in_write(mod->id, key, setting_text(value));
+        }
+        return OPENRAC_HOOK_OK;
+    }
+    std::string why;
+    if (!write_setting(*mod, key, literal, why) && !g_list_unwritten_said) {
+        log::warn("mod {}: setting \"{}\" kept for this run only: {}", mod->id, key, why);
+        g_list_unwritten_said = true;
+    }
     return OPENRAC_HOOK_OK;
 }
+
+const std::map<std::string, SettingValue>* settings_of(openrac_mod* mod) {
+    return mod != nullptr ? &mod->settings : nullptr;
+}
+
+bool same(const SettingValue& x, const SettingValue& y) {
+    return x.type == y.type && x.b == y.b && x.i == y.i && x.f == y.f && x.s == y.s;
+}
+
+// Gives `mod` the settings `now` and tells it, when they differ from its own.
+void take_settings(openrac_mod* mod, std::map<std::string, SettingValue> now, const char* where) {
+    const bool changed =
+        now.size() != mod->settings.size()
+        || !std::equal(
+            now.begin(), now.end(), mod->settings.begin(), [](const auto& x, const auto& y) {
+                return x.first == y.first && same(x.second, y.second);
+            }
+        );
+    if (!changed) {
+        return;
+    }
+    mod->settings = std::move(now);
+    log::info("mod {}: its settings changed in {}", mod->id, where);
+    for (const SettingsCallback& c : g_settings_callbacks) {
+        if (c.mod == mod) {
+            c.fn(c.user);
+        }
+    }
+}
+
+std::map<std::string, json::Value> built_in_values(
+    const Manifest& manifest, const std::map<std::string, std::string>& text
+);
+
+// The built-ins' settings again when the launcher changed them while the game runs.
+void follow_built_ins() {
+    std::map<std::string, std::map<std::string, std::string>> text;
+    if (g_host->built_in_reread == nullptr || !g_host->built_in_reread(text)) {
+        return;
+    }
+    for (const auto& loaded : g_loaded) {
+        openrac_mod* mod = loaded.get();
+        const auto it = text.find(mod->id);
+        if (!mod->built_in || it == text.end()) {
+            continue;
+        }
+        std::vector<std::string> notes;
+        take_settings(
+            mod,
+            resolve_settings(
+                mod->manifest, built_in_values(mod->manifest, it->second), notes, g_host->game
+            ),
+            "the settings file"
+        );
+    }
+}
+
+// About once a second while a mod asked to be told: the list read again when it changed, and each
+// such mod whose settings it now gives other values told, after they are its.
+void follow_list() {
+    if (g_settings_callbacks.empty() || g_host == nullptr || --g_list_wait > 0) {
+        return;
+    }
+    g_list_wait = kListTicks;
+    follow_built_ins();
+    if (g_host->purist || g_host->list.empty()) {
+        return;
+    }
+    std::error_code e;
+    const fs::file_time_type stamp = fs::last_write_time(g_host->list, e);
+    if (e || (g_list_seen && *g_list_seen == stamp)) {
+        return;
+    }
+    std::string text;
+    std::vector<ListEntry> list;
+    std::string error;
+    if (!read_text(g_host->list, text) || !parse_list(text, list, error)) {
+        return;  // half written by the launcher: read again when it changes
+    }
+    g_list_seen = stamp;
+    for (const auto& loaded : g_loaded) {
+        openrac_mod* mod = loaded.get();
+        const bool told = std::any_of(
+            g_settings_callbacks.begin(),
+            g_settings_callbacks.end(),
+            [&](const SettingsCallback& c) { return c.mod == mod; }
+        );
+        const auto entry = std::find_if(list.begin(), list.end(), [&](const ListEntry& l) {
+            return l.id == mod->id;
+        });
+        if (!told || entry == list.end()) {
+            continue;
+        }
+        std::vector<std::string> notes;
+        take_settings(
+            mod,
+            resolve_settings(mod->manifest, entry->settings, notes, g_host->game),
+            "the launcher's list"
+        );
+    }
+}
+
+// ---- A mod's data kept with the game's saves (interface 1.16) ----
+//
+// Each mod's data for the game in progress lives here, by the mod's id. lib/mc.c tells of each save
+// the game writes (save_written: every mod's data beside it, `<save>.moddata`) and of each save it
+// reads whole (save_read: that file's data kept aside). The game in progress takes it once the
+// game plays that save (follow_saves, after a tick: the play host's save_slot_current, which also
+// says a new game started after it). The save file itself is never touched, and the file beside it
+// is hidden from the game (mc.c's host_only), as the save mark is.
+//
+// The file: {"format": 1, "mods": {"<id>": {"version": "<version>", "data": "<base64>"}}}.
+
+std::vector<SaveDataCallback> g_save_data_callbacks;
+// The game in progress's data, by mod id; the data of the save the game read whole last, its slot,
+// and how many such reads there were and which one the game in progress took.
+std::map<std::string, std::vector<std::uint8_t>, std::less<>> g_save_data;
+std::map<std::string, std::vector<std::uint8_t>, std::less<>> g_save_read_data;
+int g_save_read_slot = -1;
+std::uint32_t g_save_reads = 0;
+std::uint32_t g_save_taken = 0;
+// The slot of the save the game in progress plays, -1 for a new game (or none).
+int g_save_playing = -1;
+// A new game started (the host said so): the mods are told at the next tick.
+bool g_save_new_game = false;
+
+constexpr std::string_view kBase64 =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string base64(const std::vector<std::uint8_t>& bytes) {
+    std::string out;
+    out.reserve((bytes.size() + 2) / 3 * 4);
+    for (std::size_t i = 0; i < bytes.size(); i += 3) {
+        const std::uint32_t n = (std::uint32_t{bytes[i]} << 16)
+                                | (i + 1 < bytes.size() ? std::uint32_t{bytes[i + 1]} << 8 : 0u)
+                                | (i + 2 < bytes.size() ? std::uint32_t{bytes[i + 2]} : 0u);
+        out += kBase64[(n >> 18) & 63u];
+        out += kBase64[(n >> 12) & 63u];
+        out += i + 1 < bytes.size() ? kBase64[(n >> 6) & 63u] : '=';
+        out += i + 2 < bytes.size() ? kBase64[n & 63u] : '=';
+    }
+    return out;
+}
+
+// False for text that is not base64 (padding only at the end).
+bool unbase64(std::string_view text, std::vector<std::uint8_t>& out) {
+    out.clear();
+    if (text.size() % 4 != 0) {
+        return false;
+    }
+    std::uint32_t n = 0;
+    int bits = 0;
+    std::size_t pad = 0;
+    for (const char c : text) {
+        if (c == '=') {
+            ++pad;
+            continue;
+        }
+        const std::size_t v = kBase64.find(c);
+        if (v == std::string_view::npos || pad != 0) {
+            return false;
+        }
+        n = (n << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<std::uint8_t>((n >> bits) & 0xFFu));
+        }
+    }
+    return pad <= 2;
+}
+
+fs::path save_data_path(const char* save) {
+    return fs::path(save).concat(".moddata");
+}
+
+// lib/mc.c: the game has just written the save at `path`. Every loaded mod's data goes beside it,
+// written whole (a hidden file renamed over it); a save with none, or a blank slot, keeps none.
+void save_written(const char* path, int players) {
+    const fs::path file = save_data_path(path);
+    std::error_code e;
+    std::string members;
+    for (const auto& loaded : g_loaded) {
+        const auto data = g_save_data.find(loaded->id);
+        if (data == g_save_data.end() || data->second.empty()) {
+            continue;
+        }
+        members += std::format(
+            "{}\n    {}: {{\"version\": {}, \"data\": {}}}",
+            members.empty() ? "" : ",",
+            mods::quoted(loaded->id),
+            mods::quoted(loaded->version),
+            mods::quoted(base64(data->second))
+        );
+    }
+    if (members.empty() || players == 0) {
+        fs::remove(file, e);
+        return;
+    }
+    // Hidden from the game while it is written (a leading dot), then in place whole.
+    const fs::path temp = file.parent_path() / ("." + file.filename().string() + ".tmp");
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        out << "{\"format\": 1, \"mods\": {" << members << "\n}}\n";
+        if (!out) {
+            log::warn("the mods' data was not written beside {}", path);
+            return;
+        }
+    }
+    fs::rename(temp, file, e);
+    if (e) {
+        fs::remove(temp, e);
+        log::warn("the mods' data was not written beside {}", path);
+    }
+}
+
+// lib/mc.c: the game has just read the save at `path` whole (Load Game): the data beside it is
+// kept aside until the game plays that save (follow_saves).
+void save_read(const char* path, int slot) {
+    g_save_read_data.clear();
+    g_save_read_slot = slot;
+    ++g_save_reads;
+    std::string text;
+    const fs::path file = save_data_path(path);
+    std::error_code e;
+    if (!fs::exists(file, e) || !read_text(file, text)) {
+        return;  // saved without mods' data
+    }
+    json::Value v;
+    std::string error;
+    if (!json::parse(text, v, error) || !v["mods"].is_object()) {
+        log::warn("the mods' data beside {} is not readable: {}", path, error);
+        return;
+    }
+    for (const auto& [id, entry] : v["mods"].members()) {
+        std::vector<std::uint8_t> bytes;
+        if (!entry["data"].is_string() || !unbase64(entry["data"].string(), bytes)
+            || bytes.size() > OPENRAC_SAVE_DATA_MAX) {
+            log::warn("mod {}: its data beside {} is not readable", id, path);
+            continue;
+        }
+        g_save_read_data[id] = std::move(bytes);
+    }
+}
+
+// A game's host: a new game starts. Its data is empty from now on (the save the game writes right
+// after takes none), and a save read before is not its; the mods are told at the next tick.
+void new_game() {
+    g_save_data.clear();
+    g_save_taken = g_save_reads;
+    g_save_playing = -1;
+    g_save_new_game = true;
+}
+
+void tell_save_data() {
+    for (const SaveDataCallback& c : g_save_data_callbacks) {
+        c.fn(c.user);
+    }
+}
+
+// After each tick, while a level plays: the game in progress takes the data of the save it now
+// plays when it was read whole since, and a new game started (the play host has no save for it)
+// starts with none.
+void follow_saves() {
+    // A new game the host announced: told whatever the phase, before the mods' own frame callbacks
+    // could set the old game's data again.
+    if (g_save_new_game) {
+        g_save_new_game = false;
+        log::info("a new game: the mods' data starts empty");
+        tell_save_data();
+    }
+    if (g_api.play_status == nullptr || g_api.save_slot_current == nullptr) {
+        return;
+    }
+    openrac_play_status status{};
+    status.size = sizeof status;
+    if (g_api.play_status(&status) != OPENRAC_HOOK_OK || status.phase != OPENRAC_PLAY_PLAYING) {
+        return;
+    }
+    const int slot = g_api.save_slot_current();
+    if (slot >= 0 && slot == g_save_read_slot && g_save_reads != g_save_taken) {
+        g_save_taken = g_save_reads;
+        g_save_playing = slot;
+        g_save_data = g_save_read_data;
+        log::info("the mods' data of save {} taken ({} mods)", slot, g_save_data.size());
+        tell_save_data();
+    } else if (slot < 0 && g_save_playing >= 0) {
+        g_save_playing = -1;
+        g_save_data.clear();
+        log::info("a new game: the mods' data starts empty");
+        tell_save_data();
+    } else if (slot >= 0) {
+        g_save_playing = slot;  // saved into, or the same save played on
+    }
+}
+
+void reset_save_data() {
+    g_save_data_callbacks.clear();
+    g_save_data.clear();
+    g_save_read_data.clear();
+    g_save_read_slot = -1;
+    g_save_reads = 0;
+    g_save_taken = 0;
+    g_save_playing = -1;
+    g_save_new_game = false;
+}
+
+constexpr std::array<std::uint32_t, 15> kRac1StockWheelWeapons{
+    9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25
+};
+
+void rac1_select_weapon_addresses();  // mod_weapon_native.inc
+
+int api_rac1_weapon_ui_add(openrac_mod* mod, std::uint32_t item) {
+    if (mod == nullptr || mod != g_loading || g_host == nullptr || g_host->game != "rac1"
+        || (g_host->version != "pal" && g_host->version != "ntsc") || item == 0 || item > 36) {
+        return OPENRAC_HOOK_UNKNOWN;
+    }
+    rac1_select_weapon_addresses();
+    const auto* owner = g_rac1_item_owners[item];
+    const bool stock =
+        std::ranges::find(kRac1StockWheelWeapons, item) != kRac1StockWheelWeapons.end();
+    if ((!stock && owner != mod) || (owner != nullptr && owner != mod)) {
+        return OPENRAC_HOOK_REFUSED;
+    }
+    if (std::ranges::none_of(g_weapon_ui, [mod, item](auto entry) {
+            return entry.mod == mod && entry.id == item;
+        })) {
+        g_weapon_ui.push_back({mod, item});
+    }
+    return OPENRAC_HOOK_OK;
+}
+
+int api_rac1_reserve_item_ids(openrac_mod* mod, const std::uint32_t* ids, std::uint32_t count) {
+    if (mod == nullptr || mod != g_loading || g_host == nullptr || g_host->game != "rac1"
+        || ids == nullptr || count == 0 || count > g_rac1_item_owners.size()) {
+        return OPENRAC_HOOK_UNKNOWN;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (ids[i] >= g_rac1_item_owners.size()) {
+            return OPENRAC_HOOK_UNKNOWN;
+        }
+        const auto* owner = g_rac1_item_owners[ids[i]];
+        if (owner != nullptr && owner != mod) {
+            return OPENRAC_HOOK_REFUSED;
+        }
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        g_rac1_item_owners[ids[i]] = mod;
+    }
+    return OPENRAC_HOOK_OK;
+}
+
+// The wheel's addresses come first: the native file assigns them.
+// clang-format off
+#include "mod_weapon_wheel.inc"
+#include "mod_weapon_native.inc"
+// clang-format on
 
 void fill_api(const Host& host) {
     static std::string game, version, openrac_version;
@@ -959,6 +1024,7 @@ void fill_api(const Host& host) {
     g_api.hook = api_hook;
     g_api.on_frame = api_on_frame;
     g_api.on_pad = api_on_pad;
+    g_api.on_play_query = api_on_play_query;
     g_api.function = api_function;
     g_api.function_at = api_function_at;
     g_api.relocate_data = api_relocate_data;
@@ -979,7 +1045,16 @@ void fill_api(const Host& host) {
     g_api.developer_menu = api_developer_menu;
     g_api.take_developer_menu_action = api_take_developer_menu_action;
     g_api.developer_menu_set_label = api_developer_menu_set_label;
+    g_api.developer_menu_switch = api_developer_menu_switch;
+    g_api.developer_menu_choice = api_developer_menu_choice;
+    g_api.developer_menu_value = api_developer_menu_value;
+    g_api.developer_menu_look = api_developer_menu_look;
+    g_api.hook_entry = api_hook_entry;
     g_api.data_dir = api_data_dir;
+    g_api.game_data_dir = api_game_data_dir;
+    g_api.rac1_reserve_item_ids = api_rac1_reserve_item_ids;
+    g_api.rac1_weapon_register = api_rac1_weapon_register;
+    g_api.rac1_weapon_grant = api_rac1_weapon_grant;
     g_api.savestate_size = snapshot_size;
     g_api.savestate_save = snapshot_save;
     g_api.savestate_load = snapshot_load;
@@ -991,8 +1066,51 @@ void fill_api(const Host& host) {
     g_api.ui_cursor = api_ui_cursor;
     g_api.ui_sound = api_ui_sound;
     g_api.ui_pause_item = api_ui_pause_item;
+    g_api.mod_count = api_mod_count;
+    g_api.mod_entry = api_mod_entry;
+    g_api.mod_setting = api_mod_setting;
+    g_api.party_rules_publish = api_party_rules_publish;
+    g_api.party_rules_read = api_party_rules_read;
+    g_api.party_rules_text = api_party_rules_text;
+    g_api.on_party_rules = api_on_party_rules;
+    g_api.party_rules_deliver = api_party_rules_deliver;
+    g_api.party_replay = api_party_replay;
+    g_api.party_replaying = api_party_replaying;
+    g_api.on_overlay = api_on_overlay;
+    g_api.on_overlay_phases = api_on_overlay_phases;
+    g_api.button_label = api_button_label;
+    g_api.packs_info = api_packs_info;
+    g_api.packs_entry = api_packs_entry;
+    g_api.clipboard_set = api_clipboard_set;
+    g_api.open_link = api_open_link;
+    g_api.plugins_folder = api_plugins_folder;
+    g_api.pack_folder = api_pack_folder;
+    g_api.game_language = api_game_language;
+    g_api.identity_key = api_identity_key;
     fill_play_api(g_api, host.play, host.cards);
+    if (host.game != "rac1") {
+        g_api.rac1_ammo_panel_offset = nullptr;
+    }
     fill_motion_api(g_api, host);
+    g_api.setting_set_bool = api_setting_set_bool;
+    g_api.setting_set_int = api_setting_set_int;
+    g_api.setting_set_float = api_setting_set_float;
+    g_api.setting_set_string = api_setting_set_string;
+    g_api.on_settings = api_on_settings;
+    g_api.save_data_set = api_save_data_set;
+    g_api.save_data_get = api_save_data_get;
+    g_api.on_save_data = api_on_save_data;
+    g_api.weapon_ignore_culling = api_weapon_ignore_culling;
+    g_api.sharp_cells = api_sharp_cells;
+    g_api.set_motors = api_set_motors;
+    g_api.menu_option_set = api_menu_option_set;
+    g_api.overlay_image_create = api_overlay_image_create;
+    g_api.overlay_image_destroy = api_overlay_image_destroy;
+    g_api.on_mods_loaded = api_on_mods_loaded;
+    g_api.service_provide = api_service_provide;
+    g_api.service_find = api_service_find;
+    g_api_without_native_vulkan = g_api;
+    g_api_without_native_vulkan.graphics = api_graphics_without_native_vulkan;
 }
 
 // ---- status.json ----
@@ -1047,6 +1165,10 @@ void set_loaded_mods_json() {
     o << "]";
     g_loaded_mods_json = o.str();
     openrac_game_loaded_mods = g_loaded_mods_json.c_str();
+    // The mods' data kept with the saves (1.16): lib/mc.c tells of the saves written and read.
+    openrac_game_save_written = save_written;
+    openrac_game_save_read = save_read;
+    openrac_game_new_game = new_game;
 }
 
 void write_status(const Host& host, const std::vector<Outcome>& outcomes) {
@@ -1135,17 +1257,39 @@ void script_stopped(openrac_mod* mod, const std::string& reason) {
     write_status(*g_host, g_outcomes);
 }
 
+// The version of the loaded mod `id`, null for none: the scripts' openrac.mod_loaded (1.42).
+const char* loaded_version(const char* id) {
+    for (const auto& loaded : g_loaded) {
+        if (id != nullptr && loaded->id == id) {
+            return loaded->version.c_str();
+        }
+    }
+    return nullptr;
+}
+
 // Takes back what a mod did in a load that failed: its hooks (it was the last to take any), its
 // callbacks.
 void undo(openrac_mod* mod) {
+    release_native_weapons(mod);
+    std::erase_if(g_weapon_ui, [mod](auto entry) { return entry.mod == mod; });
+    std::replace(
+        g_rac1_item_owners.begin(),
+        g_rac1_item_owners.end(),
+        static_cast<const openrac_mod*>(mod),
+        static_cast<const openrac_mod*>(nullptr)
+    );
     for (auto it = mod->taken.rbegin(); it != mod->taken.rend(); ++it) {
         *it->first = it->second;
     }
     mod->taken.clear();
     mod->hooks.clear();
     std::erase_if(g_frames, [&](const FrameCallback& c) { return c.mod == mod; });
+    std::erase_if(g_settings_callbacks, [&](const SettingsCallback& c) { return c.mod == mod; });
+    std::erase_if(g_save_data_callbacks, [&](const SaveDataCallback& c) { return c.mod == mod; });
     std::erase_if(g_pads, [&](const PadCallback& c) { return c.mod == mod; });
+    g_play_queries.remove(mod);
     std::erase_if(g_menus, [&](const MenuCallback& c) { return c.mod == mod; });
+    std::erase_if(g_overlays, [&](const OverlayCallback& c) { return c.mod == mod; });
     std::erase_if(g_developer_menus, [&](const DeveloperMenu& menu) { return menu.mod == mod; });
     // Its main-menu and pause items, then its pages (the last made: no other mod's id moves).
     std::erase_if(g_ui_main, [&](const UiMainItem& m) { return mod_page(mod, m.page) != nullptr; });
@@ -1155,6 +1299,8 @@ void undo(openrac_mod* mod) {
     std::erase_if(g_ui_pages, [&](const UiPageCallback& c) { return c.mod == mod; });
     std::erase_if(g_tick_boundaries, [&](const TickBoundaryCallback& c) { return c.mod == mod; });
     drop_figures(mod);
+    drop_menu_options(mod);
+    drop_services(mod);
     if (g_views_mod == mod) {
         g_views = {};
         g_views_mod = nullptr;
@@ -1174,7 +1320,7 @@ bool load_one(const fs::path& folder, const Candidate& c, std::unique_ptr<openra
     mod->version = c.manifest.version_text;
     mod->manifest = c.manifest;
     std::vector<std::string> notes;
-    mod->settings = resolve_settings(c.manifest, c.entry.settings, notes);
+    mod->settings = resolve_settings(c.manifest, c.entry.settings, notes, g_host->game);
     for (const std::string& n : notes) {
         log::warn("mod {}: {}", mod->id, n);
     }
@@ -1191,8 +1337,25 @@ bool load_one(const fs::path& folder, const Candidate& c, std::unique_ptr<openra
         s.version = g_host->version;
         s.platform = platform_key();
         s.api = std::format("{}.{}", OPENRAC_MOD_API_MAJOR, OPENRAC_MOD_API_MINOR);
-        const scripts::Services services{api_hook,  api_on_frame,  api_on_pad,        api_log,
-                                         script_stopped, api_input, api_take_input, api_capture_mouse};
+        const scripts::Services services{
+            api_hook,
+            api_on_frame,
+            api_on_pad,
+            api_log,
+            script_stopped,
+            api_input,
+            api_take_input,
+            api_capture_mouse,
+            api_setting_set_bool,
+            api_setting_set_int,
+            api_setting_set_float,
+            api_setting_set_string,
+            api_on_settings,
+            settings_of,
+            api_set_motors,
+            api_menu_option_set,
+            loaded_version
+        };
         std::string why;
         g_loading = mod.get();
         const bool loaded = scripts::load(s, g_host->scripts, services, why);
@@ -1243,7 +1406,9 @@ bool load_one(const fs::path& folder, const Candidate& c, std::unique_ptr<openra
     mod->base = library::base_of(reinterpret_cast<const void*>(load));
     g_loading = mod.get();
     play_loading(mod.get());
-    const int result = load(&g_api, mod.get());
+    const openrac_api& api =
+        native_vulkan_allowed(mod->manifest) ? g_api : g_api_without_native_vulkan;
+    const int result = load(&api, mod.get());
     g_loading = nullptr;
     play_loading(nullptr);
     // A hook point asked for and not there (or of another signature) fails the load even when the
@@ -1259,34 +1424,246 @@ bool load_one(const fs::path& folder, const Candidate& c, std::unique_ptr<openra
     return true;
 }
 
-}  // namespace
+// A built-in's settings, as text (Host::built_in_settings), in the JSON a list entry would hold:
+// a switch's 1|0|true|false as true or false, a number as a number, the rest as strings. A value
+// that is not of its type is left out, and the setting is its default.
+std::map<std::string, json::Value> built_in_values(
+    const Manifest& manifest, const std::map<std::string, std::string>& text
+) {
+    std::map<std::string, json::Value> out;
+    for (const Setting& s : manifest.settings) {
+        const auto it = text.find(s.key);
+        if (it == text.end()) {
+            continue;
+        }
+        std::string literal;
+        switch (s.type) {
+            case SettingType::Bool:
+                literal = it->second == "1" || it->second == "true"    ? "true"
+                          : it->second == "0" || it->second == "false" ? "false"
+                                                                       : "";
+                break;
+            case SettingType::Int:
+            case SettingType::Float:
+                literal = it->second;
+                break;
+            default:
+                literal = mods::quoted(it->second);
+                break;
+        }
+        json::Value v;
+        std::string error;
+        if (!literal.empty() && json::parse(literal, v, error)) {
+            out[s.key] = std::move(v);
+        }
+    }
+    return out;
+}
+
+// Loads one mod built into the program (BuiltIn): true when it is for this game and disc and
+// loaded. `why` says why one for this disc did not load.
+bool load_built_in(const BuiltIn& b, std::unique_ptr<openrac_mod>& out, std::string& why) {
+    Manifest manifest;
+    std::string error;
+    if (!parse_manifest(b.manifest, manifest, error)) {
+        why = "its manifest: " + error;
+        return false;
+    }
+    const auto game = manifest.games.find(g_host->game);
+    if (game == manifest.games.end()
+        || std::find(game->second.begin(), game->second.end(), g_host->version)
+               == game->second.end()) {
+        return false;  // not for this disc: nothing to say
+    }
+    auto mod = std::make_unique<openrac_mod>();
+    mod->id = manifest.id;
+    mod->version = manifest.version_text;
+    mod->file = "built in";
+    mod->built_in = true;
+    mod->manifest = manifest;
+    std::vector<std::string> notes;
+    const auto text = g_host->built_in_settings.find(manifest.id);
+    mod->settings = resolve_settings(
+        manifest,
+        text != g_host->built_in_settings.end() ? built_in_values(manifest, text->second)
+                                                : std::map<std::string, json::Value>{},
+        notes,
+        g_host->game
+    );
+    for (const std::string& n : notes) {
+        log::warn("{}: {}", mod->id, n);
+    }
+    openrac_mod_info info{};
+    info.size = sizeof(info);
+    b.query(&info);
+    if (info.id == nullptr || mod->id != info.id) {
+        why = "its code and its manifest name other mods";
+        return false;
+    }
+    mod->base = reinterpret_cast<const void*>(b.load);
+    g_loading = mod.get();
+    const int result = b.load(&g_api, mod.get());
+    g_loading = nullptr;
+    if (result != 0 || mod->hook_refused) {
+        undo(mod.get());
+        why = !mod->failure.empty() ? mod->failure : std::format("its load returned {}", result);
+        return false;
+    }
+    out = std::move(mod);
+    return true;
+}
+
+}  // namespace detail
+
+bool holds_game_data(const fs::path& data) {
+    std::error_code iso_error;
+    std::error_code port_error;
+    return !data.empty()
+           && (fs::is_directory(data / "iso_data", iso_error)
+               || fs::is_directory(data / "port", port_error));
+}
+
+fs::path game_data_folder(const Host& host, std::string_view game) {
+    if (game == host.game) {
+        return host.data;
+    }
+    if (host.games_root.empty() || !valid_game_id(game)) {
+        return {};
+    }
+    return host.games_root / std::string(game) / "data";
+}
 
 const std::vector<fs::path>& asset_roots() {
     return g_asset_roots;
 }
 
+namespace detail {
+
+openrac_mod* loaded_built_in(std::string_view id) {
+    for (const auto& loaded : g_loaded) {
+        if (loaded->built_in && loaded->id == id) {
+            return loaded.get();
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace detail
+
+std::vector<const Setting*> built_in_settings(std::string_view id) {
+    std::vector<const Setting*> out;
+    if (const openrac_mod* mod = loaded_built_in(id)) {
+        for (const Setting& s : mod->manifest.settings) {
+            if (g_host == nullptr || setting_for_game(s, g_host->game)) {
+                out.push_back(&s);
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<Preset> built_in_presets(std::string_view id) {
+    std::vector<Preset> out;
+    if (const openrac_mod* mod = loaded_built_in(id)) {
+        for (Preset p : mod->manifest.presets) {
+            std::erase_if(p.values, [&](const auto& v) {
+                const auto s = std::find_if(
+                    mod->manifest.settings.begin(),
+                    mod->manifest.settings.end(),
+                    [&](const Setting& x) { return x.key == v.first; }
+                );
+                return s == mod->manifest.settings.end()
+                       || (g_host != nullptr && !setting_for_game(*s, g_host->game));
+            });
+            out.push_back(std::move(p));
+        }
+    }
+    return out;
+}
+
+BuiltInSetting built_in_setting(std::string_view id, std::string_view key) {
+    BuiltInSetting out;
+    openrac_mod* mod = loaded_built_in(id);
+    if (mod == nullptr) {
+        return out;
+    }
+    for (const Setting& s : mod->manifest.settings) {
+        if (s.key == key && (g_host == nullptr || setting_for_game(s, g_host->game))) {
+            out.spec = &s;
+            const auto it = mod->settings.find(s.key);
+            out.value = it != mod->settings.end() ? it->second : s.fallback;
+        }
+    }
+    return out;
+}
+
+bool set_built_in_setting(std::string_view id, std::string_view key, const std::string& literal) {
+    openrac_mod* mod = loaded_built_in(id);
+    const BuiltInSetting now = built_in_setting(id, key);
+    if (mod == nullptr || now.spec == nullptr) {
+        return false;
+    }
+    const std::string k(key);
+    if (set_setting(mod, k.c_str(), now.spec->type, now.spec->type, literal) != OPENRAC_HOOK_OK) {
+        return false;
+    }
+    for (const SettingsCallback& c : g_settings_callbacks) {
+        if (c.mod == mod) {
+            c.fn(c.user);
+        }
+    }
+    return true;
+}
+
 std::string load(const Host& host) {
-    if (host.purist) {
-        log::info("mods: purist mode (--no-mods), none loaded");
-        return "none (purist mode)";
-    }
-    std::string text;
-    if (!read_text(host.list, text)) {
-        return "none";
-    }
-    std::vector<ListEntry> list;
-    std::string error;
-    if (!parse_list(text, list, error)) {
-        log::warn("mods: {} cannot be read ({}): none loaded", log::tidy(host.list.string()), error);
-        return "none";
-    }
     static Host kept;
     kept = host;
     g_host = &kept;
+    fill_api(kept);
+    // The mods built into the program first, whatever the list says (BuiltIn).
+    std::vector<std::string> built_in;
+    if (!host.built_ins.empty()) {
+        for (const BuiltIn& b : host.built_ins) {
+            std::unique_ptr<openrac_mod> mod;
+            std::string why;
+            if (load_built_in(b, mod, why)) {
+                log::info("{} {} built in", mod->id, mod->version);
+                built_in.push_back(mod->id);
+                g_loaded.push_back(std::move(mod));
+            } else if (!why.empty()) {
+                log::warn("a built-in mod did not load: {}", why);
+            }
+        }
+    }
+    std::vector<ListEntry> list;
+    std::string text;
+    std::string error;
+    if (host.purist) {
+        log::info("mods: purist mode (--no-mods), none loaded but the built-in ones");
+    } else if (read_text(host.list, text) && !parse_list(text, list, error)) {
+        log::warn(
+            "mods: {} cannot be read ({}): none loaded", log::tidy(host.list.string()), error
+        );
+        list.clear();
+    }
+    if (list.empty() && built_in.empty()) {
+        if (!host.purist && !text.empty() && error.empty()) {
+            write_status(kept, {});
+        }
+        g_host = nullptr;
+        return host.purist ? "none (purist mode)" : "none";
+    }
     const fs::path folder = host.list.parent_path();
     std::vector<Candidate> enabled;
+    std::vector<Outcome> outcomes;
     for (const ListEntry& e : list) {
         if (!e.enabled) {
+            continue;
+        }
+        // An older copy of a mod the port now carries (the keyboard-mouse mod): not loaded.
+        if (std::find(built_in.begin(), built_in.end(), e.id) != built_in.end()) {
+            log::info("mod {} not loaded: it is built into OpenRAC now", e.id);
+            outcomes.push_back({e.id, "", "refused", "it is built into OpenRAC now", {}});
             continue;
         }
         Candidate c;
@@ -1302,18 +1679,18 @@ std::string load(const Host& host) {
         }
         enabled.push_back(std::move(c));
     }
-    if (enabled.empty()) {
-        write_status(kept, {});
+    if (enabled.empty() && built_in.empty()) {
+        write_status(kept, outcomes);
+        g_outcomes = outcomes;
         return "none";
     }
-    fill_api(kept);
     const Target target{host.game, host.version, platform_key(), OPENRAC_MOD_API_MAJOR, OPENRAC_MOD_API_MINOR,
                         host.scripts != nullptr};
-    const auto decisions = plan(enabled, target, [&](const std::string& id, const std::string& path) {
-        std::error_code e;
-        return fs::is_regular_file(folder / id / fs::path(path), e);
-    });
-    std::vector<Outcome> outcomes;
+    const auto decisions =
+        plan(enabled, target, [&](const std::string& id, const std::string& path) {
+            std::error_code e;
+            return fs::is_regular_file(folder / id / fs::path(path), e);
+        });
     std::vector<std::string> not_loaded;  // refused or failed here: what requires them goes too
     for (std::size_t i = 0; i < enabled.size(); ++i) {
         const Candidate& c = enabled[i];
@@ -1357,6 +1734,16 @@ std::string load(const Host& host) {
                                       c.manifest.assets);
                         }
                     }
+                    // Its on-screen pad's buttons (MODS.md, "Touch controls").
+                    if (!c.manifest.touch.empty()) {
+                        std::string why;
+                        if (!touch::load_file(
+                                c.manifest.id, folder / c.manifest.id, c.manifest.touch, why
+                            )
+                            || !why.empty()) {
+                            log::warn("mod {}", why);
+                        }
+                    }
                 }
             }
         }
@@ -1366,9 +1753,9 @@ std::string load(const Host& host) {
         }
         outcomes.push_back(std::move(o));
     }
-    g_frame_callbacks = !g_frames.empty();
+    g_frame_callbacks = !g_frames.empty() || !g_settings_callbacks.empty() || !g_weapon_ui.empty();
     if (host.pad_hook != nullptr) {
-        *host.pad_hook = g_pads.empty() ? nullptr : run_pads;
+        *host.pad_hook = g_pads.empty() && !native_weapons_enabled() ? nullptr : run_pads;
     }
     if (g_views_mod != nullptr && host.set_views != nullptr) {
         log::info("mod {} draws views of the game", g_views_mod->id);
@@ -1378,19 +1765,35 @@ std::string load(const Host& host) {
         log::info("mod {} makes the Vulkan device", g_vulkan_mod->id);
         host.set_vulkan_setup(&g_vulkan);
     }
+    for (const auto& mod : g_loaded) {
+        if (mod->manifest.vulkan_queue) {
+            g_vulkan_queue_declared = true;
+            log::warn(
+                "mod {} requires native Vulkan access; Vulkan runs on the game's thread", mod->id
+            );
+        }
+    }
+    install_weapon_wheel_hooks();
+    install_native_weapon_hooks();
     g_outcomes = outcomes;
-    write_status(kept, outcomes);
+    if (!host.purist && !host.list.empty()) {
+        write_status(kept, outcomes);
+    }
     g_images.clear();
     for (const auto& m : g_loaded) {
         g_images.push_back({m->id.c_str(), m->version.c_str(), m->file.c_str(), m->base});
     }
     crash::set_mods(g_images.data(), static_cast<int>(g_images.size()));
     set_loaded_mods_json();
+    // Every mod that loads has, and the crash report knows them: each one that asked looks at the
+    // others (interface 1.42).
+    run_mods_loaded();
     std::string line;
     for (const auto& m : g_loaded) {
-        line += (line.empty() ? "" : ", ") + m->id + " " + m->version;
+        line += (line.empty() ? "" : ", ") + m->id + " " + m->version
+                + (m->library == nullptr && !m->script ? " (built in)" : "");
     }
-    const std::size_t refused = enabled.size() - g_loaded.size();
+    const std::size_t refused = outcomes.size() - (g_loaded.size() - built_in.size());
     if (line.empty()) {
         line = "none";
     }
@@ -1400,23 +1803,34 @@ std::string load(const Host& host) {
     return line;
 }
 
-bool makes_vulkan_device(const fs::path& list_path, bool purist) {
+VulkanStartup vulkan_startup(const fs::path& list_path, bool purist) {
     std::string text;
     std::vector<ListEntry> list;
     std::string error;
     if (purist || !read_text(list_path, text) || !parse_list(text, list, error)) {
-        return false;
+        return {};
     }
+    VulkanStartup startup;
     const fs::path folder = list_path.parent_path();
     for (const ListEntry& e : list) {
         std::string manifest_text;
         Manifest manifest;
         if (e.enabled && read_text(folder / e.id / "openrac-mod.json", manifest_text)
-            && parse_manifest(manifest_text, manifest, error) && manifest.vulkan_device) {
-            return true;
+            && parse_manifest(manifest_text, manifest, error)) {
+            startup.creates_device |= manifest.vulkan_device;
+            startup.uses_queue |= manifest.vulkan_queue;
         }
     }
-    return false;
+    return startup;
+}
+
+bool vulkan_needs_game_thread() {
+    return g_vulkan_queue_declared
+           || (g_views_mod != nullptr && g_views_mod->manifest.api_minor < 20);
+}
+
+bool view_source_can_use_vulkan() {
+    return g_views_mod != nullptr && native_vulkan_allowed(g_views_mod->manifest);
 }
 
 void unload() {
@@ -1427,10 +1841,31 @@ void unload() {
     }
 }
 
+int rac1_weapon_hud_icon(int native_icon) {
+    constexpr int base = 60000;
+    if (native_icon <= base || native_icon > base + 36) {
+        return 0;
+    }
+    auto* weapon = installed_weapon(native_icon - base);
+    if (weapon == nullptr || weapon->def.capacity == 0) {
+        return 0;
+    }
+    if (weapon->def.size >= sizeof(weapon->def) && weapon->def.hud_icon != 0) {
+        return static_cast<int>(weapon->def.hud_icon);
+    }
+    return weapon->def.icon != 0 ? static_cast<int>(weapon->def.icon)
+                                 : base + static_cast<int>(weapon->def.presentation);
+}
+
 void run_frame_callbacks() {
+    restore_weapon_grid_if_left();
+    // The game in progress first (1.16): a mod's frame callback then sees its new data.
+    follow_saves();
+    update_native_weapons();
     for (const FrameCallback& c : g_frames) {
         c.fn(c.user);
     }
+    follow_list();
 }
 
 int menu_entry_count() {
@@ -1443,6 +1878,56 @@ std::string menu_entry_label(int index) {
         return {};
     }
     return g_menus[static_cast<std::size_t>(index)].label;
+}
+
+bool is_mod_code_link(std::string_view url) {
+    constexpr std::string_view kPrefix = "openrac://modset/";
+    // A long code in a link: what the launcher's own limit on a set makes of it, and some room.
+    constexpr std::size_t kLinkMax = 16 * 1024;
+    if (!url.starts_with(kPrefix) || url.size() == kPrefix.size() || url.size() > kLinkMax) {
+        return false;
+    }
+    // A short code (K7M2-9QXR) or a long one (ORMS1. and base64url): nothing a handler could read
+    // as more than a code.
+    const std::string_view code = url.substr(kPrefix.size());
+    return std::all_of(code.begin(), code.end(), [](char c) {
+        const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        const bool digit = c >= '0' && c <= '9';
+        return letter || digit || c == '-' || c == '_' || c == '.';
+    });
+}
+
+std::uint32_t overlay_phase() {
+    return g_overlays.empty() ? 0u : overlay_phase_now();
+}
+
+bool overlay_wanted(std::uint32_t phase) {
+    return phase != 0 && std::any_of(g_overlays.begin(), g_overlays.end(), [&](const auto& c) {
+               return (c.phases & phase) != 0;
+           });
+}
+
+bool overlay_wanted_under_hud(std::uint32_t phase) {
+    return phase != 0 && std::any_of(g_overlays.begin(), g_overlays.end(), [&](const auto& c) {
+               return (c.phases & phase) != 0 && (c.phases & OPENRAC_OVERLAY_UNDER_HUD) != 0;
+           });
+}
+
+const openrac_mod* overlay_mod() {
+    return g_overlay_mod;
+}
+
+void run_overlays(const openrac_overlay& overlay) {
+    // The call under the game's 2D (interface 1.41) is only for the mods that asked for it.
+    const bool under_hud = overlay.layer == OPENRAC_OVERLAY_LAYER_UNDER_HUD;
+    for (const OverlayCallback& c : g_overlays) {
+        if ((c.phases & overlay.phase) != 0
+            && (!under_hud || (c.phases & OPENRAC_OVERLAY_UNDER_HUD) != 0)) {
+            g_overlay_mod = c.mod;
+            c.fn(c.user, &overlay);
+        }
+    }
+    g_overlay_mod = nullptr;
 }
 
 bool run_menu_page(int index, const openrac_menu_frame& frame) {
@@ -1572,20 +2057,48 @@ void queue_developer_menu_action(openrac_mod* mod, std::uint32_t action) {
         if (menu.mod != mod) {
             continue;
         }
-        const bool registered = std::any_of(
+        // A locked row (1.28) does nothing, and a plain row to read is not pressed.
+        const bool pressable = std::any_of(
             menu.items.begin(), menu.items.end(), [action](const DeveloperMenuItem& item) {
-                return item.action == action;
+                return item.action == action && !item.locked
+                       && !(item.info && item.kind == MenuItemKind::Press);
             }
         );
-        if (registered) {
+        if (pressable) {
             menu.actions.push_back(action);
         }
         return;
     }
 }
 
+void set_developer_menu_value(openrac_mod* mod, std::uint32_t action, int value) {
+    DeveloperMenuItem* item = mod != nullptr ? developer_menu_item(mod, action) : nullptr;
+    if (item == nullptr || item->locked) {
+        return;
+    }
+    const bool fits = item->kind == MenuItemKind::Switch
+                          ? value == 0 || value == 1
+                          : item->kind == MenuItemKind::Choice && value >= 0
+                                && value < static_cast<int>(item->values.size());
+    if (!fits) {
+        return;
+    }
+    item->value = value;
+    queue_developer_menu_action(mod, action);
+}
+
 int loaded_count() {
     return static_cast<int>(g_loaded.size());
+}
+
+bool loaded(std::string_view id) {
+    return std::any_of(g_loaded.begin(), g_loaded.end(), [&](const auto& mod) {
+        return mod != nullptr && mod->id == id;
+    });
+}
+
+const openrac_api& api_for_tests() {
+    return g_api;
 }
 
 const char* mod_id(const openrac_mod* mod) {
@@ -1603,15 +2116,28 @@ bool holds_hook(const openrac_mod* mod, const char* name) {
 }
 
 fs::path mod_file(const openrac_mod* mod, const char* path) {
-    if (mod == nullptr || path == nullptr || mod->dir.empty() || !folder_path(path)) {
+    if (mod == nullptr || path == nullptr) {
         return {};
     }
-    const fs::path file = mod->dir / fs::path(std::u8string(path, path + std::strlen(path)));
+    // "pack:<path>": a file of the edited levels' pack (pack_folder), such as a cutscene's voice.
+    fs::path root = mod->dir;
+    if (std::strncmp(path, "pack:", 5) == 0) {
+        path += 5;
+        const char* pack = pack_folder();
+        root = pack != nullptr ? fs::path(pack) : fs::path();
+    }
+    if (root.empty() || !folder_path(path)) {
+        return {};
+    }
+    const fs::path file = root / fs::path(std::u8string(path, path + std::strlen(path)));
     std::error_code e;
     return fs::is_regular_file(file, e) ? file : fs::path();
 }
 
 void reset() {
+    remove_weapon_wheel_hooks();
+    // No service may outlive its library: forgotten before the mods unload.
+    drop_services(nullptr);
     unload();
     for (auto it = g_loaded.rbegin(); it != g_loaded.rend(); ++it) {
         undo(it->get());
@@ -1622,10 +2148,18 @@ void reset() {
     scripts::reset();
     g_outcomes.clear();
     g_loaded.clear();
+    g_vulkan_queue_declared = false;
     g_asset_roots.clear();
     g_frames.clear();
+    g_settings_callbacks.clear();
+    g_list_seen.reset();
+    reset_save_data();
+    g_list_wait = 0;
+    g_list_unwritten_said = false;
     g_pads.clear();
     g_menus.clear();
+    drop_menu_options(nullptr);
+    g_overlays.clear();
     g_developer_menus.clear();
     g_ui_pages.clear();
     g_ui_main.clear();
@@ -1635,6 +2169,7 @@ void reset() {
     g_ui_main_menu = false;
     g_ui_requests = UiRequests{};
     reset_play();
+    g_party_replay = false;
     g_tick_boundaries.clear();
     g_tick_mod = nullptr;
     g_in_tick_boundary = false;
@@ -1655,3 +2190,11 @@ void reset() {
 }
 
 }  // namespace openrac::mods
+
+// Called only by the native query points, never from the matching console source.
+extern "C" int32_t openrac_mod_play_query(
+    uint32_t kind, uint32_t subject, int32_t index, int32_t original, int32_t alternate
+) {
+    using namespace openrac::mods::detail;
+    return g_play_queries.query(kind, api_loaded_level(), subject, index, original, alternate);
+}

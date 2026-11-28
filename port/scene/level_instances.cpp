@@ -5,13 +5,14 @@
 #include <cmath>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <stdexcept>
 
 #include "assets/geometry/shrub_lighting.h"
 #include "common/log.h"
 #include "common/stats.h"
-#include "renderer/gl.h"
-#include "renderer/render_opt.h"
+#include "renderer/gl/gl.h"
+#include "renderer/settings/render_opt.h"
 #include "renderer/world/gl_world.h"
 #include "renderer_shaders.h"
 #include "scene/hero_shadow.h"
@@ -28,18 +29,91 @@ namespace openrac::scene {
 using namespace openrac::gl;
 using namespace render_detail;
 
-// A class model's vertex array: the level's vertices and indices, and an instance buffer of its own
-// (empty until fill_group).
+// Points attribute 0 of the bound vertex array at the positions: the tight buffer of their own
+// (vertex-position-stream), so that depth-only passes and a tile GPU's binning read 12 bytes a
+// vertex, or the wide vertex.
+void LevelScene::point_positions(const MeshBuffers& buffers) const {
+    if (m_position_stream) {
+        glBindBuffer(GL_ARRAY_BUFFER, buffers.positions);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), offset(0));
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, buffers.vertices);
+        glVertexAttribPointer(
+            0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), offset(offsetof(Vertex, position))
+        );
+    }
+}
+
+// Follows vertex-position-stream when it is switched while a level is loaded (the Graphics sweep,
+// the equivalence test): every vertex array made so far is pointed again.
+void LevelScene::sync_position_stream() {
+    const bool wanted =
+        m_positions != 0
+        && renderer::render_opt::enabled(renderer::render_opt::Opt::VertexPositionStream);
+    if (wanted == m_position_stream) {
+        return;
+    }
+    m_position_stream = wanted;
+    const auto point = [this](unsigned vao, std::uint32_t model) {
+        if (vao != 0) {
+            glBindVertexArray(vao);
+            point_positions(buffers_of(model));
+        }
+    };
+    for (const auto* all : {&m_groups, &m_idle}) {
+        for (const auto& groups : *all) {
+            for (const Group& g : groups) {
+                point(g.vao, g.model);
+                point(g.camera_vao, g.model);
+                point(g.pvs_vao, g.model);
+            }
+        }
+    }
+
+    point(m_shadow_compact.vao, m_shadow_compact.model);
+
+    for (const Group& compact : m_chunk_shadow_compact) {
+        point(compact.vao, compact.model);
+    }
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+// The buffers a model's vertex arrays read: those of its chunk when add_loaded_models added it,
+// else the level's.
+LevelScene::MeshBuffers LevelScene::buffers_of(std::uint32_t model) const {
+    if (model < m_model_chunk.size() && m_model_chunk[model] != 0) {
+        return m_chunks[m_model_chunk[model] - 1];
+    }
+
+    return {m_vertices, m_positions, m_indices};
+}
+
+// The compact vertex array shadow casting fills with a group's surviving instances, one for the
+// level's buffers and one for each chunk's (a vertex array reads one set of buffers).
+LevelScene::Group& LevelScene::shadow_compact_of(std::uint32_t model) {
+    if (model < m_model_chunk.size() && m_model_chunk[model] != 0) {
+        m_chunk_shadow_compact.resize(m_chunks.size());
+        return m_chunk_shadow_compact[m_model_chunk[model] - 1];
+    }
+
+    return m_shadow_compact;
+}
+
+// A class model's vertex array: its vertices and indices (the level's, or its chunk's), and an
+// instance buffer of its own (empty until fill_group).
 LevelScene::Group LevelScene::make_group(std::uint32_t model) {
     Group g;
     g.model = model;
+    const MeshBuffers buffers = buffers_of(model);
     glGenVertexArrays(1, &g.vao);
     glBindVertexArray(g.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, m_vertices);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_indices);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers.indices);
     constexpr auto kStride = static_cast<GLsizei>(sizeof(Vertex));
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, offset(offsetof(Vertex, position)));
+    point_positions(buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers.vertices);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kStride, offset(offsetof(Vertex, normal)));
     glEnableVertexAttribArray(2);
@@ -169,7 +243,7 @@ LevelScene::InstanceData LevelScene::instance_data(const Instance& instance) {
     std::copy(instance.matrix.begin(), instance.matrix.end(), data.matrix);
     std::copy(instance.tint.begin(), instance.tint.end(), data.tint);
     data.palette = static_cast<float>(instance.palette);
-    data.lights = static_cast<float>(instance.lights);
+    data.lights = static_cast<float>(pack_moby_lights(instance.lights, instance.mod_material));
     std::copy(instance.moby_light.begin(), instance.moby_light.end(), data.moby_light);
     std::copy(instance.moby_ambient.begin(), instance.moby_ambient.end(), data.moby_ambient);
     return data;
@@ -407,6 +481,10 @@ renderer::GpuInstanceBatch LevelScene::gpu_batch(
 void LevelScene::submit_instances(
     renderer::GpuInstanceBatch batch, unsigned first, unsigned count, int instances
 ) {
+    // The settings sweep's experiment: the draw is kept, its triangles are not.
+    if (m_sweep_one_triangle) {
+        count = std::min(count, 3u);
+    }
 #if defined(OPENRAC_VULKAN)
     if (batch) {
         if (!vkgl::draw_gpu_instances(batch, first, count)) {
@@ -452,6 +530,13 @@ void LevelScene::set_instances(Layer layer, const std::vector<Instance>& source)
 #else
     const auto& instances = source;
 #endif
+    // The animated-scenery pass submits an empty layer even in levels without
+    // animated scenery. No casters changed when that layer was already empty.
+    // Removing a nonempty layer must still rebuild it and invalidate cached depth.
+    if (layer != Layer::Mobys && instances.empty()
+        && m_groups[static_cast<std::size_t>(layer)].empty()) {
+        return;
+    }
     // The CPU time of handing the scene a layer's instances (the moby layer's, every frame).
     const stats::Scope pass(layer == Layer::Mobys ? "moby instances" : "layer instances");
     m_camera_visibility[static_cast<std::size_t>(layer)].recording = 0;
@@ -510,7 +595,7 @@ void LevelScene::set_instances(Layer layer, const std::vector<Instance>& source)
 }
 
 void LevelScene::choose_scenery(
-    bool original, const renderer::Vec3& eye, const renderer::Mat4& projection
+    float scale, const renderer::Vec3& eye, const renderer::Mat4& projection
 ) {
     // How much farther than its depth a point in the view can be: 1 / the cosine of the view's
     // corner, from the projection's tangents. Within it, a straight-line distance below this times
@@ -526,8 +611,8 @@ void LevelScene::choose_scenery(
         if (scenery.source.empty() || scenery.distances.empty()) {
             continue;
         }
-        // Off again after being on: the instances as loaded, once.
-        if (!original) {
+        // Unlimited again after a distance: the instances as loaded, once.
+        if (!(scale > 0.0f)) {
             if (!scenery.drawn.empty()) {
                 scenery.drawn.clear();
                 set_instances(layer, resident_scenery(k));
@@ -550,7 +635,7 @@ void LevelScene::choose_scenery(
             const Vec3 to{centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]};
             const bool was = !first && scenery.drawn[i] != 0;
             // Squared, so that the test needs no root: limit and limit + margin, both positive.
-            const float limit = scenery.distances[i] * reach;
+            const float limit = scenery.distances[i] * scale * reach;
             const float reach_to = was ? limit + kLeaveMargin : limit;
             const float away = to[0] * to[0] + to[1] * to[1] + to[2] * to[2];
             const bool shown =
@@ -578,7 +663,7 @@ std::vector<Instance> LevelScene::resident_scenery(std::size_t k) const {
     resident.reserve(scenery.source.size());
     for (std::size_t i = 0; i < scenery.source.size(); ++i) {
         if ((!scenery.drawn.empty() && scenery.drawn[i] == 0)
-            || (i < moved.state.size() && moved.state[i] != 0)) {
+            || (i < moved.state.size() && moved.state[i] != 0) || mod_hidden(k, i)) {
             continue;
         }
         resident.push_back(scenery.source[i]);
@@ -586,7 +671,64 @@ std::vector<Instance> LevelScene::resident_scenery(std::size_t k) const {
     return resident;
 }
 
+bool LevelScene::mod_hidden(std::size_t k, std::size_t i) const {
+    return kSceneryLayers[k] == Layer::Ties
+           && std::binary_search(
+               m_mod_hidden_ties.begin(), m_mod_hidden_ties.end(), static_cast<int>(i)
+           );
+}
+
 void LevelScene::move_scenery(const GameScenery& game) {
+    // The ties a mod hides: the layer is grouped again when they change.
+    if (game.mod_hidden_ties != m_mod_hidden_ties) {
+        m_mod_hidden_ties = game.mod_hidden_ties;
+        for (std::size_t k = 0; k < m_scenery.size(); ++k) {
+            if (kSceneryLayers[k] == Layer::Ties) {
+                set_instances(Layer::Ties, resident_scenery(k));
+            }
+        }
+    }
+    // The terrain's occlusion words from the game's records (GameScenery::terrain_occlusion), once
+    // they differ from the primitives': the cached visible lists are made again.
+    if (!game.terrain_occlusion.empty()) {
+        // The streamed chunk the game's records are (Going Commando: the level's own terrain, or a
+        // chunk it loaded in its place): the one with as many fragments. Only that one is drawn.
+        std::map<int, std::size_t> fragments;
+        for (const Model& model : m_models) {
+            for (const Primitive& p : model.primitives) {
+                if (p.terrain_fragment >= 0) {
+                    auto& n = fragments[p.terrain_chunk];
+                    n = std::max(n, static_cast<std::size_t>(p.terrain_fragment) + 1);
+                }
+            }
+        }
+        int chunk = -1;
+        for (const auto& [c, n] : fragments) {
+            if (n == game.terrain_occlusion.size() && chunk < 0) {
+                chunk = c;
+            }
+        }
+        bool changed = chunk != m_terrain_chunk;
+        m_terrain_chunk = chunk;
+        for (Model& model : m_models) {
+            for (Primitive& p : model.primitives) {
+                if (p.terrain_fragment >= 0 && p.terrain_chunk == chunk
+                    && static_cast<std::size_t>(p.terrain_fragment)
+                           < game.terrain_occlusion.size()) {
+                    const std::uint16_t word =
+                        game.terrain_occlusion[static_cast<std::size_t>(p.terrain_fragment)];
+                    changed = changed || p.occlusion != word;
+                    p.occlusion = word;
+                }
+            }
+        }
+        if (changed || game.terrain_far != m_terrain_far) {
+            m_terrain_far = game.terrain_far;
+            for (auto& cached : m_pvs_models) {
+                cached.valid = false;
+            }
+        }
+    }
     // How far a matrix entry may be from the loaded one and still be taken for it: the export
     // writes the game's floats, so only a move changes them.
     constexpr float kSame = 1.0e-3f;
@@ -629,6 +771,10 @@ void LevelScene::move_scenery(const GameScenery& game) {
         const bool ties = kSceneryLayers[k] == Layer::Ties;
         const bool listed =
             ties && game.tie_lights.size() == count && game.tie_spheres.size() == count;
+        // The ones the game hides by a bit of their record (GameScenery::tie_hidden): Dobbo
+        // Orbit's buildings, whose ties stay where they stood once Giant Clank has knocked them
+        // down, their collision mobys deleted.
+        const auto& hidden = ties ? game.tie_hidden : game.shrub_hidden;
         bool changed = false;
         for (std::size_t i = 0; i < count; ++i) {
             const Mat4& m = scenery.source[i].matrix;
@@ -641,7 +787,8 @@ void LevelScene::move_scenery(const GameScenery& game) {
                     same = same && std::abs(v - m[c * 4 + r]) < kSame;
                 }
             }
-            const std::uint8_t state = zero ? 2 : same ? 0 : 1;
+            const bool gone = hidden.size() == count && hidden[i] != 0;
+            const std::uint8_t state = zero || gone ? 2 : same ? 0 : 1;
             m_moved_count += state == 1;
             changed = changed || state != moved.state[i];
             moved.state[i] = state;
@@ -726,6 +873,7 @@ void LevelScene::move_scenery(const GameScenery& game) {
             set_instances(kSceneryLayers[k], resident_scenery(k));
         }
     }
+    flush_light_colours();
 }
 
 void LevelScene::relight_moved_tie(
@@ -765,26 +913,63 @@ void LevelScene::relight_moved_tie(
 }
 
 void LevelScene::upload_light_colours(std::size_t first, std::span<const std::uint32_t> colours) {
-    // The texture's rows of 1024 colours that the instance's run crosses.
+    if (colours.empty() || first + colours.size() > m_light_texels.size()) {
+        return;
+    }
+    std::copy(
+        colours.begin(), colours.end(), m_light_texels.begin() + static_cast<std::ptrdiff_t>(first)
+    );
+    m_light_dirty.emplace_back(first, first + colours.size());
+}
+
+void LevelScene::flush_light_colours() {
+    if (m_light_dirty.empty()) {
+        return;
+    }
+    // Spans less than a row apart are uploaded as one: the texels between them are sent again
+    // as the texture already has them.
     constexpr std::size_t width = kLightWidth;
+    std::sort(m_light_dirty.begin(), m_light_dirty.end());
     glBindTexture(GL_TEXTURE_2D, m_lights);
-    for (std::size_t at = 0; at < colours.size();) {
-        const std::size_t texel = first + at;
-        const std::size_t run = std::min(colours.size() - at, width - texel % width);
+    const auto upload = [&](std::size_t from, std::size_t to) {
+        const std::size_t first_row = from / width, last_row = (to - 1) / width;
+        if (first_row == last_row) {
+            glTexSubImage2D(
+                GL_TEXTURE_2D,
+                0,
+                static_cast<GLint>(from % width),
+                static_cast<GLint>(first_row),
+                static_cast<GLsizei>(to - from),
+                1,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                m_light_texels.data() + from
+            );
+            return;
+        }
         glTexSubImage2D(
             GL_TEXTURE_2D,
             0,
-            static_cast<GLint>(texel % width),
-            static_cast<GLint>(texel / width),
-            static_cast<GLsizei>(run),
-            1,
+            0,
+            static_cast<GLint>(first_row),
+            static_cast<GLsizei>(width),
+            static_cast<GLsizei>(last_row - first_row + 1),
             GL_RGBA,
             GL_UNSIGNED_BYTE,
-            colours.data() + at
+            m_light_texels.data() + first_row * width
         );
-        at += run;
+    };
+    std::size_t from = m_light_dirty.front().first, to = m_light_dirty.front().second;
+    for (const auto& [a, b] : m_light_dirty) {
+        if (a > to + width) {
+            upload(from, to);
+            from = a;
+        }
+        to = std::max(to, b);
     }
+    upload(from, to);
     glBindTexture(GL_TEXTURE_2D, 0);
+    m_light_dirty.clear();
 }
 
 void LevelScene::relight_shrub(
@@ -856,7 +1041,8 @@ void LevelScene::add_moved_scenery(
         const Scenery& scenery = m_scenery[k];
         const MovedScenery& moved = m_moved[k];
         for (std::size_t i = 0; i < moved.state.size() && i < scenery.source.size(); ++i) {
-            if (moved.state[i] != 1 || (!scenery.drawn.empty() && scenery.drawn[i] == 0)) {
+            if (moved.state[i] != 1 || (!scenery.drawn.empty() && scenery.drawn[i] == 0)
+                || mod_hidden(k, i)) {
                 continue;
             }
             Instance instance = scenery.source[i];

@@ -5,13 +5,13 @@ together. The original repositories keep the full history of who wrote what
 ([docs/SOURCES.md](docs/SOURCES.md)). Names below are as they appear in each
 project's commits up to the sync of 2026-10-07, most commits first.
 
-## Ratchet & Clank, PAL: rac1-decomp (`games/rac1`)
+## Ratchet & Clank, PAL: rac1-decomp (`games/rac1/decomp`)
 
 - Kryštof "Lynder063" Malinda: creator and maintainer (commits as Lynder063,
   lynderjekokot and Kryštof Malinda)
-- Flavius (Veradictus)
+- Keros
 
-## Ratchet & Clank, NTSC-U: Lombyte (`games/rac1/ntsc`)
+## Ratchet & Clank, NTSC-U: Lombyte (`games/rac1/ntsc-decomp`)
 
 - Mateusz Kłysz: creator and maintainer
 - Louis-Philippe Le Sieur
@@ -20,26 +20,26 @@ project's commits up to the sync of 2026-10-07, most commits first.
 - Purab
 - mechaivan
 
-## Ratchet & Clank: Going Commando: rac2-decomp (`games/rac2/ntsc`)
+## Ratchet & Clank: Going Commando: rac2-decomp (`games/rac2/decomp`)
 
 - Louis-Philippe Le Sieur (llesieur99): creator and maintainer
 - platypet2217-star: author of RAC2Decomp, the functional PAL port in
   `ports/pal-functional/`
 - Kryštof "Lynder063" Malinda
 
-## Ratchet & Clank: Up Your Arsenal: rac3-uya-decomp (`games/rac3/ntsc`)
+## Ratchet & Clank: Up Your Arsenal: rac3-decomp (`games/rac3/decomp`)
 
 - vetusmagnus: creator and maintainer
 - Louis-Philippe Le Sieur
 
-## Ratchet: Deadlocked: rac-deadlocked-decomp (`games/rac4/ntsc`)
+## Ratchet: Deadlocked: rac4-decomp (`games/rac4/decomp`)
 
 - Kryštof "Lynder063" Malinda: creator and maintainer
 
 ## The top level
 
 The consolidation into OpenRAC (the editor's move, `tools/`, `docs/`):
-Flavius (Veradictus), with the level editor written in rac1-decomp.
+Keros, with the level editor written in rac1-decomp.
 
 Several projects work with AI assistants under human direction; their
 commits say so where a project records it. A few rac1-decomp commits carry
@@ -55,6 +55,18 @@ editor's own-disc extraction), splat, spimdisasm, objdiff, asm-differ,
 decomp-permuter, m2c, wibo, Himuro, the GNU toolchain, newlib, and the PS2
 reverse-engineering and decompilation communities. The NTSC decomp of
 Ratchet & Clank is credited by that name.
+
+## Bug research
+
+Up Your Arsenal online play: the Horizon Private Server project
+([github.com/Horizon-Private-Server](https://github.com/Horizon-Private-Server))
+found and fixed a long list of client-side problems in the game's online
+play (netcode, crashes, gameplay bugs and exploits) and documented their
+causes in its source and commit history. We read it for reference only and
+wrote our own fixes in the port (`port/game/rac3-pal/host/mp_fixes.c`); no
+code was copied. Thanks to Daniel "Dnawrkshp" Gerendasy, Troy "Metroynome"
+Pruitt, jello.giant, electrogecko, Philip762, Isaac Lal, John Janecek and the
+project's other contributors.
 
 The community hub for the Ratchet & Clank decompilations is
 [openrac.dev](https://openrac.dev/).

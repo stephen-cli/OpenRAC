@@ -3,10 +3,12 @@
 //
 // Optional reflection atlas owned by the same scene as the validated GI bake.
 #pragma once
+#include <optional>
+
 #include "enhanced/lighting/environment.h"
 #include "enhanced/viewer/debug_lines.h"
 #include "enhanced/viewer/environment_selection.h"
-#include "renderer/shader.h"
+#include "renderer/gl/shader.h"
 
 namespace openrac::lighting {
 class EnvironmentLighting {
@@ -16,7 +18,11 @@ public:
     EnvironmentLighting(const EnvironmentLighting&) = delete;
     EnvironmentLighting& operator=(const EnvironmentLighting&) = delete;
     // Missing captures are optional; stale/corrupt captures report their rejection.
-    void load(const std::filesystem::path& directory, const ProbeGrid& gi);
+    void load(
+        const std::filesystem::path& directory,
+        const ProbeGrid& gi,
+        std::optional<std::uint64_t> loaded_gi_hash = std::nullopt
+    );
     void bind(
         const renderer::Shader& shader, bool enabled, const renderer::Camera* camera = nullptr
     ) const;
@@ -34,7 +40,8 @@ private:
     EnvironmentSelection m_selection;
     DebugLines m_debug;
     renderer::Shader m_preview_shader;
-    unsigned m_preview_vao = 0;
+    unsigned m_preview_vao = 0, m_preview_buffer = 0;
+    std::vector<std::array<float, 4>> m_preview_captures;
     bool m_debug_failed =
         false;  // A failed diagnostic does not disable reflections or retry every frame.
     unsigned m_texture = 0;

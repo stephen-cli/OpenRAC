@@ -1,12 +1,14 @@
 <script lang="ts">
-  // The updates of a game's mods from the index (lib/modAutoUpdate, core/src/mod_updates.rs): the
+  // The updates of a game's mods from the index, and the withdrawn versions the look turned off (lib/modAutoUpdate, core/src/mod_updates.rs): the
   // ones that wait for a click ("Update available": a major, or new hooks), with their changelog;
   // the ones held back, and why ("held back: A needs B 1.2.0"); the ones that just went in by
   // themselves, with what changed. Shown only when it has something to say. Changelogs are text.
+  import { onMount } from "svelte";
+
   import { api, errorText, type UpdateItem, type VersionView } from "$lib/api";
   import { autoUpdates, gameRunning, updateVersion } from "$lib/modAutoUpdate.svelte";
-  import { UPDATES as T, holdText, updateFrom } from "$lib/modsText";
-  import { onMount } from "svelte";
+  import { holdText, revokedOffText, updateFrom, UPDATES as T } from "$lib/modsText";
+
   import Icon from "./Icon.svelte";
 
   let { version, onchange }: { version: VersionView; onchange?: () => void } = $props();
@@ -16,7 +18,21 @@
 
   const plan = $derived(autoUpdates.plans[version.game] ?? null);
   const recent = $derived(autoUpdates.recent[version.game] ?? []);
-  const shown = $derived((!!plan && (plan.waiting.length > 0 || plan.held.length > 0)) || recent.length > 0);
+  const shown = $derived(
+    (!!plan && (plan.waiting.length > 0 || plan.held.length > 0 || plan.turnedOff.length > 0)) ||
+      recent.length > 0,
+  );
+
+  // A look turned off a withdrawn version: the lists show it off.
+  let toldOff = "";
+  $effect(() => {
+    const off = plan?.turnedOff.map((r) => `${r.id}@${r.version}`).join(",") ?? "";
+
+    if (off && off !== toldOff) {
+      toldOff = off;
+      onchange?.();
+    }
+  });
 
   onMount(() => {
     // The look at start may not have run for this game yet: what waits, without updating.
@@ -33,22 +49,29 @@
   async function update(item: UpdateItem) {
     if (gameRunning()) {
       error = T.running;
+
       return;
     }
+
     busy = item.id;
     error = null;
+
     try {
       await updateVersion(version, [item.id]);
       onchange?.();
     } catch (e) {
       error = errorText(e);
     }
+
     busy = null;
   }
 </script>
 
 {#if shown && plan}
   <section class="panel updates" aria-label={T.title}>
+    {#each plan.turnedOff as r (r.id)}<p class="err" role="alert">
+        {revokedOffText(r.name, r.version, r.reason)}
+      </p>{/each}
     {#if plan.waiting.length > 0}
       <h2>{T.waitingTitle}</h2>
       <ul>
@@ -144,6 +167,39 @@
     margin: 2px 0 0;
     font-size: 0.8125rem;
     color: var(--soft);
+  }
+
+  /* The changelog's fold: a small line under the mod, its triangle on the left (as Differences'),
+     not the wide fold with a chevron at the far right. */
+  .more > summary {
+    display: inline-flex;
+    gap: 8px;
+    margin-top: 4px;
+    padding: 2px 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--lav);
+  }
+
+  .more > summary::before {
+    content: "";
+    border-left: 5px solid currentColor;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transition: transform var(--fast) var(--ease);
+  }
+
+  .more[open] > summary::before {
+    transform: rotate(90deg);
+  }
+
+  .more > summary::after {
+    display: none;
+  }
+
+  li > :global(button) {
+    flex: none;
+    align-self: center;
   }
 
   pre {

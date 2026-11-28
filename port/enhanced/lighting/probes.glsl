@@ -7,11 +7,15 @@ uniform sampler2D probe_moments;
 uniform sampler2D probe_spread;
 uniform sampler2D probe_depth_ranges;
 // Zero reads moments, one local ASTC, two linear RG8 and three curved RG16 UNORM.
+// The switches every Vulkan pipeline fixes as constants (pipeline variants).
+// openrac_mode: probe_depth_mode probe_retail_anchor probe_gpu_selection probe_mode probe_receiver
+// openrac_mode: probe_backlight sun_shadow_separate_maps shadow_atlas_enabled sun_shadow_enabled
+// openrac_mode: hero_shadow_enabled sun_shadow_fast
 uniform int probe_depth_mode;
 uniform sampler2D probe_metadata;
 uniform vec3 probe_origin;
 uniform vec3 probe_spacing;
-uniform vec2 probe_frame;
+uniform vec4 probe_frame;
 uniform vec3 probe_dimensions;
 uniform float probe_resolution;
 uniform int probe_tiles_x;
@@ -28,7 +32,7 @@ uniform float probe_normal_bias;
 uniform float probe_view_bias;
 uniform vec3 probe_dense_origin[3];
 uniform vec3 probe_dense_spacing[3];
-uniform vec2 probe_dense_frame[3];
+uniform vec4 probe_dense_frame[3];
 uniform vec3 probe_dense_dimensions[3];
 uniform int probe_dense_offset[3];
 uniform float probe_dense_weight[3];
@@ -38,7 +42,7 @@ uniform vec2 probe_tile_extent;
 uniform usamplerBuffer probe_region_masks;
 
 layout(std140) uniform ProbeRegions {
-    vec4 probe_regions[3072];
+    vec4 probe_regions[4096];
 };
 
 uniform int probe_mode;      // 0 original, 1 combined, 2 indirect, 3 direct, 4 coverage
@@ -61,6 +65,7 @@ uniform mat4 sun_shadow_view;
 uniform vec4 sun_shadow_ends;
 uniform float sun_shadow_near;
 uniform int sun_shadow_enabled;
+uniform int sun_shadow_fast;
 uniform int sun_shadow_separate_maps;
 uniform int shadow_atlas_enabled;
 uniform vec4 shadow_atlas_rects[5];
@@ -169,8 +174,8 @@ vec2 probe_depth_sample(ivec2 tile, vec3 direction) {
 }
 
 vec2 probe_axis(vec2 axis) { return dot(axis,axis)>.5 ? axis : vec2(1,0); }
-vec3 probe_local(vec3 p,vec2 axis) { axis=probe_axis(axis);return vec3(dot(p.xy,axis),dot(p.xy,vec2(-axis.y,axis.x)),p.z); }
-vec3 probe_world(vec3 p,vec2 axis) { axis=probe_axis(axis);return vec3(axis.x*p.x-axis.y*p.y,axis.y*p.x+axis.x*p.y,p.z); }
+vec3 probe_world(vec3 p,vec4 q) { if(dot(q,q)<.5)q=vec4(0,0,0,1);return p+2.*cross(q.xyz,cross(q.xyz,p)+q.w*p); }
+vec3 probe_local(vec3 p,vec4 q) { return probe_world(p,vec4(-q.xyz,q.w)); }
 // Keep the irradiance power decode FP32: half SFU/conversion overhead regresses GI passes.
 bool sample_probe_grid(
     vec3 p,
@@ -178,7 +183,7 @@ bool sample_probe_grid(
     vec3 surface_bias,
     vec3 origin,
     vec3 spacing,
-    vec2 frame,
+    vec4 frame,
     vec3 dimensions,
     int index_offset,
     bool preserve_occlusion,
@@ -346,9 +351,9 @@ ivec3 probe_choose_regions(vec3 p) {
                 continue;
             }
             int id = int(texelFetch(probe_region_masks, 1 + slot).r);
-            vec3 step = probe_regions[id * 3 + 1].xyz;
-            vec3 c = probe_local(p - probe_regions[id * 3].xyz,vec2(probe_regions[id*3+1].w,probe_regions[id*3+2].w)) / step;
-            vec3 edge = min(c, probe_regions[id * 3 + 2].xyz - 1.0 - c);
+            vec3 step = probe_regions[id * 4 + 1].xyz;
+            vec3 c = probe_local(p - probe_regions[id * 4].xyz,probe_regions[id*4+3]) / step;
+            vec3 edge = min(c, (probe_regions[id * 4 + 2].xyz - 1.0 - c) * vec3(1.0, 1.0, 0.5));
             float influence = smoothstep(0.0, 1.0, min(edge.x, min(edge.y, edge.z)));
             float score = influence / (step.x * step.y * step.z);
             if (score > scores.x || (score > 0.0 && score == scores.x && id < best.x)) {
@@ -372,7 +377,9 @@ ivec3 probe_choose_regions(vec3 p) {
     return best;
 }
 
-bool sample_probe_irradiance(vec3 p, vec3 n, vec3 surface_bias, out vec3 irradiance) {
+bool sample_probe_irradiance(
+    vec3 p, vec3 n, vec3 surface_bias, out vec3 irradiance, out float dense_weight
+) {
     vec3 locals = vec3(0.0);
     float total = 0.0;
     float confidence = 0.0;
@@ -394,22 +401,22 @@ bool sample_probe_irradiance(vec3 p, vec3 n, vec3 surface_bias, out vec3 irradia
         vec3 origin = probe_dense_origin[slot];
         float weight = probe_dense_weight[slot];
         vec3 spacing = probe_dense_spacing[slot];
-        vec2 frame = probe_dense_frame[slot];
+        vec4 frame = probe_dense_frame[slot];
         vec3 dimensions = probe_dense_dimensions[slot];
         int offset = probe_dense_offset[slot];
         if (probe_gpu_selection != 0) {
-            origin = probe_regions[id * 3].xyz;
+            origin = probe_regions[id * 4].xyz;
             weight = 1.0;
-            spacing = probe_regions[id * 3 + 1].xyz;
-            dimensions = probe_regions[id * 3 + 2].xyz;
-            offset = int(probe_regions[id * 3].w);
-            frame = vec2(probe_regions[id*3+1].w,probe_regions[id*3+2].w);
+            spacing = probe_regions[id * 4 + 1].xyz;
+            dimensions = probe_regions[id * 4 + 2].xyz;
+            offset = int(probe_regions[id * 4].w);
+            frame = probe_regions[id*4+3];
         }
         if (weight <= 0.0) {
             continue;
         }
         vec3 coordinate = probe_local(p - origin,frame) / spacing;
-        vec3 edge = min(coordinate, dimensions - 1.0 - coordinate);
+        vec3 edge = min(coordinate, (dimensions - 1.0 - coordinate) * vec3(1.0, 1.0, 0.5));
         float boundary = smoothstep(0.0, 1.0, min(edge.x, min(edge.y, edge.z))) * weight;
         // Zero-influence borders cannot contribute even when their probes are valid.
         if (boundary <= 0.0) {
@@ -425,6 +432,7 @@ bool sample_probe_irradiance(vec3 p, vec3 n, vec3 surface_bias, out vec3 irradia
             total += blend;
         }
     }
+    dense_weight = min(total, 1.0);
     if (total >= 1.0) {
         irradiance = locals / total;
         return true;
@@ -445,11 +453,17 @@ bool sample_probe_irradiance(vec3 p, vec3 n, vec3 surface_bias, out vec3 irradia
     if (total > 0.0) {
         if (!base_valid) {
             irradiance = locals / total;
+            dense_weight = 1.0;
             return true;
         }
-        irradiance = mix(irradiance, locals / total, min(total, 1.0));
+        irradiance = mix(irradiance, locals / total, dense_weight);
     }
     return base_valid;
+}
+
+bool sample_probe_irradiance(vec3 p, vec3 n, vec3 surface_bias, out vec3 irradiance) {
+    float dense_weight;
+    return sample_probe_irradiance(p, n, surface_bias, irradiance, dense_weight);
 }
 
 // Reference/fixture entry point retains the original normal-only bias.
@@ -558,8 +572,8 @@ float shadow_pcf_unique_rect(sampler2D map, ivec4 rect, vec3 position, float bia
 }
 
 float shadow_pcf_kernel_rect(sampler2D map, ivec4 rect, vec3 position, float bias, vec2 slope, bool tent) {
-#if defined(OPENRAC_PROBE_FAST)
-    // Blended surfaces: four taps instead of the wide kernel (Enhanced, lossy).
+#if defined(OPENRAC_PROBE_FAST) || defined(OPENRAC_CHEAP_SHADOWS)
+    // Blended surfaces, and shadow filtering Fast: four taps instead of the wide kernel (lossy).
     return shadow_bilinear_rect(map, rect, position, bias, slope);
 #elif defined(OPENRAC_SHADOW_FILTER_REFERENCE)
     return shadow_pcf_reference_rect(map, rect, position, bias, slope, tent);
@@ -568,10 +582,14 @@ float shadow_pcf_kernel_rect(sampler2D map, ivec4 rect, vec3 position, float bia
 #endif
 }
 
-ivec4 shadow_map_rect(sampler2D map, int view) {
+bool shadow_uses_atlas(int view) {
     bool separate = view < 4 && (sun_shadow_separate_maps & (1 << view)) != 0;
-    return shadow_atlas_enabled != 0 && !separate ? ivec4(shadow_atlas_rects[view])
-                                                 : ivec4(0, 0, textureSize(map, 0));
+    return shadow_atlas_enabled != 0 && !separate;
+}
+
+ivec4 shadow_map_rect(sampler2D map, int view) {
+    return shadow_uses_atlas(view) ? ivec4(shadow_atlas_rects[view])
+                                  : ivec4(0, 0, textureSize(map, 0));
 }
 float shadow_bilinear(sampler2D map, vec3 p, float bias, vec2 slope) {
     return shadow_bilinear_rect(map, ivec4(0, 0, textureSize(map, 0)), p, bias, slope);
@@ -614,7 +632,10 @@ float hero_shadow_visibility(vec3 p, vec3 n) {
 const float kSunNormalOffsetTexels = 1.0;
 const float kSunDepthBiasTexels = 0.5;
 
-float sun_shadow_pcf_rect(sampler2D map, ivec4 rect, mat4 matrix, vec3 p, vec3 n, vec3 plane_normal) {
+bool sun_shadow_receiver(
+    int width, mat4 matrix, vec3 p, vec3 n, vec3 plane_normal,
+    out vec3 position, out float bias, out vec2 slope
+) {
     // The orthographic rows are scaled orthogonal light-space axes.
     vec3 row_x = vec3(matrix[0].x, matrix[1].x, matrix[2].x);
     vec3 row_y = vec3(matrix[0].y, matrix[1].y, matrix[2].y);
@@ -622,11 +643,11 @@ float sun_shadow_pcf_rect(sampler2D map, ivec4 rect, mat4 matrix, vec3 p, vec3 n
     // One of this cascade's texels in world units: a far cascade's are thirty times the nearest's.
     // The normal offset and depth bias follow it, so the far cascades do not shadow their own
     // receivers in speckles and stair steps; the nearest keeps its fixed 0.025 and 0.01.
-    float texel = 2.0 / (length(row_x) * float(rect.z));
-    vec3 position =
+    float texel = 2.0 / (length(row_x) * float(width));
+    position =
         (matrix * vec4(p + n * max(0.025, kSunNormalOffsetTexels * texel), 1.0)).xyz * 0.5 + 0.5;
     if (any(lessThan(position, vec3(0.0))) || any(greaterThan(position, vec3(1.0)))) {
-        return 1.0;
+        return false;
     }
     // Receiver-plane depth follows the geometric face across PCF taps.
     vec3 plane = vec3(
@@ -634,29 +655,71 @@ float sun_shadow_pcf_rect(sampler2D map, ivec4 rect, mat4 matrix, vec3 p, vec3 n
         dot(row_y, plane_normal) / dot(row_y, row_y),
         dot(row_z, plane_normal) / dot(row_z, row_z)
     );
-    vec2 slope =
+    slope =
         abs(plane.z) > 1e-5 ? clamp(-plane.xy / plane.z, vec2(-2.0), vec2(2.0)) : vec2(0.0);
     // A world-space bias (half a texel of the cascade, at least 0.01) avoids detachment growing
     // with whole-level depth.
-    float bias = length(row_z) * 0.5 * max(0.01, kSunDepthBiasTexels * texel);
+    bias = length(row_z) * 0.5 * max(0.01, kSunDepthBiasTexels * texel);
+    return true;
+}
+
+float sun_shadow_pcf_rect(sampler2D map, ivec4 rect, vec3 position, float bias, vec2 slope) {
+#if !defined(OPENRAC_PROBE_FAST) && !defined(OPENRAC_CHEAP_SHADOWS)
+    if (sun_shadow_fast != 0) {
+        return shadow_bilinear_rect(map, rect, position, bias, slope);
+    }
+#endif
     return shadow_pcf_kernel_rect(map, rect, position, bias, slope, true);
 }
 
 float sun_shadow_pcf(sampler2D map, mat4 matrix, vec3 p, vec3 n, vec3 normal) {
-    return sun_shadow_pcf_rect(map, ivec4(0, 0, textureSize(map, 0)), matrix, p, n, normal);
+    ivec4 rect = ivec4(0, 0, textureSize(map, 0));
+    vec3 position;
+    float bias;
+    vec2 slope;
+    if (!sun_shadow_receiver(rect.z, matrix, p, n, normal, position, bias, slope)) {
+        return 1.0;
+    }
+    return sun_shadow_pcf_rect(map, rect, position, bias, slope);
+}
+
+ivec4 sun_cascade_rect(int cascade) {
+    if (shadow_uses_atlas(cascade)) {
+        return ivec4(shadow_atlas_rects[cascade]);
+    }
+    ivec2 size;
+    if (cascade == 0) {
+        size = textureSize(sun_shadow_map0, 0);
+    } else if (cascade == 1) {
+        size = textureSize(sun_shadow_map1, 0);
+    } else if (cascade == 2) {
+        size = textureSize(sun_shadow_map2, 0);
+    } else {
+        size = textureSize(sun_shadow_map3, 0);
+    }
+    return ivec4(0, 0, size);
 }
 
 float sun_cascade_visibility(int cascade, vec3 p, vec3 n, vec3 plane_normal) {
+    ivec4 rect = sun_cascade_rect(cascade);
+    vec3 position;
+    float bias;
+    vec2 slope;
+    // The receiver math is shared by all four sampler branches.
+    if (!sun_shadow_receiver(rect.z, sun_shadow_matrix[cascade], p, n, plane_normal,
+                             position, bias, slope)) {
+        return 1.0;
+    }
     if (cascade == 0) {
-        return sun_shadow_pcf_rect(sun_shadow_map0, shadow_map_rect(sun_shadow_map0, 0), sun_shadow_matrix[0], p, n, plane_normal);
+        return sun_shadow_pcf_rect(sun_shadow_map0, rect, position, bias, slope);
     }
     if (cascade == 1) {
-        return sun_shadow_pcf_rect(sun_shadow_map1, shadow_map_rect(sun_shadow_map1, 1), sun_shadow_matrix[1], p, n, plane_normal);
+        return sun_shadow_pcf_rect(sun_shadow_map1, rect, position, bias, slope);
     }
     if (cascade == 2) {
-        return sun_shadow_pcf_rect(sun_shadow_map2, shadow_map_rect(sun_shadow_map2, 2), sun_shadow_matrix[2], p, n, plane_normal);
+        return sun_shadow_pcf_rect(sun_shadow_map2, rect, position, bias, slope);
     }
-    return sun_shadow_pcf_rect(sun_shadow_map3, shadow_map_rect(sun_shadow_map3, 3), sun_shadow_matrix[3], p, n, plane_normal);
+    return sun_shadow_pcf_rect(sun_shadow_map3, rect, position, bias, slope);
 }
 
 float sun_shadow_visibility(vec3 p, vec3 n, vec3 plane_normal) {
@@ -670,23 +733,95 @@ float sun_shadow_visibility(vec3 p, vec3 n, vec3 plane_normal) {
     int cascade = distance < sun_shadow_ends.x
                       ? 0
                       : (distance < sun_shadow_ends.y ? 1 : (distance < sun_shadow_ends.z ? 2 : 3));
-    float visibility = sun_cascade_visibility(cascade, p, n, plane_normal);
-    float start = cascade == 0 ? sun_shadow_near : sun_shadow_ends[cascade - 1];
-    float blend =
-        smoothstep(mix(start, sun_shadow_ends[cascade], 0.9), sun_shadow_ends[cascade], distance);
-#ifdef OPENRAC_PROBE_FAST
-    blend = 0.0;
+    int samples = 1;
+    float blend = 0.0;
+#if !defined(OPENRAC_PROBE_FAST) && !defined(OPENRAC_CHEAP_SHADOWS)
+    if (sun_shadow_fast == 0) {
+        float start = cascade == 0 ? sun_shadow_near : sun_shadow_ends[cascade - 1];
+        blend = smoothstep(mix(start, sun_shadow_ends[cascade], 0.9),
+                           sun_shadow_ends[cascade], distance);
+        if (blend > 0.0 && cascade < 3) {
+            samples = 2;
+        }
+    }
 #endif
-    float next =
-        blend > 0.0 && cascade < 3 ? sun_cascade_visibility(cascade + 1, p, n, plane_normal) : 1.0;
-    return mix(visibility, next, blend);
+    // Sample both sides of the blend through one call site so the filter is inlined once.
+    float visibility = 1.0;
+    float next = 1.0;
+    for (int tap = 0; tap < samples; ++tap) {
+        float sampled = sun_cascade_visibility(cascade + tap, p, n, plane_normal);
+        if (tap == 0) {
+            visibility = sampled;
+        } else {
+            next = sampled;
+        }
+    }
+#if defined(OPENRAC_PROBE_FAST) || defined(OPENRAC_CHEAP_SHADOWS)
+    return visibility;
+#else
+    return sun_shadow_fast != 0 ? visibility : mix(visibility, next, blend);
+#endif
 }
 
-vec3 probe_direct(vec3 p, vec3 n, vec4 selector, float visibility) {
+// Legacy diffuse has no separate direct light channel. Its floor keeps authored ambient light.
+float probe_fallback_diffuse_shadow(float visibility) {
+#ifdef OPENRAC_CLOUD_SHADOWS
+    visibility *= cloud_sun_attenuation;
+#endif
+    return mix(0.1, 1.0, visibility);
+}
+
+// Clouds attenuate the visible sun above the artistic shadow floor.
+vec3 probe_shadowed_directional(
+    vec3 directional, vec3 cloud_loss, float visibility, float shadow_floor
+) {
+    return directional * shadow_floor
+           + (directional - cloud_loss) * ((1.0 - shadow_floor) * visibility);
+}
+
+#ifdef OPENRAC_SHADING_BRDF
+vec3 surface_specular_direct(vec3 p,vec3 n,vec3 eye,vec4 selector,float visibility,
+                             float roughness,vec3 f0) {
+    int a=(int(selector.x+.5)&15)*4,b=(int(selector.y+.5)&15)*4;
+    float blend=clamp(selector.z,0.,1.);
+    vec3 result=vec3(0);
+    for(int light=0;light<2;++light) {
+        int offset=light*2;
+        vec3 radiance=max(mix(light_sets[a+offset].rgb,light_sets[b+offset].rgb,blend),vec3(0));
+        vec3 travel=probe_unit(mix(light_sets[a+offset+1].xyz,light_sets[b+offset+1].xyz,blend));
+        vec3 cloud_loss = vec3(0.0);
+        if(light==0) {
+            if(probe_sunlight_direction.w!=0.) travel=probe_sunlight_direction.xyz;
+            radiance*=probe_sunlight_scale;
+#ifdef OPENRAC_CLOUD_SHADOWS
+            cloud_loss = radiance * (1.0 - cloud_sun_attenuation);
+#endif
+        }
+        result += probe_shadowed_directional(radiance, cloud_loss, visibility, .1)
+                  * ggx_specular(n, eye, -travel, roughness, f0);
+    }
+    LOCAL_LIGHT_LOOP(i) {
+        vec3 delta=LOCAL_POSITION(i).xyz-p;
+        float radius=LOCAL_POSITION(i).w,distance=length(delta);
+        if(radius<=0. || distance>=radius || distance<1e-6) continue;
+        vec3 radiance=max(LOCAL_COLOUR(i).rgb,vec3(0))*LOCAL_ATTENUATION(distance,radius)*LOCAL_CONE(i,delta/distance);
+        result+=radiance*ggx_specular(n,eye,delta/distance,
+                    roughness,f0);
+    }
+    return result;
+}
+#endif
+
+// Split full directional and local radiance, and report how much of the primary light clouds remove.
+void probe_direct_parts(
+    vec3 p, vec3 n, vec4 selector, out vec3 directional, out vec3 local, out vec3 cloud_loss
+) {
     int a = (int(selector.x + 0.5) & 15) * 4;
     int b = (int(selector.y + 0.5) & 15) * 4;
     float blend = clamp(selector.z, 0.0, 1.0);
-    vec3 direct = vec3(0.0);
+    directional = vec3(0.0);
+    local = vec3(0.0);
+    cloud_loss = vec3(0.0);
     for (int light = 0; light < 2; ++light) {
         int offset = light * 2;
         vec4 colour = mix(light_sets[a + offset], light_sets[b + offset], blend);
@@ -703,8 +838,13 @@ vec3 probe_direct(vec3 p, vec3 n, vec4 selector, float visibility) {
         // Authored light colours are byte-scaled and sunlight correction is bounded to 0..4.
         // Keep the multi-light sum and all positions/distances/visibility decisions FP32.
         mp_vec3 contribution = max(mp_vec3(colour.rgb), mp_vec3(0)) * mp_vec3(correction)
-            * mp_float(response) * mp_float(mix(0.1, 1.0, visibility));
-        direct += vec3(contribution);
+            * mp_float(response);
+        directional += vec3(contribution);
+#ifdef OPENRAC_CLOUD_SHADOWS
+        if (light == 0) {
+            cloud_loss = vec3(contribution) * (1.0 - cloud_sun_attenuation);
+        }
+#endif
     }
     LOCAL_LIGHT_LOOP(i) {
         vec3 delta = LOCAL_POSITION(i).xyz - p;
@@ -721,15 +861,20 @@ vec3 probe_direct(vec3 p, vec3 n, vec4 selector, float visibility) {
         if(i>=8) {
             mp_float weight=mp_float(response)*mp_float(LOCAL_ATTENUATION(distance,radius))
                             *mp_float(LOCAL_CONE(i,delta/distance));
-            direct+=max(LOCAL_COLOUR(i).rgb,vec3(0))*float(weight);
+            local+=max(LOCAL_COLOUR(i).rgb,vec3(0))*float(weight);
             continue;
         }
 #endif
         mp_vec3 contribution = max(mp_vec3(LOCAL_COLOUR(i).rgb), mp_vec3(0))
             * mp_float(response) * mp_float(LOCAL_ATTENUATION(distance,radius)) * mp_float(LOCAL_CONE(i,delta/distance));
-        direct += vec3(contribution);
+        local += vec3(contribution);
     }
-    return direct;
+}
+
+vec3 probe_direct(vec3 p, vec3 n, vec4 selector, float visibility) {
+    vec3 directional, local, cloud_loss;
+    probe_direct_parts(p, n, selector, directional, local, cloud_loss);
+    return probe_shadowed_directional(directional, cloud_loss, visibility, 0.1) + local;
 }
 
 // Keep the display transfer curves FP32: chained half powers amplify byte-level banding.
@@ -738,11 +883,12 @@ vec3 probe_linear(vec3 c) {
     return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, lessThanEqual(c, vec3(0.04045)));
 }
 
-vec3 probe_display(vec3 c) {
+vec3 probe_display_unclamped(vec3 c) {
     c = max(c, vec3(0.0));
-    return clamp(
-        mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, lessThanEqual(c, vec3(0.0031308))),
-        0.0,
-        1.0
-    );
+    return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92,
+               lessThanEqual(c, vec3(0.0031308)));
+}
+
+vec3 probe_display(vec3 c) {
+    return clamp(probe_display_unclamped(c), 0.0, 1.0);
 }

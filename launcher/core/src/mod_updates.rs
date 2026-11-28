@@ -4,7 +4,8 @@
 //!   themselves; a major version, or a native mod's version that takes new hooks, waits for a
 //!   click with its changelog. A mod kept at its version (a pin) is left alone. Every update is
 //!   planned as one set through the resolver: an update that would break another mod's `requires`
-//!   is held back ("A needs B 1.2.0"), and the API and pre-release rules of resolver.rs apply.
+//!   is held back ("A needs B 1.2.0"), and the API, hook point and pre-release rules of
+//!   resolver.rs apply.
 //!   Nothing is updated while the game runs. A set is all or nothing (index_apply.rs).
 //! - **Rollback after a crash**: the last update is remembered (`plugins/.last-update.json`), so a
 //!   crash after it can offer "Roll back B to 1.2.0", which pins B until a version newer than the
@@ -40,6 +41,9 @@ pub enum Hold {
     Needs { id: String, wants: Option<String> },
     /// The newest version needs a newer launcher.
     NeedsLauncher { api: String },
+    /// The newest version names hook points this launcher's port does not have, so it needs a
+    /// newer launcher. Not `NewHooks`, which asks the player about hooks the port has.
+    NeedsLauncherHooks { hooks: Vec<String> },
     /// Something else stops it (a conflict, a missing mod).
     Blocked { detail: String },
 }
@@ -67,6 +71,8 @@ pub struct UpdatePlan {
     pub waiting: Vec<UpdateItem>,
     /// Cannot go in now, and why.
     pub held: Vec<UpdateItem>,
+    /// Installed versions the index revoked, turned off by this look (filled by the launcher).
+    pub turned_off: Vec<crate::index::RevokedOff>,
 }
 
 /// What a game's mods are checked against.
@@ -149,7 +155,10 @@ pub fn plan(index: &ModIndex, installed: &[InstalledMod], sources: &Sources, her
             .filter(|v| newer(&v.version, &have.version))
             .filter(|v| index.revoked(&m.id, &v.version).is_none() && (here.prerelease || !v.prerelease) && runs(v))
             .collect();
-        let best = offered.iter().copied().filter(|v| api_fits(v.api.as_deref(), here.api)).max_by(|a, b| {
+        let fits = |v: &crate::index::Version| {
+            api_fits(v.api.as_deref(), here.api) && crate::hook_ids::missing(here.game, &v.hooks).is_empty()
+        };
+        let best = offered.iter().copied().filter(|v| fits(v)).max_by(|a, b| {
             compare_versions(
                 parse_version(&a.version).unwrap_or_default(),
                 parse_version(&b.version).unwrap_or_default(),
@@ -171,13 +180,23 @@ pub fn plan(index: &ModIndex, installed: &[InstalledMod], sources: &Sources, her
         let Some(v) = best.filter(|v| skip.as_deref() != Some(v.version.as_str())) else {
             // Only a version for a newer launcher: it waits until the launcher updates.
             if let Some(v) = offered.first().filter(|_| best.is_none()) {
-                out.held.push(item(v, Some(Hold::NeedsLauncher { api: v.api.clone().unwrap_or_default() })));
+                let hold = if api_fits(v.api.as_deref(), here.api) {
+                    Hold::NeedsLauncherHooks { hooks: crate::hook_ids::missing(here.game, &v.hooks) }
+                } else {
+                    Hold::NeedsLauncher { api: v.api.clone().unwrap_or_default() }
+                };
+                out.held.push(item(v, Some(hold)));
             }
             continue;
         };
         let old_hooks: BTreeSet<&String> =
             m.version(&have.version).map(|o| o.hooks.iter().collect()).unwrap_or_default();
-        let new_hooks: Vec<String> = v.hooks.iter().filter(|h| !old_hooks.contains(h)).cloned().collect();
+        // Only this games hooks count: a version that adds another game brings that games
+        // hooks, which change nothing here (`rac2.*` for a Ratchet & Clank install).
+        let for_here =
+            |h: &str| !matches!(h.split_once('.'), Some((g, _)) if g != here.game && v.games.contains_key(g));
+        let new_hooks: Vec<String> =
+            v.hooks.iter().filter(|h| !old_hooks.contains(h) && for_here(h)).cloned().collect();
         if major(&v.version) != major(&have.version) {
             out.waiting.push(item(v, Some(Hold::Major)));
         } else if m.kind == "native" && m.version(&have.version).is_some() && !new_hooks.is_empty() {
@@ -458,6 +477,7 @@ mod tests {
     use super::*;
     use crate::index::tests::fixture;
     use crate::index::{IndexMod, Require, Version};
+    use std::collections::BTreeMap;
 
     const HERE: Here =
         Here { game: "rac1", disc: "pal", platform: Some("linux-x86_64"), api: (1, 10), prerelease: false };
@@ -479,7 +499,7 @@ mod tests {
                     games: [("rac1".to_string(), vec!["pal".to_string()])].into(),
                     requires: req
                         .iter()
-                        .map(|(id, w)| Require { id: (*id).into(), version: Some((*w).into()) })
+                        .map(|(id, w)| Require { id: (*id).into(), version: Some((*w).into()), ..Default::default() })
                         .collect(),
                     changelog: format!("notes {v}"),
                     tag: format!("{id}-v{v}"),
@@ -510,6 +530,62 @@ mod tests {
         assert!(plan.silent.is_empty());
         assert_eq!(plan.waiting[0].hold, Some(Hold::Major));
         assert_eq!(plan.waiting[0].changelog, "notes 2.0.0");
+    }
+
+    #[test]
+    fn a_hand_built_native_mod_does_not_hold_back_the_others() {
+        // lock-strafe 1.2.0 publishes no linux-x86_64 archive; the player built it by hand.
+        let mut index = fixture();
+        let lock = index.mods.iter_mut().find(|m| m.id == "lock-strafe").unwrap();
+        lock.versions.iter_mut().for_each(|v| v.platforms.retain(|p, _| p != "linux-x86_64"));
+        let installed = [have("camera-base", "1.1.0"), have("lock-strafe", "1.2.0")];
+        let plan = super::plan(&index, &installed, &Sources::default(), &HERE);
+        assert_eq!(ids(&plan.silent), [("camera-base", "1.2.0")]);
+        assert!(plan.held.is_empty());
+    }
+
+    #[test]
+    fn another_games_new_hooks_do_not_hold_an_update() {
+        // Difficulty 1.3.0 ran on rac1; 1.5.0 adds rac2 with its hooks. On rac1 it is a minor
+        // update with the same hooks, so it goes in by itself; on rac2 the new rac2 hook waits.
+        let platforms: BTreeMap<String, crate::index::Asset> =
+            [("linux-x86_64".to_string(), crate::index::Asset::default())].into();
+        let both: BTreeMap<String, Vec<String>> =
+            [("rac1".to_string(), vec!["pal".to_string()]), ("rac2".to_string(), vec!["ntsc".to_string()])].into();
+        let version = |v: &str, games: BTreeMap<String, Vec<String>>, hooks: &[&str]| Version {
+            version: v.into(),
+            api: Some("1.1".into()),
+            games,
+            hooks: hooks.iter().map(|h| h.to_string()).collect(),
+            platforms: platforms.clone(),
+            tag: format!("difficulty-v{v}"),
+            ..Default::default()
+        };
+        let mut index = ModIndex { format: 1, ..Default::default() };
+        index.mods.push(IndexMod {
+            id: "difficulty".into(),
+            name: "Difficulty".into(),
+            kind: "native".into(),
+            versions: vec![
+                version(
+                    "1.5.0",
+                    both.clone(),
+                    &["rac1.player.take_damage", "rac2.player.take_damage", "rac2.moby.nanotech_ball.update"],
+                ),
+                version("1.4.0", both, &["rac1.player.take_damage", "rac2.player.take_damage"]),
+                version("1.3.0", [("rac1".to_string(), vec!["pal".to_string()])].into(), &["rac1.player.take_damage"]),
+            ],
+            ..Default::default()
+        });
+        let plan = super::plan(&index, &[have("difficulty", "1.3.0")], &Sources::default(), &HERE);
+        assert_eq!(ids(&plan.silent), [("difficulty", "1.5.0")]);
+        assert!(plan.waiting.is_empty());
+
+        let rac2 = Here { game: "rac2", disc: "ntsc", ..HERE };
+        let plan = super::plan(&index, &[have("difficulty", "1.4.0")], &Sources::default(), &rac2);
+        assert!(plan.silent.is_empty());
+        let wait = plan.waiting.iter().find(|w| w.id == "difficulty").expect("waits");
+        assert_eq!(wait.hold, Some(Hold::NewHooks { hooks: vec!["rac2.moby.nanotech_ball.update".into()] }));
     }
 
     #[test]
@@ -578,6 +654,32 @@ mod tests {
             ids(&super::plan(&index, &[have("camera-base", "1.1.0")], &back, &HERE).silent),
             [("camera-base", "1.2.0")]
         );
+    }
+
+    #[test]
+    fn an_update_that_names_hook_points_this_port_lacks_is_held_for_the_launcher() {
+        // As weapon-wheel-pause 2.0.0 needs the freeze hooks of a newer port: same interface,
+        // hook points this one does not have.
+        const UNKNOWN: &str = "rac1.test.not_a_hook_point";
+        let hooks = |list: &[&str]| list.iter().map(|h| h.to_string()).collect::<Vec<_>>();
+        let mut index = ModIndex { format: 1, ..Default::default() };
+        index.mods.push(script("wheel", &[("2.0.0", &[]), ("1.0.3", &[])]));
+        index.mods[0].versions[0].hooks = hooks(&["rac1.player.update", UNKNOWN]);
+        index.mods[0].versions[1].hooks = hooks(&["rac1.player.update"]);
+        let plan = super::plan(&index, &[have("wheel", "1.0.3")], &Sources::default(), &HERE);
+        assert!(plan.silent.is_empty() && plan.waiting.is_empty());
+        assert_eq!(ids(&plan.held), [("wheel", "2.0.0")]);
+        assert_eq!(plan.held[0].hold, Some(Hold::NeedsLauncherHooks { hooks: vec![UNKNOWN.into()] }));
+        // A version between that the port has every hook point of goes in by itself.
+        index.mods[0] = script("wheel", &[("2.0.0", &[]), ("1.1.0", &[]), ("1.0.3", &[])]);
+        index.mods[0].versions[0].hooks = hooks(&[UNKNOWN]);
+        assert_eq!(ids(&plan_of(&index, &[have("wheel", "1.0.3")])), [("wheel", "1.1.0")]);
+        // Names and another game's ids are not held against it: a major, it waits for a click.
+        index.mods[0].versions[0].hooks = hooks(&["Hero_Update", "rac2.test.not_a_hook_point"]);
+        let plan = super::plan(&index, &[have("wheel", "1.0.3")], &Sources::default(), &HERE);
+        assert!(plan.held.is_empty());
+        assert_eq!(ids(&plan.waiting), [("wheel", "2.0.0")]);
+        assert_eq!(plan.waiting[0].hold, Some(Hold::Major));
     }
 
     #[test]

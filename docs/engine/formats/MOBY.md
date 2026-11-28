@@ -9,7 +9,7 @@ program 104691, the animation evaluator), checked on every class of the
 NTSC-U disc (2,968 class blobs; 22,227 high-detail, 3,435 low-detail and
 1,123 metal packets). OpenRAC's editor reads the high-detail mesh, skeleton
 and animations on PAL and passes every check on all 19 levels
-([ASSETS.md](../../../games/rac1/docs/ASSETS.md#moby-classes)). How the
+([ASSETS.md](../../../games/rac1/decomp/docs/ASSETS.md#moby-classes)). How the
 game draws and animates them: [MOBY_RENDERING.md](../systems/MOBY_RENDERING.md),
 [MOBY_ANIMATION.md](../systems/MOBY_ANIMATION.md).
 
@@ -209,7 +209,7 @@ as the port's `port/game/rac1/host/collision.c` reads it from the game's
 memory (adapted from ReRAC's port of the kernels), measured by OpenRAC's
 editor on every class blob of both RAC1 discs: 1,064 on PAL and 1,064 on
 NTSC-U, all 19 levels each, every one read and written back byte for byte
-([moby_collision.py](../../../editor/moby_collision.py)).
+(OpenRAC Editor's [moby_collision.py](https://github.com/OpenRAC/OpenRAC-Editor/blob/main/openrac/tools/moby_collision.py)).
 
 | Offset | Type | Field |
 |---|---|---|
@@ -298,4 +298,4 @@ ReRAC contributors), `docs/formats/moby_rac1.md`,
 `docs/plan/moby_untextured.md`, and its port of the moby query kernels
 (`crates/rc-game/src/collision_query/mobys.rs`, as port/game/rac1/host/collision.c
 adapts it); PAL names from
-`games/rac1/config/overlays/us_map.tsv`.
+`games/rac1/decomp/config/overlays/us_map.tsv`.

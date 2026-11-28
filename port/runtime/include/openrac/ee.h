@@ -68,7 +68,7 @@ static inline uint32_t openrac_ee_cvtws(float f) {
 #include "openrac/ee_ops.h"
 
 /* The one vector unit 0 the program has. */
-extern openrac_vu0_state openrac_vu0;
+extern OPENRAC_PART_IMPORT openrac_vu0_state openrac_vu0;
 #define OPENRAC_VU0 (&openrac_vu0)
 #define OPENRAC_VU0_IN()
 #define OPENRAC_VU0_OUT()
@@ -84,6 +84,9 @@ void openrac_ee_break(const char* function, uint32_t address);
 /* A jump through a register to a place the function's tables do not list: logged, and the
  * function returns. */
 void openrac_ee_lost(const char* function, uint32_t target);
+/* COP0's Count register (mfc0 $9): the EE's 294.912 MHz cycle counter, from the host's steady clock.
+ * The game reads it only to time its own work (Up Your Arsenal's multiplayer maps' 0x0043F4F8). */
+uint32_t openrac_ee_count(void);
 
 #ifdef __cplusplus
 }

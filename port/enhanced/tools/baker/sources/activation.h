@@ -3,25 +3,46 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "enhanced/lighting/environment.h"
 #include "enhanced/tools/baker/sources/level_scene.h"
+#include "enhanced/tools/baker/sources/probe_fingerprint.h"
 
 namespace openrac::lighting {
 // Whether exports of `game` (a manifest's "game", "rac1") and `version` ("pal") can be baked and
-// their bakes loaded: Ratchet & Clank's PAL and NTSC-U discs, and Going Commando's NTSC-U disc.
+// their bakes loaded: Ratchet & Clank's PAL v2.00 and NTSC-U discs, Going Commando's three discs
+// and Up Your Arsenal's PAL and NTSC-U discs (launcher/core enhanced.rs, supported, keeps the same
+// list).
 bool bake_identity_supported(std::string_view game, std::string_view version);
 
 // The same for a port id ("rac1-pal", "rac2-ntsc").
 bool bake_identity_supported(std::string_view game_version);
+
+// The highest level number of `game` (a manifest's "game"): 18 for Ratchet & Clank, 30 for Going
+// Commando, 53 for Up Your Arsenal (its multiplayer maps).
+int highest_level(std::string_view game);
 
 struct ProbeActivation {
     BakeSettings bake;
     unsigned light_set = 0;
     Float3 environment{0.1f, 0.1f, 0.1f};
 };
+
+struct ProbeLookRegion {
+    Float3 minimum{}, maximum{};
+    float feather = 0;
+    float diffuse_gain = 1;
+};
+
+// Authored evidence for supported floor patches without a nearby gameplay object.
+struct PlayableArea {
+    Float3 minimum{}, maximum{};
+};
+
+inline constexpr unsigned kProbeLookRegions = 12;
 
 // Selects floor-based gameplay analysis or one complete scene allocation.
 enum class BakeStrategy {
@@ -33,7 +54,17 @@ enum class BakeStrategy {
 struct LevelBakeProfile {
     BakeStrategy strategy = BakeStrategy::Gameplay;  // Gameplay analysis is the normal level path.
     EnvironmentBakeSettings environment;
-    ProbeActivation activation;
+    ProbeActivation activation = [] {
+        ProbeActivation result;
+        result.bake.adaptive_rays = true;
+        return result;
+    }();
+    bool explicit_ray_policy = false;
+    LegacyProbeSampling legacy_sampling;
+    std::optional<bool> legacy_nearby_lights;
+    std::vector<ProbeLookRegion> look_regions;
+    std::vector<PlayableArea> playable_areas;
+    std::vector<BakeAreaEmitter> area_lights;
     Float3 sparse_spacing{256, 256, 256};
     Float3 dense_spacing{4, 4, 4};
     unsigned map_resolution = 6;
@@ -49,11 +80,21 @@ class ProbeAssetLoader {
 public:
     ProbeAssetLoader(const scene::LevelData& level, const ProbeActivation& expected);
     ProbeVolume load(const std::filesystem::path& path, bool expand_linear_maps = false) const;
+    // Accept a bake made before the implicit defaults changed, then require its policy for regions.
+    ProbeVolume load_with_previous_defaults(
+        const std::filesystem::path& path,
+        const LevelBakeProfile& profile,
+        bool expand_linear_maps = false
+    );
 
 private:
+    ProbeVolume read(const std::filesystem::path& path, bool expand_linear_maps) const;
+    void validate_settings(const ProbeVolume& volume) const;
+
     std::string m_version;
     int m_level;
     BakeSettings m_bake;
+    std::optional<LegacyProbeSampling> m_legacy_sampling;
     std::uint64_t m_scene_hash;
 };
 
